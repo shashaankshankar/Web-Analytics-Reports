@@ -18,7 +18,7 @@ The runtime image is multi-stage, digest-pinned, and distroless. Production imag
 
 ## Database
 
-Cloud SQL instance `measurement-db` is regional HA, deletion-protected, encrypted-only, backed up, and has point-in-time recovery. Query Insights is enabled without recording client addresses.
+Cloud SQL instance `measurement-db` is regional HA, deletion-protected, encrypted-only, retains 30 automated backups, and has seven-day point-in-time recovery. Query Insights is enabled without recording client addresses.
 
 ## Monitoring
 
@@ -34,6 +34,8 @@ The deployed dashboard is defined by `monitoring-dashboard.json`. Active alert p
 - Cloud SQL CPU utilization above 80 percent
 
 Alerts notify the project-owned operator channel. Log-based metrics `measurement_scheduler_failures` and `measurement_runtime_errors` back the two control-plane policies. The default log bucket retains 180 days.
+
+The billing account contains only this production project and has a $25 monthly budget with notifications at 50%, 90%, 100%, and 150% of current spend.
 
 ## Secrets and encryption
 

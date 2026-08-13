@@ -44,7 +44,7 @@ The privacy and terms pages are live, but repository publication is not the same
 - The integration creates a first-party privacy-choice banner and stores the choice under `thod-analytics-consent`.
 - The integration implements the `local_service_v1` event taxonomy through a central allowlisted adapter. Business events do not send form values or arbitrary metadata.
 - No Google Tag Manager container or GTM-specific implementation was found in the source.
-- Cloudflare currently injects a Web Analytics beacon at the account level, but the repository's Content Security Policy blocks it. This produces a console error and should be disabled in Cloudflare unless separately approved.
+- The authenticated production dashboard and current website QA complete without browser-console errors. Cloudflare Web Analytics is not part of the approved measurement owner; the repository Content Security Policy does not permit an additional beacon.
 
 ## Existing forms
 
@@ -108,7 +108,7 @@ The consent copy, storage behavior, explicit route scope, and production request
 |---|---|---|
 | Direct gtag.js | Active on the live site | `src/scripts/80-analytics.js`; Measurement ID `G-TC66MQQ0T7` |
 | Google Tag Manager | Not found | No GTM container or GTM bootstrap was found in the source audit |
-| Cloudflare Web Analytics | Account-injected and blocked by CSP | Disable unless separately approved; do not loosen CSP as a shortcut |
+| Cloudflare Web Analytics | Not an approved collection owner | Keep it disabled/unavailable unless separately reviewed; do not loosen CSP as a shortcut |
 
 ## Initial route inventory
 
@@ -136,8 +136,8 @@ The trustworthy first-site reporting launch is complete. Remaining items are sep
 
 1. Dental-office inbox placement can be checked independently; Resend acceptance is proven.
 2. DebugView/Tag Assistant is optional additional UI evidence; live Realtime API receipts plus code and privacy fixtures cover the applicable event gate.
-3. Google Ads, Search Console, call tracking, and CRM/booking remain unconfigured until their owners provide access and approve the source-specific policies in `EXTERNAL-SOURCE-ONBOARDING.md`.
-4. Recurring email remains inactive until an approved recipient, sender, and owned credential exist.
+3. Search Console is verified and connected with truthful partial/top-row coverage. Google Ads, call tracking, and CRM/booking remain unconfigured until their owners provide access and approve the source-specific policies in `EXTERNAL-SOURCE-ONBOARDING.md`.
+4. Recurring email infrastructure and its secure relay are deployed, but the dispatcher is deliberately paused and the synthetic schedule disabled per operator direction.
 5. Self-service OAuth remains inactive until a production Google OAuth client and consent screen are approved.
 
 ## First-site gate
