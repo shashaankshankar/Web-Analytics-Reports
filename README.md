@@ -9,6 +9,7 @@ Production FastAPI service for privacy-aware, stored GA4 reporting. House of Den
 - Cloud SQL: `web-analytics-agency-prod:us-central1:measurement-db`
 - Queue: `measurement-sync`, one concurrent dispatch, five attempts
 - Scheduler: `measurement-daily-sync`, daily at 3:15 AM `America/New_York`
+- External-source scheduler: `measurement-external-source-sync`, daily at 5:00 AM `America/New_York`
 - Runtime identity: `analytics-reporting-reader@web-analytics-agency-prod.iam.gserviceaccount.com`
 
 Cloud Run IAM protects the entire production service. Authorized operators can open it through a local authenticated proxy:
@@ -44,10 +45,13 @@ The reporting APIs read stored snapshots, not live GA4 requests. Sync workers ar
 - `/api/oauth/google/status` exposes the fail-closed Google Analytics OAuth production gate.
 - `/api/websites/website_house_of_dental/offboarding-preview` shows retention and deletion scope without mutating data.
 - `/api/websites/website_house_of_dental/external-sources` reports Google Ads, Search Console, call-tracking, and CRM connection state.
+- `/api/websites/website_house_of_dental/external-sources/{source}/approve` validates version-pinned credentials and records an explicit approval reference before activation.
+- `/api/websites/website_house_of_dental/external-sources/{call_tracking|crm_booking}/outcomes` accepts idempotent, privacy-validated first-party outcome batches.
+- `/api/websites/website_house_of_dental/paid-performance` and `/search-performance` expose approved stored source data with explicit unavailable/partial states.
 - `/api/websites/website_house_of_dental/business-outcomes` returns only approved first-party outcomes and explicitly null unavailable KPIs.
 - `/api/memberships` is the audited agency access-management surface; Cloud Run Invoker IAM remains a separate required access gate.
 - `/api/websites/website_house_of_dental/sync-status` exposes freshness, failures, and quality.
 - `/api/websites/website_house_of_dental/measurement-health` keeps collection, persistence, assignment, and governance separate.
-- Internal `/internal/schedule` and `/internal/sync` routes require Cloud Run IAM and a rotated Secret Manager trigger.
+- Internal GA4 and external-source scheduler/worker routes require Cloud Run IAM and a rotated Secret Manager trigger.
 
 Database migrations are in `infra/postgres/`. Reapplying them is safe. Do not place database, trigger, Google, or API credentials in the repository.

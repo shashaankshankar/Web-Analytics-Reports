@@ -6,7 +6,7 @@ Updated August 13, 2026.
 
 | Area | State | Current evidence |
 | --- | --- | --- |
-| Reporting service | Live and private | Cloud Run revision `measurement-reporting-platform-00028-2zg` serves 100% of traffic; unauthenticated requests return 403. |
+| Reporting service | Live and private | Cloud Run revision `measurement-reporting-platform-00033-krg` serves 100% of traffic; unauthenticated requests return 403. |
 | Runtime readiness | Ready | Authenticated `/health` and `/ready` return 200; `/ready` confirms the `measurement` database and production migration. |
 | GA4 connection | Active read-only | Managed ADC and the Admin API verify property `549721844`, stream `15427015396`, Measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`. |
 | Persistence | Active | Cloud SQL contains immutable report executions, period snapshots, daily facts, quality status, and stored dashboard snapshots. |
@@ -21,15 +21,15 @@ Updated August 13, 2026.
 | Recurring reporting | Deployed, inactive | PDF generation, delivery ledger, idempotency, error handling, and the daily scheduler are live. Missing sender, recipient alias, and provider credential keep delivery fail-closed. |
 | OAuth | Deployed, inactive | KMS, PKCE, signed state, `analytics.readonly`, refresh-token encryption, revocation, re-consent, and offboarding are implemented. Google production approval/client secrets are absent. |
 | Retention/deletion | Active | 760-day aggregate, 180-day operations, seven-year audit, and 30-day deletion-grace defaults are active and configurable. A temporary production tenant passed full deletion and cleanup. |
-| External sources | Deployed, inactive | Privacy-safe tenant schemas and truthful status/KPI APIs are live; no Google Ads, Search Console, call-tracking, or CRM source is configured. |
+| External sources | Runtime deployed, inactive by ownership | Version-pinned secret resolution, approval/audit, daily Ads/Search scheduling, idempotent provenance, privacy-validated call/CRM ingestion, and truthful paid/search/business APIs are live; no source account is configured. |
 | Database resilience | Active | Cloud SQL has automated backups and point-in-time recovery enabled with seven-day retention. |
-| Secrets | Active | Database and internal trigger values are in Secret Manager. Exposed trigger versions 1 and 2 are disabled; production is pinned to version 3. |
+| Secrets | Active | Database and internal trigger values are in Secret Manager. Trigger versions 1 through 4 are disabled; production and every scheduler are pinned to version 5. |
 
 ## Live data state
 
-The most recent production run completed all five fixed periods. The period boundary is calculated in the verified GA4 property timezone, so the latest complete date is August 11, 2026. Those complete windows currently contain no rows. Current-day Realtime validation separately observed all six applicable measurement events; fixed-period snapshots correctly exclude that incomplete local day. No thresholding, schema restrictions, or `(other)` data loss were reported.
+The most recent production run completed all five fixed periods. The period boundary is calculated in the verified GA4 property timezone, and the latest complete date is August 12, 2026. The stored trailing-28-day view contains 2 generated leads, 2 appointment requests, 3 form starts, 2 technical submissions, 5 active users, and 10 sessions. These are small production counts, not inferred business outcomes. No thresholding, schema restrictions, or `(other)` data loss were reported.
 
-These are small live counts, not a claim that every measurement event has been manually validated.
+The local suite passes 45 tests. The authenticated production dashboard was rendered after revision `00033-krg`; its source and outcome panels loaded with no browser-console errors.
 
 ## Approved governance and live evidence
 

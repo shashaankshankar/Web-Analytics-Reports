@@ -22,12 +22,12 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 | Step 61 | Live but inactive by configuration | Recurring-report schedules, idempotent delivery ledger, PDF attachment generation, provider error states, daily dispatcher, and secret-referenced recipients are deployed. Creation fails closed until an approved recipient, sender, and email credential exist. |
 | Step 62 | Live but inactive by external gate | The `analytics.readonly` web-server flow uses signed expiring state, PKCE, offline access, KMS-encrypted verifiers/refresh tokens, re-consent errors, provider revocation, token-deleting offboarding, and audit events. Google production client/consent approval is absent, so authorization remains disabled. |
 | Phase 5 retention/deletion | **Live and tested** | Configurable retention, a 30-day reversible offboarding grace period, immediate sync/report disablement, deletion preview, scheduled purge, exclusive credential deletion, and audit tombstones passed a temporary production-tenant deletion test. |
-| Steps 63-68 | Data plane live; sources not configured | Tenant-isolated Google Ads, Search Console, call-outcome, CRM/booking, and revenue schemas plus privacy-safe KPI APIs are deployed. All four sources truthfully report `not_configured`; Search Console discovery returned 403 and no Ads/call/CRM credentials or approved identity policy exist. |
+| Steps 63-68 | Runtime live; sources not configured | Tenant-isolated Google Ads, Search Console, call-outcome, CRM/booking, and revenue schemas are deployed with version-pinned secret resolution, approval/audit workflow, an isolated daily source scheduler, idempotent sync provenance, privacy-validated first-party outcome ingestion, and paid/search/business reporting APIs. All four sources truthfully report `not_configured`; Search Console discovery returned 403 and no Ads/call/CRM credentials or approved identity policy exist. |
 | Step 69 | Not justified | BigQuery raw-event analytics is optional and the plan says to add it only when aggregate reporting is insufficient. |
 
 ## Live production evidence
 
-- Cloud Run revision `measurement-reporting-platform-00028-2zg` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
+- Cloud Run revision `measurement-reporting-platform-00033-krg` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
 - `/ready` reports the `measurement` Cloud SQL database migrated and ready.
 - GA4 Admin API verifies property `549721844`, web stream `15427015396`, measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
 - Cloud Scheduler and Cloud Tasks completed all five fixed-period jobs on revision `00010-vd5` with HTTP 200; queue and failed-job counts returned to zero.
@@ -44,7 +44,9 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 - Authenticated production requests return 200 for `/agency`, `/dashboard`, tenant-scoped goals, annotations, portfolio, and the PDF report. The live PDF is one page, parses successfully, and contains the stored reporting content; no goal exists until an authorized user supplies a real target.
 - Cloud KMS key `oauth-refresh-tokens` is enabled and grants only the runtime identity encrypt/decrypt access. OAuth remains fail-closed because the external production client is absent.
 - `measurement-report-dispatch` and `measurement-retention` are enabled in Cloud Scheduler. Forced signed runs returned success with zero due work. The internal trigger was rotated after scheduler-management output exposed an earlier version; exposed versions are disabled and production is pinned to version 5.
-- Production external-source status returns `not_configured` for Google Ads, Search Console, call tracking, and CRM/booking. Business KPIs return null/unavailable with caveats rather than fabricated zero outcomes.
+- `measurement-external-source-sync` is enabled for 5:00 AM Eastern. A forced signed run on revision `00033-krg` returned 200 with zero approved connections and zero queued tasks, proving the fail-closed no-source path.
+- Production external-source status returns `not_configured` for Google Ads, Search Console, call tracking, and CRM/booking. Paid, search, and business APIs return null/unavailable with caveats rather than fabricated zero outcomes. Search Console executions are always labeled partial top-row coverage because its API does not guarantee complete dimension rows.
+- The plain local test command passes 45 tests without depending on an untracked operator-email environment value. The authenticated production dashboard renders the external-source, confirmed-outcome, paid, and search panels with no browser-console errors.
 
 ## Additional operational evidence
 

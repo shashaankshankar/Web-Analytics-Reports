@@ -33,3 +33,29 @@ Activation requires explicit ownership and scope for each source:
 | CRM/booking | Selected first-party system, credential, source-record identifiers, lifecycle mapping, identity-policy reference | Healthcare/privacy approval for matching outside GA4; only one-way keyed identifiers enter reporting |
 
 The production API currently reports every source as `not_configured`. Do not change that state until source access validates, reconciliation passes, and the documented approval boundary is signed off.
+
+### Secret and activation contract
+
+Every connection references an exact Secret Manager version such as `projects/PROJECT/secrets/SOURCE/versions/7`; `/latest` and raw credentials are rejected. Grant the Cloud Run runtime identity Secret Accessor only on the selected source secret.
+
+The Google Ads secret contains this JSON shape:
+
+```json
+{
+  "refreshToken": "OWNER_SUPPLIED",
+  "clientId": "OWNER_SUPPLIED",
+  "clientSecret": "OWNER_SUPPLIED",
+  "developerToken": "OWNER_SUPPLIED"
+}
+```
+
+Search Console uses the first three fields or `{"credentialMode":"adc"}` after its property owner grants the runtime identity read access. Call tracking and CRM/booking use `{"outcomeHashSecret":"OWNER_SUPPLIED_32_PLUS_CHARACTERS"}`. Never paste real values into the API request: registration contains only the version-pinned reference.
+
+Activation sequence:
+
+1. Register the source with `POST /api/websites/{websiteId}/external-sources`.
+2. Validate access and record the owner/governance reference with `POST /api/websites/{websiteId}/external-sources/{sourceType}/approve`.
+3. Google Ads and Search Console then enter the 5:00 AM Eastern isolated scheduler. Call/CRM systems send approved batches to `/outcomes` with a unique request ID.
+4. Reconcile the returned execution totals against the source owner before relying on the data.
+
+Search Console is labeled `partial_top_rows` even after successful pagination because the Search Analytics API does not guarantee every dimension row. Query text remains hashed unless its retention was separately approved.
