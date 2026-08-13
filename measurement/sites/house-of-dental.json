@@ -1,0 +1,27 @@
+{
+  "siteId": "website_house_of_dental",
+  "companyId": "company_house_of_dental",
+  "assignmentId": "assignment_house_of_dental",
+  "company": "The House of Dental",
+  "canonicalDomain": "https://thehouseofdentalwp.com",
+  "deployment": {
+    "status": "live",
+    "platform": "cloudflare_workers",
+    "publicVerifiedAt": "2026-08-12"
+  },
+  "ga4": {
+    "propertyId": "549721844",
+    "webStreamId": "15408312790",
+    "measurementId": "G-TC66MQQ0T7",
+    "collectionStatus": "live",
+    "propertyTimezone": null,
+    "reportingConnectionStatus": "awaiting_client_grant"
+  },
+  "businessTimezone": "America/New_York",
+  "governance": {
+    "industry": "healthcare",
+    "status": "requires_confirmation",
+    "unknownRoutes": "prohibited",
+    "generateLead": "blocked_pending_downstream_confirmation"
+  }
+}

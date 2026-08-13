@@ -1,0 +1,62 @@
+{
+  "ruleset_id": "local_service_v1_privacy_v1",
+  "fixtures_version": 1,
+  "pass": [
+    {
+      "name": "approved_campaign_url",
+      "route": "/services",
+      "query": "?utm_source=google&utm_medium=cpc&utm_campaign=summer",
+      "expected": "analytics_may_load_only_if_route_approved_and_consent_granted"
+    },
+    {
+      "name": "safe_event_context",
+      "route": "/",
+      "event": "phone_click",
+      "parameters": {"location": "hero", "link_type": "tel"},
+      "expected": "payload_contains_no_direct_identifier"
+    },
+    {
+      "name": "unknown_route_fails_closed",
+      "route": "/not-in-manifest",
+      "expected": "analytics_blocked"
+    }
+  ],
+  "fail": [
+    {
+      "name": "email_in_query_string",
+      "route": "/contact?email=john@example.com",
+      "expected": "analytics_blocked_and_identifier_removed"
+    },
+    {
+      "name": "email_event_parameter",
+      "route": "/contact",
+      "event": "generate_lead",
+      "parameters": {"email": "john@example.com"},
+      "expected": "event_rejected"
+    },
+    {
+      "name": "patient_route",
+      "route": "/patient/12345",
+      "event": "phone_click",
+      "expected": "analytics_blocked"
+    },
+    {
+      "name": "unknown_query_parameter",
+      "route": "/services?patient_id=12345",
+      "expected": "analytics_blocked_or_parameter_removed"
+    },
+    {
+      "name": "form_contents",
+      "route": "/contact",
+      "event": "form_submit",
+      "parameters": {"message": "I need treatment for..."},
+      "expected": "event_rejected"
+    },
+    {
+      "name": "requires_review_route",
+      "route": "/appointment/request",
+      "event": "appointment_request",
+      "expected": "analytics_blocked_until_explicit_approval"
+    }
+  ]
+}

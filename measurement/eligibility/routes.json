@@ -1,0 +1,43 @@
+{
+  "manifest_id": "the_house_of_dental_routes_v1",
+  "contract_id": "local_service_v1",
+  "version": 1,
+  "status": "pending_privacy_review",
+  "default_behavior": "prohibited",
+  "unknown_routes": "prohibited",
+  "unclassified_routes": "prohibited",
+  "analytics_loader_policy": "load_only_when_status_is_approved_and_consent_is_granted",
+  "routes": {
+    "/": "requires_review",
+    "/about": "requires_review",
+    "/accessibility": "requires_review",
+    "/contact": "requires_review",
+    "/facial-aesthetics": "requires_review",
+    "/new-patients": "requires_review",
+    "/pre-post-op": "requires_review",
+    "/privacy": "requires_review",
+    "/reviews": "requires_review",
+    "/services": "requires_review",
+    "/terms": "requires_review",
+    "/404": "prohibited"
+  },
+  "patterns": [
+    {"pattern": "/patient/*", "status": "prohibited"},
+    {"pattern": "/portal/*", "status": "prohibited"},
+    {"pattern": "/appointment/*", "status": "requires_review"},
+    {"pattern": "/booking/*", "status": "requires_review"},
+    {"pattern": "/contact/*", "status": "requires_review"}
+  ],
+  "legacy_redirects": {
+    "/home": "prohibited",
+    "/about-us": "prohibited",
+    "/dental-services": "prohibited",
+    "/new-patient": "prohibited",
+    "/contact-us": "prohibited"
+  },
+  "approval": {
+    "approved_by": null,
+    "approved_at": null,
+    "notes": "All current routes remain blocked pending client/privacy review."
+  }
+}

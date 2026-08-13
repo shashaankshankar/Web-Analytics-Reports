@@ -1,0 +1,52 @@
+{
+  "contract_id": "local_service_v1",
+  "version": 1,
+  "status": "draft",
+  "industry": "healthcare",
+  "owner": {
+    "type": "agency",
+    "name": "Measurement and Reporting Platform",
+    "collection_owner": "website_adapter"
+  },
+  "scope": {
+    "first_website": "The House of Dental",
+    "domain": "https://thehouseofdentalwp.com",
+    "ga4_property": "549721844",
+    "ga4_web_stream": "15408312790",
+    "ga4_measurement_id": "G-TC66MQQ0T7",
+    "public_collection_status": "live",
+    "reporting_connection_status": "awaiting_client_grant"
+  },
+  "privacy": {
+    "default_analytics_eligibility": "prohibited",
+    "healthcare_default_deny": true,
+    "ga4_approval_required": true,
+    "consent_required": true,
+    "prohibited_data_policy": "deny_and_do_not_send",
+    "prohibited_parameter_categories": [
+      "direct_identifier",
+      "contact_detail",
+      "form_content",
+      "patient_identifier",
+      "patient_specific_data",
+      "treatment_or_condition_detail",
+      "appointment_identifier"
+    ]
+  },
+  "event_files": {
+    "events": "events.json",
+    "parameters": "parameters.json",
+    "mappings": "mappings.json",
+    "validation": "validation.json"
+  },
+  "release_gates": [
+    "client_or_authorized_owner_confirmed",
+    "healthcare_privacy_and_legal_review_approved",
+    "route_eligibility_manifest_approved",
+    "consent_configuration_approved",
+    "ga4_property_and_web_stream_verified",
+    "appointment_backend_success_condition_verified"
+  ],
+  "effective_from": null,
+  "effective_to": null
+}
