@@ -12,7 +12,7 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 | Step 14 | Live | Measurement health exposes contract, stream, measurement ID, timezone, event, consent/governance, persistence, and collection states. |
 | Phase 1 gate | **Passed** | Governance, routes, consent, semantics, privacy fixtures, all six applicable event receipts, and the production Resend handoff pass. `email_click` is documented as not applicable. |
 | Steps 15-39 | Live | FastAPI, Cloud SQL schemas, versioned semantics, ADC credential abstraction, Admin/Data API adapters, fixed reports, exact provenance, daily/period facts, Scheduler, Tasks, workers, retries, replay/dead-letter state, idempotency, reconciliation, and data-quality states are deployed. |
-| Phase 2 gate | Passed for the first-site backend | A repeated production job returned `idempotentReplay: true`; all six report definitions pass GA4 compatibility; all facts link to executions; failed validation jobs replayed; quota, thresholding, restrictions, dimension loss, freshness, and errors are visible. Cross-property failure isolation remains a multi-client test. |
+| Phase 2 gate | **Passed** | A repeated production job returned `idempotentReplay: true`; all six report definitions pass GA4 compatibility; all facts link to executions; failed validation jobs replayed; quota, thresholding, restrictions, dimension loss, freshness, and errors are visible. A synthetic inaccessible second property dead-lettered without changing the healthy first assignment, then all fixtures were removed. |
 | Steps 40-49 | Live | Stored product APIs and a private dashboard expose overview, fixed periods/comparisons, acquisition, conversion, landing pages, expected events, measurement health, and sync status. |
 | Phase 3 gate | Passed for available approved metrics | Dashboard values resolve to stored snapshots, report executions, report version 1, and exact GA4 requests. Outcome metrics remain zero/unapproved rather than being inferred. |
 | Step 50 | Complete | `ONBOARDING.md` documents the repeatable client onboarding path and hard gates. |
@@ -27,7 +27,7 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 
 ## Live production evidence
 
-- Cloud Run revision `measurement-reporting-platform-00023-lwm` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
+- Cloud Run revision `measurement-reporting-platform-00028-2zg` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
 - `/ready` reports the `measurement` Cloud SQL database migrated and ready.
 - GA4 Admin API verifies property `549721844`, web stream `15427015396`, measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
 - Cloud Scheduler and Cloud Tasks completed all five fixed-period jobs on revision `00010-vd5` with HTTP 200; queue and failed-job counts returned to zero.
@@ -38,7 +38,9 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 - On August 12, 2026, the explicitly authorized production test returned the visible success state `Your message was sent. We'll get back to you soon.` after the Worker received an accepted Resend response. The message stated that it was a measurement test to disregard and did not create or confirm an appointment. Inbox placement was not independently verified.
 - On August 13, 2026, an explicitly authorized consented production test returned the same success state. The GA4 Realtime Data API then returned exactly one each of `form_submit`, `generate_lead`, and `appointment_request` at `minutesAgo=00`.
 - Cloudflare Worker version `aae99152-f821-4aec-bf3c-0db2ebb533ef` explicitly allows approved static fragments such as `/contact#book` but continues to fail closed for unknown fragments such as `#patient-12345`.
-- Production PostgreSQL now has 38 tenant RLS policies and three separated roles. A temporary second organization passed cross-tenant API, service, control-plane, external-source, read, and write denial tests, then rolled back without persisted fixture data.
+- Production PostgreSQL now has 39 tenant RLS policies and three separated roles. A temporary second organization passed cross-tenant API, service, control-plane, external-source, read, and write denial tests, then rolled back without persisted fixture data.
+- The scheduler now enumerates approved assignments and produced five fixed-period tasks for the live assignment. All five completed successfully on the per-assignment worker path. A synthetic inaccessible second property dead-lettered independently while the first property's latest success and zero-failure state remained unchanged.
+- External-source sync provenance stores deterministic request/response hashes, row counts, reconciliation totals, idempotent replay state, and failures. A synthetic Ads fixture persisted normalized facts, replayed idempotently, and was fully removed through offboarding.
 - Authenticated production requests return 200 for `/agency`, `/dashboard`, tenant-scoped goals, annotations, portfolio, and the PDF report. The live PDF is one page, parses successfully, and contains the stored reporting content; no goal exists until an authorized user supplies a real target.
 - Cloud KMS key `oauth-refresh-tokens` is enabled and grants only the runtime identity encrypt/decrypt access. OAuth remains fail-closed because the external production client is absent.
 - `measurement-report-dispatch` and `measurement-retention` are enabled in Cloud Scheduler. Forced signed runs returned success with zero due work. The internal trigger was rotated after scheduler-management output exposed an earlier version; exposed versions are disabled and production is pinned to version 5.

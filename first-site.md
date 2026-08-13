@@ -1,8 +1,8 @@
 # First Site: The House of Dental
 
-Status: Live website; reporting connection pending  
-Recorded: August 8, 2026  
-Production status updated: August 12, 2026  
+Status: Live website and active managed reporting connection
+Recorded: August 8, 2026
+Production status updated: August 13, 2026
 Site count: 1
 
 ## Decision
@@ -19,20 +19,20 @@ This is the first client website in scope. The platform should preserve its reus
 | Website/domain | `https://thehouseofdentalwp.com` | Live HTTP 200 and canonical URL verified August 12, 2026 |
 | Location | 6504 University Blvd, Winter Park, FL 32792 | `src/data/site.json`; site footer/contact page |
 | Primary phone | (407) 678-1400 | `src/data/site.json`; telephone CTAs throughout the site |
-| GA4 property | `549721844` | Repository value; account-level access not yet verified |
+| GA4 property | `549721844` | Verified through GA4 Admin and Data APIs on August 12-13, 2026 |
 | GA4 web stream | `15427015396` | Verified through the GA4 Admin API on 2026-08-12 |
 | GA4 Measurement ID | `G-TC66MQQ0T7` | Enabled in the live website bundle |
 | Public GA4 collection | Active after consent | Browser observed a GA4 collection response with HTTP 204 on August 12, 2026 |
-| Reporting connection | Awaiting client grant | Service principal and read-only access are not configured |
-| Privacy/legal approval record | Not found | Must be recorded separately from technical activation |
+| Reporting connection | Active | Managed runtime ADC has read-only access; fixed-period sync is live |
+| Privacy/governance approval | Approved | Shashaank Shankar approved the healthcare/default-deny policy, routes, consent, contract, mappings, and request semantics on August 12, 2026 |
 
-The domain is recorded from the website's canonical metadata and source configuration. Domain ownership, the GA4 property assignment, and the web-stream assignment still require confirmation from the client or authorized administrator before a managed connection is created.
+The canonical domain, GA4 property, stream, Measurement ID, and property timezone are verified and stored as the approved website assignment.
 
 ## Healthcare and privacy classification
 
 The first site is a healthcare website because it advertises dental care, facial-aesthetics services, appointment requests, and patient-facing care information.
 
-Whether the business is legally HIPAA-regulated was not established by the repository. Treat the site as **healthcare/default-deny pending written client and legal/privacy confirmation**. The live implementation excludes form values and patient-specific data, but the missing approval record remains a governance gap.
+Whether the business is legally HIPAA-regulated is not asserted by this platform. The approved technical policy is **healthcare/default-deny**: form values, direct identifiers, patient-specific URLs, and sensitive free text are prohibited from analytics. This is an implementation/governance approval, not legal advice.
 
 The privacy and terms pages are live, but repository publication is not the same as documented legal approval. The contact form warns users not to include sensitive medical details.
 
@@ -65,7 +65,7 @@ The form fields contain direct identifiers and potentially sensitive free text. 
 
 ### Phone CTAs
 
-Telephone links using `tel:+14076781400` are generated with semantic `phone_click` attributes. The implementation is locally verified; account-level GA4 receipt is still unverified.
+Telephone links using `tel:+14076781400` are generated with semantic `phone_click` attributes. The GA4 Realtime Data API observed one authorized production receipt.
 
 ### Email CTAs
 
@@ -84,7 +84,7 @@ Book / Contact CTA
       -> front desk calls to confirm
 ```
 
-The website does not establish `appointment_booked`. A successful Worker response triggers `form_submit` and `appointment_request`, meaning the message was accepted for notification; it is not a booked appointment or confirmed lead. `generate_lead` remains intentionally blocked.
+The website does not establish `appointment_booked`. A successful Worker response triggers `form_submit`, `generate_lead`, and `appointment_request`, meaning an approved request was accepted for office follow-up; it is not a booked or confirmed appointment. An authorized consented production test produced exactly one of each event.
 
 ## Consent mechanism
 
@@ -100,7 +100,7 @@ Current behavior in source:
 - A settings control allows the visitor to change the choice
 - The GA4 library loads with denied storage under advanced Consent Mode; business events require granted analytics storage
 
-The consent copy, privacy language, storage choice, route scope, and production approval are not yet validated for this measurement platform. Consent Mode does not replace healthcare/privacy review.
+The consent copy, storage behavior, explicit route scope, and production request semantics are approved and validated. Consent Mode does not replace healthcare/privacy or legal review.
 
 ## Existing GTM or gtag installation
 
@@ -130,21 +130,18 @@ The current website export contains these page routes:
 
 The deployment also defines legacy redirects for `/home`, `/about-us`, `/dental-services`, `/new-patient`, and `/contact-us`. All declared clean routes are enabled in the website's route manifest; unknown and unclassified routes remain prohibited.
 
-## Open production reporting items
+## Remaining external evidence and optional expansion
 
-These items do not block the already-live website, but they block a trustworthy production reporting launch:
+The trustworthy first-site reporting launch is complete. Remaining items are separate external evidence or later-stage expansion:
 
-1. Confirm client ownership of property `549721844`, web stream `15427015396`, and Measurement ID `G-TC66MQQ0T7` through an authorized GA4 account.
-2. Confirm the GA4 property timezone and reporting scope.
-3. Record the named healthcare/privacy decision and approval for the live consent and route policy.
-4. Grant the reporting principal Viewer access and verify a read-only Data API request.
-5. Complete production DebugView checks for each implemented event and confirm prohibited data is absent.
-6. Verify Resend sender-domain status and appointment inbox delivery separately from HTTP acceptance.
-7. Disable the unapproved Cloudflare Web Analytics injection or approve and integrate it intentionally.
-8. Add production authentication, managed Postgres, migrations, sync scheduling, and operational monitoring before exposing this dashboard outside a trusted local environment.
+1. Dental-office inbox placement can be checked independently; Resend acceptance is proven.
+2. DebugView/Tag Assistant is optional additional UI evidence; live Realtime API receipts plus code and privacy fixtures cover the applicable event gate.
+3. Google Ads, Search Console, call tracking, and CRM/booking remain unconfigured until their owners provide access and approve the source-specific policies in `EXTERNAL-SOURCE-ONBOARDING.md`.
+4. Recurring email remains inactive until an approved recipient, sender, and owned credential exist.
+5. Self-service OAuth remains inactive until a production Google OAuth client and consent screen are approved.
 
 ## First-site gate
 
-The website launch gate is complete: the canonical domain is publicly serving the Cloudflare build. The server-side reporting gate is not complete until the read-only GA4 assignment, property timezone, authentication, persistence, and live data reconciliation are verified.
+The website and first-site reporting gates are complete. The canonical Cloudflare deployment, consented live event receipts, read-only GA4 assignment, property timezone, private Cloud Run service, Cloud SQL persistence, scheduled per-assignment synchronization, dashboard/PDF output, and privacy governance are verified.
 
-The public site is already instrumented. Do not confuse that technical state with a verified managed reporting connection or a recorded healthcare/privacy approval.
+Do not broaden this proof to unconfigured external sources or claim appointment, inbox, customer, or revenue outcomes that the approved owning systems have not supplied.

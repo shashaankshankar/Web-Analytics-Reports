@@ -6,7 +6,7 @@ Updated August 13, 2026.
 
 | Area | State | Current evidence |
 | --- | --- | --- |
-| Reporting service | Live and private | Cloud Run revision `measurement-reporting-platform-00023-lwm` serves 100% of traffic; unauthenticated requests return 403. |
+| Reporting service | Live and private | Cloud Run revision `measurement-reporting-platform-00028-2zg` serves 100% of traffic; unauthenticated requests return 403. |
 | Runtime readiness | Ready | Authenticated `/health` and `/ready` return 200; `/ready` confirms the `measurement` database and production migration. |
 | GA4 connection | Active read-only | Managed ADC and the Admin API verify property `549721844`, stream `15427015396`, Measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`. |
 | Persistence | Active | Cloud SQL contains immutable report executions, period snapshots, daily facts, quality status, and stored dashboard snapshots. |
@@ -15,7 +15,8 @@ Updated August 13, 2026.
 | Idempotency | Passed | Repeating the same schedule/period key returned the original successful job and created no duplicate facts. |
 | Fixed-period correctness | Passed | `7d`, `28d`, `this_month`, `last_month`, and `90d` are stored independently; active users and sessions are period snapshots, and rates use numerator/denominator. |
 | Dashboard/API | Live | Authenticated agency and client views plus stored reporting, health, goals, annotations, and PDF endpoints return 200. Client reports use the same stored semantic layer and hide agency repair details. |
-| Tenant isolation | Passed | Five roles, service-layer tenant context, 38 Postgres RLS policies, three database roles, and temporary second-organization read/write denial tests are active. |
+| Tenant isolation | Passed | Five roles, service-layer tenant context, 39 Postgres RLS policies, three database roles, and temporary second-organization read/write denial tests are active. |
+| Per-property isolation | Passed | Scheduling enumerates each approved assignment. A synthetic inaccessible property dead-lettered without changing the healthy production assignment, then was removed. |
 | End-user identity | Active | Google-signed Cloud Run identities resolve to organization memberships per request; ambiguous dual authentication headers are rejected. Membership changes are role-restricted and audited. |
 | Recurring reporting | Deployed, inactive | PDF generation, delivery ledger, idempotency, error handling, and the daily scheduler are live. Missing sender, recipient alias, and provider credential keep delivery fail-closed. |
 | OAuth | Deployed, inactive | KMS, PKCE, signed state, `analytics.readonly`, refresh-token encryption, revocation, re-consent, and offboarding are implemented. Google production approval/client secrets are absent. |
