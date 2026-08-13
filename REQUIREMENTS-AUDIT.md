@@ -27,7 +27,7 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 
 ## Live production evidence
 
-- Cloud Run revision `measurement-reporting-platform-00033-krg` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
+- Cloud Run revision `measurement-reporting-platform-00038-zjd` serves 100% of traffic, returns authenticated readiness 200, and rejects unauthenticated requests with HTTP 403. Its digest-pinned distroless Debian 13 image has zero critical/high findings in the production on-demand scan.
 - `/ready` reports the `measurement` Cloud SQL database migrated and ready.
 - GA4 Admin API verifies property `549721844`, web stream `15427015396`, measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
 - Cloud Scheduler and Cloud Tasks completed all five fixed-period jobs on revision `00010-vd5` with HTTP 200; queue and failed-job counts returned to zero.
@@ -42,11 +42,13 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 - The scheduler now enumerates approved assignments and produced five fixed-period tasks for the live assignment. All five completed successfully on the per-assignment worker path. A synthetic inaccessible second property dead-lettered independently while the first property's latest success and zero-failure state remained unchanged.
 - External-source sync provenance stores deterministic request/response hashes, row counts, reconciliation totals, idempotent replay state, and failures. A synthetic Ads fixture persisted normalized facts, replayed idempotently, and was fully removed through offboarding.
 - Authenticated production requests return 200 for `/agency`, `/dashboard`, tenant-scoped goals, annotations, portfolio, and the PDF report. The live PDF is one page, parses successfully, and contains the stored reporting content; no goal exists until an authorized user supplies a real target.
-- Cloud KMS key `oauth-refresh-tokens` is enabled and grants only the runtime identity encrypt/decrypt access. OAuth remains fail-closed because the external production client is absent.
-- `measurement-report-dispatch` and `measurement-retention` are enabled in Cloud Scheduler. Forced signed runs returned success with zero due work. The internal trigger was rotated after scheduler-management output exposed an earlier version; exposed versions are disabled and production is pinned to version 5.
+- Cloud KMS key `oauth-refresh-tokens` is enabled, grants only the runtime identity encrypt/decrypt access, and rotates every 90 days. OAuth remains fail-closed because Google Auth Platform branding/audience/client setup is not yet complete.
+- `measurement-daily-sync`, `measurement-retention`, and `measurement-external-source-sync` are enabled and completed post-hardening signed runs with HTTP 200. `measurement-report-dispatch` is deliberately paused per operator instruction. The internal trigger was rotated again during IAM hardening; versions 1 through 5 are disabled and production is pinned to version 6.
+- Scheduler and Cloud Tasks now use the dedicated `measurement-scheduler` invoker, while `analytics-reporting-reader` remains the runtime/data identity. Cloud Monitoring has active operator notification, service 5xx, task-failure, and database-availability policies plus a production dashboard.
+- Cloud SQL is regional HA, deletion-protected, encrypted-only, backed up with PITR, and has query diagnostics enabled without client-address capture. The default log bucket retains 180 days.
 - `measurement-external-source-sync` is enabled for 5:00 AM Eastern. The original forced signed run returned 200 with zero approved connections, proving the fail-closed path; after Search Console approval, a second signed run queued and completed its source worker with HTTP 200.
 - Production external-source status returns `partial_data` for the newly verified Search Console property and `not_configured` for Google Ads, call tracking, and CRM/booking. Search, paid, and business APIs return null/unavailable with caveats rather than fabricated zero outcomes when no approved rows exist. Search Console executions are always labeled partial top-row coverage because its API does not guarantee complete dimension rows.
-- The plain local test command passes 45 tests without depending on an untracked operator-email environment value. The authenticated production dashboard renders the external-source, confirmed-outcome, paid, and search panels with no browser-console errors.
+- The plain local test command passes 46 tests without depending on an untracked operator-email environment value. The authenticated production dashboard renders the external-source, confirmed-outcome, paid, and search panels with no browser-console errors.
 
 ## Additional operational evidence
 

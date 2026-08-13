@@ -6,7 +6,7 @@ Updated August 13, 2026.
 
 | Area | State | Current evidence |
 | --- | --- | --- |
-| Reporting service | Live and private | Cloud Run revision `measurement-reporting-platform-00033-krg` serves 100% of traffic; unauthenticated requests return 403. |
+| Reporting service | Live, private, and hardened | Cloud Run revision `measurement-reporting-platform-00038-zjd` serves 100% of traffic; authenticated readiness returns 200 and unauthenticated requests return 403. The distroless Debian 13 image is digest-pinned; an on-demand scan reports zero critical/high findings and no fixable remaining findings. |
 | Runtime readiness | Ready | Authenticated `/health` and `/ready` return 200; `/ready` confirms the `measurement` database and production migration. |
 | GA4 connection | Active read-only | Managed ADC and the Admin API verify property `549721844`, stream `15427015396`, Measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`. |
 | Persistence | Active | Cloud SQL contains immutable report executions, period snapshots, daily facts, quality status, and stored dashboard snapshots. |
@@ -18,18 +18,20 @@ Updated August 13, 2026.
 | Tenant isolation | Passed | Five roles, service-layer tenant context, 39 Postgres RLS policies, three database roles, and temporary second-organization read/write denial tests are active. |
 | Per-property isolation | Passed | Scheduling enumerates each approved assignment. A synthetic inaccessible property dead-lettered without changing the healthy production assignment, then was removed. |
 | End-user identity | Active | Google-signed Cloud Run identities resolve to organization memberships per request; ambiguous dual authentication headers are rejected. Membership changes are role-restricted and audited. |
-| Recurring reporting | Deployed, inactive | PDF generation, delivery ledger, idempotency, error handling, and the daily scheduler are live. The ignored local Resend key returns 401, while the separate valid Cloudflare Worker secret is non-exportable; a new owned reporting credential is required. |
+| Recurring reporting | Deployed, deliberately paused | PDF generation, delivery ledger, idempotency, error handling, a bearer-protected recipient-locked relay, and the dispatcher are deployed. Per operator direction, the only synthetic schedule is disabled, the scheduler is paused, and the prior test attempt failed before provider acceptance with no message ID; no report was sent. |
 | OAuth | Deployed, inactive | KMS, PKCE, signed state, `analytics.readonly`, refresh-token encryption, revocation, re-consent, and offboarding are implemented. Google production approval/client secrets are absent. |
 | Retention/deletion | Active | 760-day aggregate, 180-day operations, seven-year audit, and 30-day deletion-grace defaults are active and configurable. A temporary production tenant passed full deletion and cleanup. |
 | External sources | Search Console active with partial coverage | Version-pinned secret resolution, approval/audit, daily Ads/Search scheduling, idempotent provenance, privacy-validated call/CRM ingestion, and truthful paid/search/business APIs are live. The House of Dental URL-prefix property is verified, the runtime ADC connection is approved, and a signed production sync returned 200. The property is new and has no approved historical rows, so the API correctly reports unavailable totals and `partial_data`; Ads, call tracking, and CRM remain unconfigured. |
-| Database resilience | Active | Cloud SQL has automated backups and point-in-time recovery enabled with seven-day retention. |
-| Secrets | Active | Database and internal trigger values are in Secret Manager. Trigger versions 1 through 4 are disabled; production and every scheduler are pinned to version 5. |
+| Database resilience | Regional HA | Cloud SQL is regional, deletion-protected, encrypted-only, and has automated backups plus point-in-time recovery with seven-day retention. Query Insights is enabled without client-address capture. |
+| Secrets and invocation IAM | Active, separated | Database, source, relay, and internal trigger values are in Secret Manager. Trigger versions 1 through 5 are disabled and production is pinned to version 6. Scheduler and Cloud Tasks use the dedicated `measurement-scheduler` invoker rather than the data-reading runtime identity. |
+| Monitoring | Active | An operator email channel, Cloud Run 5xx, Cloud Tasks failure, and Cloud SQL availability policies are enabled. A four-panel service dashboard covers traffic, latency, task attempts, and database availability; platform logs retain 180 days. |
+| Supply-chain security | Active | Container Analysis, Container Scanning, Error Reporting, and On-Demand Scanning APIs are enabled. Artifact Registry keeps the ten most recent versions and deletes untagged images after 30 days. |
 
 ## Live data state
 
 The most recent production run completed all five fixed periods. The period boundary is calculated in the verified GA4 property timezone, and the latest complete date is August 12, 2026. The stored trailing-28-day view contains 2 generated leads, 2 appointment requests, 3 form starts, 2 technical submissions, 5 active users, and 10 sessions. These are small production counts, not inferred business outcomes. No thresholding, schema restrictions, or `(other)` data loss were reported.
 
-The local suite passes 45 tests. The authenticated production dashboard was rendered after revision `00033-krg`; its source and outcome panels loaded with no browser-console errors.
+The local suite passes 46 tests. The authenticated production dashboard was rendered after the earlier external-source release with no browser-console errors; revision `00038-zjd` preserves those APIs and passes authenticated readiness after the regional database upgrade.
 
 ## Approved governance and live evidence
 
