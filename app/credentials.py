@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 import google.auth
+from google.oauth2.credentials import Credentials
 from google.analytics.admin_v1beta import AnalyticsAdminServiceClient
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.protobuf.json_format import MessageToDict
@@ -76,6 +77,51 @@ class AdcCredential:
         self._disabled = True
         self._data_client = None
         self._admin_client = None
+
+
+class OAuthCredential:
+    """Read-only OAuth provider for an already authorized, KMS-decrypted refresh token."""
+
+    def __init__(self, refresh_token: str, client_id: str, client_secret: str,
+                 token_uri: str = "https://oauth2.googleapis.com/token", credentials=None):
+        if not refresh_token or not client_id or not client_secret:
+            raise RuntimeError("oauth_credential_configuration_required")
+        self.credentials=credentials or Credentials(
+            token=None,refresh_token=refresh_token,token_uri=token_uri,
+            client_id=client_id,client_secret=client_secret,scopes=[ANALYTICS_READONLY],
+        )
+        if set(self.credentials.scopes or []) != {ANALYTICS_READONLY}:
+            raise RuntimeError("oauth_credential_scope_violation")
+        self._disabled=False; self._data_client=None; self._admin_client=None
+
+    def _require_enabled(self):
+        if self._disabled: raise RuntimeError("analytics_connection_disabled")
+
+    def get_authorized_client(self) -> BetaAnalyticsDataClient:
+        self._require_enabled()
+        if self._data_client is None: self._data_client=BetaAnalyticsDataClient(credentials=self.credentials)
+        return self._data_client
+
+    def get_admin_client(self) -> AnalyticsAdminServiceClient:
+        self._require_enabled()
+        if self._admin_client is None: self._admin_client=AnalyticsAdminServiceClient(credentials=self.credentials)
+        return self._admin_client
+
+    def validate_access(self, property_id: str) -> bool:
+        self.get_admin_client().get_property(name=f"properties/{property_id}")
+        return True
+
+    def list_accessible_properties(self) -> list[dict]:
+        properties=[]
+        for summary in self.get_admin_client().list_account_summaries():
+            for item in summary.property_summaries:
+                properties.append({"account":summary.account,"accountDisplayName":summary.display_name,
+                                   "property":item.property,"propertyDisplayName":item.display_name,
+                                   "propertyType":item.property_type.name,"parent":item.parent})
+        return properties
+
+    def disable(self) -> None:
+        self._disabled=True; self._data_client=None; self._admin_client=None; self.credentials=None
 
 
 class GA4Admin:
