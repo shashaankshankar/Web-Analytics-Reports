@@ -17,15 +17,17 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 | Phase 3 gate | Passed for available approved metrics | Dashboard values resolve to stored snapshots, report executions, report version 1, and exact GA4 requests. Outcome metrics remain zero/unapproved rather than being inferred. |
 | Step 50 | Complete | `ONBOARDING.md` documents the repeatable client onboarding path and hard gates. |
 | First production milestone | **Passed** | One real client has approved privacy-safe measurement, complete applicable live event evidence, managed GA4 access, idempotent persisted synchronization, fixed-period reporting, a private dashboard, visible health, and documented onboarding. |
-| Steps 51-57 | **Live and passed** | The agency portfolio, alerts, annotations, five-role authorization, tenant service context, 28 RLS policies, separate database roles, and adversarial API/service/database tests are live. A transaction-only second tenant proved cross-tenant reads and writes are denied. |
-| Steps 58-60 | Live foundation | The client view omits agency repair details, client roles are enforced, approved effective-dated goals are tenant-scoped and audited, and PDF reports are generated from the same stored snapshots as the dashboard. No client users or goals have been invented. |
-| Steps 61-62 | Dependency-blocked | Email recipients/provider ownership and a production Google OAuth client/consent screen have not been supplied. The plan forbids pretending these external gates are live. |
-| Steps 63-68 | Gated and dependency-blocked | No approved Google Ads, Search Console, call-tracking, CRM/booking, outcome-matching, or revenue-source authorization/configuration exists. The plan forbids inventing these integrations. |
+| Steps 51-57 | **Live and passed** | The agency portfolio, alerts, annotations, five-role authorization, tenant service context, initial 28 RLS policies, separate database roles, and adversarial API/service/database tests are live. A transaction-only second tenant proved cross-tenant reads and writes are denied. |
+| Steps 58-60 | Live foundation | Google-verified request identities resolve to tenant memberships. The client view omits agency repair details, five roles are enforced, approved effective-dated goals are tenant-scoped and audited, and PDF reports come from the same stored snapshots as the dashboard. No client users or goals have been invented. |
+| Step 61 | Live but inactive by configuration | Recurring-report schedules, idempotent delivery ledger, PDF attachment generation, provider error states, daily dispatcher, and secret-referenced recipients are deployed. Creation fails closed until an approved recipient, sender, and email credential exist. |
+| Step 62 | Live but inactive by external gate | The `analytics.readonly` web-server flow uses signed expiring state, PKCE, offline access, KMS-encrypted verifiers/refresh tokens, re-consent errors, provider revocation, token-deleting offboarding, and audit events. Google production client/consent approval is absent, so authorization remains disabled. |
+| Phase 5 retention/deletion | **Live and tested** | Configurable retention, a 30-day reversible offboarding grace period, immediate sync/report disablement, deletion preview, scheduled purge, exclusive credential deletion, and audit tombstones passed a temporary production-tenant deletion test. |
+| Steps 63-68 | Data plane live; sources not configured | Tenant-isolated Google Ads, Search Console, call-outcome, CRM/booking, and revenue schemas plus privacy-safe KPI APIs are deployed. All four sources truthfully report `not_configured`; Search Console discovery returned 403 and no Ads/call/CRM credentials or approved identity policy exist. |
 | Step 69 | Not justified | BigQuery raw-event analytics is optional and the plan says to add it only when aggregate reporting is insufficient. |
 
 ## Live production evidence
 
-- Cloud Run revision `measurement-reporting-platform-00013-rtj` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
+- Cloud Run revision `measurement-reporting-platform-00023-lwm` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
 - `/ready` reports the `measurement` Cloud SQL database migrated and ready.
 - GA4 Admin API verifies property `549721844`, web stream `15427015396`, measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
 - Cloud Scheduler and Cloud Tasks completed all five fixed-period jobs on revision `00010-vd5` with HTTP 200; queue and failed-job counts returned to zero.
@@ -36,8 +38,11 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 - On August 12, 2026, the explicitly authorized production test returned the visible success state `Your message was sent. We'll get back to you soon.` after the Worker received an accepted Resend response. The message stated that it was a measurement test to disregard and did not create or confirm an appointment. Inbox placement was not independently verified.
 - On August 13, 2026, an explicitly authorized consented production test returned the same success state. The GA4 Realtime Data API then returned exactly one each of `form_submit`, `generate_lead`, and `appointment_request` at `minutesAgo=00`.
 - Cloudflare Worker version `aae99152-f821-4aec-bf3c-0db2ebb533ef` explicitly allows approved static fragments such as `/contact#book` but continues to fail closed for unknown fragments such as `#patient-12345`.
-- Production PostgreSQL has 28 tenant RLS policies and three separated roles. A temporary second organization passed cross-tenant API, service, read, and write denial tests, then rolled back without persisted fixture data.
+- Production PostgreSQL now has 38 tenant RLS policies and three separated roles. A temporary second organization passed cross-tenant API, service, control-plane, external-source, read, and write denial tests, then rolled back without persisted fixture data.
 - Authenticated production requests return 200 for `/agency`, `/dashboard`, tenant-scoped goals, annotations, portfolio, and the PDF report. The live PDF is one page, parses successfully, and contains the stored reporting content; no goal exists until an authorized user supplies a real target.
+- Cloud KMS key `oauth-refresh-tokens` is enabled and grants only the runtime identity encrypt/decrypt access. OAuth remains fail-closed because the external production client is absent.
+- `measurement-report-dispatch` and `measurement-retention` are enabled in Cloud Scheduler. Forced signed runs returned success with zero due work. The internal trigger was rotated after scheduler-management output exposed an earlier version; exposed versions are disabled and production is pinned to version 5.
+- Production external-source status returns `not_configured` for Google Ads, Search Console, call tracking, and CRM/booking. Business KPIs return null/unavailable with caveats rather than fabricated zero outcomes.
 
 ## Additional operational evidence
 

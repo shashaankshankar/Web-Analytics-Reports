@@ -40,6 +40,12 @@ The reporting APIs read stored snapshots, not live GA4 requests. Sync workers ar
 - `/agency` is the role-restricted portfolio and annotation console.
 - `/api/websites/website_house_of_dental/goals` lists approved goal metrics and manages effective-dated targets for authorized writers.
 - `/api/websites/website_house_of_dental/reports/pdf?period=28d` downloads a tenant-scoped report generated from the stored dashboard snapshots.
+- `/api/websites/website_house_of_dental/recurring-reports` manages secret-referenced schedules and exposes whether email delivery is configured.
+- `/api/oauth/google/status` exposes the fail-closed Google Analytics OAuth production gate.
+- `/api/websites/website_house_of_dental/offboarding-preview` shows retention and deletion scope without mutating data.
+- `/api/websites/website_house_of_dental/external-sources` reports Google Ads, Search Console, call-tracking, and CRM connection state.
+- `/api/websites/website_house_of_dental/business-outcomes` returns only approved first-party outcomes and explicitly null unavailable KPIs.
+- `/api/memberships` is the audited agency access-management surface; Cloud Run Invoker IAM remains a separate required access gate.
 - `/api/websites/website_house_of_dental/sync-status` exposes freshness, failures, and quality.
 - `/api/websites/website_house_of_dental/measurement-health` keeps collection, persistence, assignment, and governance separate.
 - Internal `/internal/schedule` and `/internal/sync` routes require Cloud Run IAM and a rotated Secret Manager trigger.

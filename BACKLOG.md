@@ -9,4 +9,6 @@ Status: the first-site production milestone, all applicable Phase 1 receipts, an
 - Create and approve a Google OAuth production client and consent screen before self-service connection can be enabled.
 - Authorize and configure Google Ads, Search Console, call tracking, CRM/booking, and revenue sources before their later-stage integrations can go live.
 
+The corresponding application flows, tenant schemas, KMS key, schedulers, retention policy, and fail-closed status surfaces are already deployed. `EXTERNAL-SOURCE-ONBOARDING.md` lists the exact remaining owner-supplied values and approvals.
+
 Inbox placement for the synthetic request remains optional office-side evidence; Resend acceptance and GA4 receipt are complete.
