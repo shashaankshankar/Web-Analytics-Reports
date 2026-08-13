@@ -21,7 +21,7 @@ Updated August 13, 2026.
 | Recurring reporting | Deployed, inactive | PDF generation, delivery ledger, idempotency, error handling, and the daily scheduler are live. The ignored local Resend key returns 401, while the separate valid Cloudflare Worker secret is non-exportable; a new owned reporting credential is required. |
 | OAuth | Deployed, inactive | KMS, PKCE, signed state, `analytics.readonly`, refresh-token encryption, revocation, re-consent, and offboarding are implemented. Google production approval/client secrets are absent. |
 | Retention/deletion | Active | 760-day aggregate, 180-day operations, seven-year audit, and 30-day deletion-grace defaults are active and configurable. A temporary production tenant passed full deletion and cleanup. |
-| External sources | Runtime deployed, inactive by ownership | Version-pinned secret resolution, approval/audit, daily Ads/Search scheduling, idempotent provenance, privacy-validated call/CRM ingestion, and truthful paid/search/business APIs are live; no source account is configured. |
+| External sources | Runtime deployed, inactive by ownership | Version-pinned secret resolution, approval/audit, daily Ads/Search scheduling, idempotent provenance, privacy-validated call/CRM ingestion, and truthful paid/search/business APIs are live. Search Console API is enabled, but operator and runtime credentials see zero properties; no source account is configured. |
 | Database resilience | Active | Cloud SQL has automated backups and point-in-time recovery enabled with seven-day retention. |
 | Secrets | Active | Database and internal trigger values are in Secret Manager. Trigger versions 1 through 4 are disabled; production and every scheduler are pinned to version 5. |
 
