@@ -26,12 +26,11 @@ These are small live counts, not a claim that every measurement event has been m
 
 ## Approved governance and remaining live evidence
 
-Shashaank Shankar approved the healthcare/privacy policy, consent configuration, eleven public routes, measurement contract, mappings, and downstream request semantics on August 12, 2026. The live site now fails closed before analytics initialization when URL data is unsafe. The GA4 Realtime API observed exactly one `form_start` and one `cta_click` during the approval run.
+Shashaank Shankar approved the healthcare/privacy policy, consent configuration, eleven public routes, measurement contract, mappings, and downstream request semantics on August 12, 2026. The live site now fails closed before analytics initialization when URL data is unsafe. The GA4 Realtime API observed exactly one each of `form_start`, `cta_click`, and `phone_click` during the approval run.
 
 Remaining evidence is operational rather than governance approval:
 
 - no authorized production form submission was sent to the dental office, so the three post-success events, Resend acceptance, and inbox delivery were not observed;
-- browser security blocked the `tel:` activation used to generate `phone_click`;
 - the rendered site has no mailto CTA, so `email_click` is not currently applicable;
 - UI-level DebugView/Tag Assistant parameter inspection remains unobserved, while code and fixtures prove the allowlisted payload construction.
 

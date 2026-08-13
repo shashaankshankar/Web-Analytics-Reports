@@ -8,9 +8,9 @@ Updated August 12, 2026. This is the evidence ledger for `Measurement and Report
 | --- | --- | --- |
 | Steps 1-6 | Implemented and approved | Shashaank Shankar approved the healthcare/privacy policy, consent, eleven explicit public routes, contract, mappings, and request semantics on August 12, 2026. Unknown routes and unimplemented route patterns remain prohibited. |
 | Steps 7-9 | Implemented and live | The live site has one collection owner, advanced Consent Mode v2, approved semantic events, and a validated Resend request handoff. |
-| Steps 10-13 | Partially observed live | The 34-check site suite passes. A live unsafe-URL check initialized no analytics, and the GA4 Realtime API observed exactly one `form_start` and one `cta_click`. A production form submission and tel activation were not performed; no mailto CTA exists. |
+| Steps 10-13 | Partially observed live | The 34-check site suite passes. A live unsafe-URL check initialized no analytics, and the GA4 Realtime API observed exactly one each of `form_start`, `cta_click`, and `phone_click`. A production form submission was not performed; no mailto CTA exists. |
 | Step 14 | Live | Measurement health exposes contract, stream, measurement ID, timezone, event, consent/governance, persistence, and collection states. |
-| Phase 1 gate | **Partially passed** | Governance, routes, consent, semantics, privacy fixtures, and two live event receipts pass. Live receipt for the three post-submission events still requires an explicitly authorized test message to the dental office; `phone_click` and absent `email_click` remain unobserved in this run. |
+| Phase 1 gate | **Partially passed** | Governance, routes, consent, semantics, privacy fixtures, and all three applicable non-submission event receipts pass. Live receipt for the three post-submission events still requires an explicitly authorized test message to the dental office; absent `email_click` is documented as not applicable. |
 | Steps 15-39 | Live | FastAPI, Cloud SQL schemas, versioned semantics, ADC credential abstraction, Admin/Data API adapters, fixed reports, exact provenance, daily/period facts, Scheduler, Tasks, workers, retries, replay/dead-letter state, idempotency, reconciliation, and data-quality states are deployed. |
 | Phase 2 gate | Passed for the first-site backend | A repeated production job returned `idempotentReplay: true`; all six report definitions pass GA4 compatibility; all facts link to executions; failed validation jobs replayed; quota, thresholding, restrictions, dimension loss, freshness, and errors are visible. Cross-property failure isolation remains a multi-client test. |
 | Steps 40-49 | Live | Stored product APIs and a private dashboard expose overview, fixed periods/comparisons, acquisition, conversion, landing pages, expected events, measurement health, and sync status. |
@@ -36,8 +36,6 @@ Updated August 12, 2026. This is the evidence ledger for `Measurement and Report
 ## Evidence still required to pass Phase 1
 
 1. An explicitly authorized production test submission to observe `form_submit`, `generate_lead`, and `appointment_request` plus Resend acceptance/inbox delivery.
-2. Live receipt evidence for `phone_click`; browser security blocked the `tel:` navigation during this run.
-3. A documented applicability decision for `email_click`, because the first-site UI currently has no mailto CTA.
-4. DebugView/Tag Assistant parameter inspection if UI-level evidence is required in addition to the passing code/fixture privacy proof.
+2. DebugView/Tag Assistant parameter inspection if UI-level evidence is required in addition to the passing code/fixture privacy proof.
 
 Until these are supplied, governance is approved but the complete Phase 1 evidence state remains `attention_required`.
