@@ -1,6 +1,6 @@
 # External source activation
 
-Updated August 13, 2026. The production platform is prepared for these connections but keeps each one disabled until its owner supplies and approves the required configuration. Secrets belong in Google Secret Manager, never Git, tickets, screenshots, or chat.
+Updated August 13, 2026. The production platform is prepared for these connections and keeps each one disabled until its owner supplies and approves the required configuration. Search Console is the first approved exception and is active through runtime ADC. Secrets belong in Google Secret Manager, never Git, tickets, screenshots, or chat.
 
 ## Recurring email reports
 
@@ -32,7 +32,7 @@ Activation requires explicit ownership and scope for each source:
 | Call tracking | Selected vendor, account/source identifier, credential or signed webhook secret, approved outcome mapping | No recordings, transcripts, phone numbers, or caller identifiers enter analytics storage |
 | CRM/booking | Selected first-party system, credential, source-record identifiers, lifecycle mapping, identity-policy reference | Healthcare/privacy approval for matching outside GA4; only one-way keyed identifiers enter reporting |
 
-The production API currently reports every source as `not_configured`. Do not change that state until source access validates, reconciliation passes, and the documented approval boundary is signed off.
+The production API reports Search Console as `partial_data` because the newly verified property has no finalized approved rows yet and the Search Analytics API exposes partial top-row coverage. Google Ads, call tracking, and CRM/booking remain `not_configured`. Do not activate another source until its access validates, reconciliation passes, and the documented approval boundary is signed off.
 
 ### Secret and activation contract
 

@@ -34,7 +34,7 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 - Period boundaries use the GA4 property timezone. At the verification time, the latest complete date was `2026-08-11`; current-local-day activity is excluded.
 - Re-dispatching the exact `28d` schedule key returned `idempotentReplay: true` for job `dbb74a68-014c-57d7-b30f-a0679d7bc5c5`.
 - Source requests and metadata are stored on every new execution. Daily property, channel, page, and event facts are populated when rows exist. All seven mappings are approved; canonical facts populate only from observed source events.
-- Cloud SQL backups, point-in-time recovery, seven retained backups, and seven days of transaction logs are enabled.
+- Cloud SQL backups, point-in-time recovery, 30 retained backups, and seven days of transaction logs are enabled.
 - On August 13, 2026, an additional explicitly authorized consented production test made exactly one contact POST and returned the visible success state `Your message was sent. We'll get back to you soon.` after the Worker received an accepted Resend response. The message stated that it was a production test to disregard and did not create or confirm an appointment. Analytics consent was stored as granted; inbox placement remains independently unverified.
 - On August 13, 2026, an explicitly authorized consented production test returned the same success state. The GA4 Realtime Data API then returned exactly one each of `form_submit`, `generate_lead`, and `appointment_request` at `minutesAgo=00`.
 - Cloudflare Worker version `aae99152-f821-4aec-bf3c-0db2ebb533ef` explicitly allows approved static fragments such as `/contact#book` but continues to fail closed for unknown fragments such as `#patient-12345`.
