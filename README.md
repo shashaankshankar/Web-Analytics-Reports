@@ -19,7 +19,7 @@ gcloud run services proxy measurement-reporting-platform \
   --project web-analytics-agency-prod
 ```
 
-Then open `http://127.0.0.1:8080/dashboard`.
+Then open `http://127.0.0.1:8080/agency` for operations or `/dashboard` for the client reporting view.
 
 ## Local development
 
@@ -37,6 +37,9 @@ The reporting APIs read stored snapshots, not live GA4 requests. Sync workers ar
 - `/health` is process liveness only.
 - `/ready` verifies live configuration and database migration state.
 - `/dashboard` is the single-client dashboard.
+- `/agency` is the role-restricted portfolio and annotation console.
+- `/api/websites/website_house_of_dental/goals` lists approved goal metrics and manages effective-dated targets for authorized writers.
+- `/api/websites/website_house_of_dental/reports/pdf?period=28d` downloads a tenant-scoped report generated from the stored dashboard snapshots.
 - `/api/websites/website_house_of_dental/sync-status` exposes freshness, failures, and quality.
 - `/api/websites/website_house_of_dental/measurement-health` keeps collection, persistence, assignment, and governance separate.
 - Internal `/internal/schedule` and `/internal/sync` routes require Cloud Run IAM and a rotated Secret Manager trigger.

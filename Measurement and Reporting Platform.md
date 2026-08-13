@@ -1,18 +1,19 @@
 # Measurement and Reporting Platform
 ## Step-by-Step Implementation Plan
 
-## Current implementation status — August 12, 2026
+## Current implementation status — August 13, 2026
 
 House of Dental is the first live website. The reporting service is deployed privately on Cloud Run and uses the official Python GA4 Data API client with read-only Application Default Credentials (ADC).
 
 - Runtime: `app/main.py` served by Uvicorn; no Node.js runtime remains.
-- Production dashboard: `GET /dashboard`; interactive endpoint documentation: `GET /docs`.
+- Production views: tenant-scoped `GET /dashboard` and agency-only `GET /agency`; interactive endpoint documentation: `GET /docs`.
 - Service liveness: `GET /health` and `GET /healthz`; neither proves GA4 access.
 - Production access is private and enforced by Cloud Run IAM; token authentication remains available for local operation.
 - Cloud Scheduler creates five fixed-period jobs through Cloud Tasks. Workers query GA4, preserve execution metadata and quota state, and persist versioned facts/snapshots in Cloud SQL Postgres.
 - The GA4 Admin API verifies the property, active web stream, Measurement ID, key-event inventory, and property timezone. Fixed periods are calculated in that property timezone.
 - Dashboard requests read stored snapshots. Correct period comparisons, retries, freshness, and data-quality states are active; exact job retries are idempotent.
 - The reporting infrastructure is live. Shashaank Shankar approved the healthcare/privacy policy, consent configuration, explicit public routes, contract, mappings, and request semantics on August 12, 2026. On August 13, 2026, the GA4 Realtime Data API observed exactly one each of all six applicable first-site events, including the three post-success events after an authorized consented Resend handoff.
+- The Phase 4 gate passes: HTTP and service tenant context, 28 Postgres RLS policies, three database roles, and adversarial two-organization tests deny cross-tenant reads and writes. Client roles, the simplified portal, approved effective-dated goals, and PDF reports from stored snapshots are live. Recurring email and self-service OAuth remain disabled until owned external configuration is supplied.
 - `REQUIREMENTS-AUDIT.md` records the live evidence and the hard-gated work that cannot proceed without authorized approvals and source-system configuration.
 
 Start locally with:

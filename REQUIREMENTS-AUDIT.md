@@ -17,14 +17,15 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 | Phase 3 gate | Passed for available approved metrics | Dashboard values resolve to stored snapshots, report executions, report version 1, and exact GA4 requests. Outcome metrics remain zero/unapproved rather than being inferred. |
 | Step 50 | Complete | `ONBOARDING.md` documents the repeatable client onboarding path and hard gates. |
 | First production milestone | **Passed** | One real client has approved privacy-safe measurement, complete applicable live event evidence, managed GA4 access, idempotent persisted synchronization, fixed-period reporting, a private dashboard, visible health, and documented onboarding. |
-| Steps 51-57 | In progress | Portfolio, alert, annotation, role, and RLS foundations exist. The milestone gate is now open; full HTTP/service/database tenant isolation and adversarial acceptance remain required. |
-| Steps 58-62 | Gated | Client roles, portal, goals, recurring reports, and OAuth are prohibited before Phase 4 passes. |
+| Steps 51-57 | **Live and passed** | The agency portfolio, alerts, annotations, five-role authorization, tenant service context, 28 RLS policies, separate database roles, and adversarial API/service/database tests are live. A transaction-only second tenant proved cross-tenant reads and writes are denied. |
+| Steps 58-60 | Live foundation | The client view omits agency repair details, client roles are enforced, approved effective-dated goals are tenant-scoped and audited, and PDF reports are generated from the same stored snapshots as the dashboard. No client users or goals have been invented. |
+| Steps 61-62 | Dependency-blocked | Email recipients/provider ownership and a production Google OAuth client/consent screen have not been supplied. The plan forbids pretending these external gates are live. |
 | Steps 63-68 | Gated and dependency-blocked | No approved Google Ads, Search Console, call-tracking, CRM/booking, outcome-matching, or revenue-source authorization/configuration exists. The plan forbids inventing these integrations. |
 | Step 69 | Not justified | BigQuery raw-event analytics is optional and the plan says to add it only when aggregate reporting is insufficient. |
 
 ## Live production evidence
 
-- Cloud Run revision `measurement-reporting-platform-00010-vd5` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
+- Cloud Run revision `measurement-reporting-platform-00013-rtj` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
 - `/ready` reports the `measurement` Cloud SQL database migrated and ready.
 - GA4 Admin API verifies property `549721844`, web stream `15427015396`, measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
 - Cloud Scheduler and Cloud Tasks completed all five fixed-period jobs on revision `00010-vd5` with HTTP 200; queue and failed-job counts returned to zero.
@@ -35,6 +36,8 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 - On August 12, 2026, the explicitly authorized production test returned the visible success state `Your message was sent. We'll get back to you soon.` after the Worker received an accepted Resend response. The message stated that it was a measurement test to disregard and did not create or confirm an appointment. Inbox placement was not independently verified.
 - On August 13, 2026, an explicitly authorized consented production test returned the same success state. The GA4 Realtime Data API then returned exactly one each of `form_submit`, `generate_lead`, and `appointment_request` at `minutesAgo=00`.
 - Cloudflare Worker version `aae99152-f821-4aec-bf3c-0db2ebb533ef` explicitly allows approved static fragments such as `/contact#book` but continues to fail closed for unknown fragments such as `#patient-12345`.
+- Production PostgreSQL has 28 tenant RLS policies and three separated roles. A temporary second organization passed cross-tenant API, service, read, and write denial tests, then rolled back without persisted fixture data.
+- Authenticated production requests return 200 for `/agency`, `/dashboard`, tenant-scoped goals, annotations, portfolio, and the PDF report. The live PDF is one page, parses successfully, and contains the stored reporting content; no goal exists until an authorized user supplies a real target.
 
 ## Additional operational evidence
 

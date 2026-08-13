@@ -1,12 +1,12 @@
 # Backlog
 
-## Agency console and tenant isolation
+## Remaining external production gates
 
-Status: the first-site production milestone and all applicable Phase 1 event receipts pass. Phase 4 work is now authorized by the architecture gate.
+Status: the first-site production milestone, all applicable Phase 1 receipts, and the Phase 4 tenant-isolation gate pass. The client dashboard, approved goals, and PDF report foundation are live.
 
-- Replace the single shared API token model with authenticated organization, company, website, membership, and role context.
-- Enforce tenant context in the service layer and Postgres RLS using separate ingestion, administration, and tenant application roles.
-- Add adversarial API, service, and database isolation tests before enabling the client portal.
-- Complete portfolio, operator-alert, and annotation workflows with incompatible-contract warnings.
+- Supply approved client users and real goal targets before creating either.
+- Supply an approved report recipient and an owned transactional-email credential before enabling recurring email delivery.
+- Create and approve a Google OAuth production client and consent screen before self-service connection can be enabled.
+- Authorize and configure Google Ads, Search Console, call tracking, CRM/booking, and revenue sources before their later-stage integrations can go live.
 
 Inbox placement for the synthetic request remains optional office-side evidence; Resend acceptance and GA4 receipt are complete.
