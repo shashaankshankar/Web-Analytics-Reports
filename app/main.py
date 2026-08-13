@@ -107,7 +107,7 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
     database = database or Database(settings)
     report_sender = ReportEmailSender(settings.report_email_api_key,settings.report_email_from,settings.report_recipients,settings.report_email_endpoint)
-    oauth_manager = OAuthManager(settings.google_oauth_client_id,settings.google_oauth_client_secret,settings.google_oauth_redirect_uri,settings.google_oauth_state_secret,KmsCipher(settings.google_oauth_kms_key),settings.google_oauth_production_approved)
+    oauth_manager = OAuthManager(settings.google_oauth_client_id,settings.google_oauth_client_secret,settings.google_oauth_redirect_uri,settings.google_oauth_state_secret,KmsCipher(settings.google_oauth_kms_key),settings.google_oauth_enabled)
     source_connector_factory = source_connector_factory or SourceConnectorFactory()
 
     @asynccontextmanager
@@ -324,7 +324,7 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
 
     @app.get("/api/oauth/google/status",tags=["Connections"])
     async def oauth_status(context:TenantContext=Depends(require_context)):
-        return {"provider":"google_analytics","configured":oauth_manager.configured,"productionApproved":settings.google_oauth_production_approved,"requiredScopes":[ANALYTICS_READONLY_SCOPE],"connections":await call(database.list_oauth_connections,context)}
+        return {"provider":"google_analytics","configured":oauth_manager.configured,"enabled":settings.google_oauth_enabled,"productionApproved":settings.google_oauth_production_approved,"requiredScopes":[ANALYTICS_READONLY_SCOPE],"connections":await call(database.list_oauth_connections,context)}
 
     @app.post("/api/oauth/google/authorize",tags=["Connections"])
     async def oauth_authorize(context:TenantContext=Depends(require_context)):

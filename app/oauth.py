@@ -56,11 +56,11 @@ class OAuthManager:
     redirect_uri: str
     state_secret: str
     cipher: KmsCipher
-    production_approved: bool = False
+    enabled: bool = False
 
     @property
     def configured(self) -> bool:
-        return bool(self.production_approved and self.client_id and self.client_secret and self.redirect_uri.startswith("https://") and len(self.state_secret)>=32 and self.cipher.configured)
+        return bool(self.enabled and self.client_id and self.client_secret and self.redirect_uri.startswith("https://") and len(self.state_secret)>=32 and self.cipher.configured)
 
     def create_authorization(self, organization_id: str, user_id: str) -> dict:
         if not self.configured: raise RuntimeError("google_oauth_not_configured")

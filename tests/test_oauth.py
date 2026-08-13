@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.config import Settings, load_site
 from app.oauth import ANALYTICS_READONLY_SCOPE, KmsCipher, OAuthManager
 
 
@@ -36,7 +37,22 @@ def test_kms_cipher_uses_authenticated_encryption_context():
     assert cipher.decrypt(b"ciphertext","context") == "plaintext"
 
 
-def test_oauth_is_disabled_without_external_production_approval():
+def test_oauth_is_disabled_without_explicit_enablement():
     value=OAuthManager("client","secret","https://example.com/callback","s"*32,KmsCipher(""),False)
     assert value.configured is False
     with pytest.raises(RuntimeError,match="not_configured"): value.create_authorization("org","user")
+
+
+def test_testing_oauth_can_be_enabled_without_public_production_approval():
+    settings=Settings.from_environment({
+        "GOOGLE_OAUTH_ENABLED":"true",
+        "GOOGLE_OAUTH_PRODUCTION_APPROVED":"false",
+    })
+    assert settings.google_oauth_enabled is True
+    assert settings.google_oauth_production_approved is False
+
+
+def test_oauth_production_approval_requires_explicit_enablement():
+    settings=Settings.from_environment({"GOOGLE_OAUTH_PRODUCTION_APPROVED":"true"})
+    with pytest.raises(RuntimeError,match="oauth_production_approval_requires_enablement"):
+        settings.validate(load_site())

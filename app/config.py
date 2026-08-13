@@ -63,6 +63,7 @@ class Settings:
     google_oauth_redirect_uri: str = ""
     google_oauth_state_secret: str = ""
     google_oauth_kms_key: str = ""
+    google_oauth_enabled: bool = False
     google_oauth_production_approved: bool = False
     @property
     def live_enabled(self): return self.mode == "live" and self.data_api_enabled and self.live_approved
@@ -100,6 +101,7 @@ class Settings:
             env.get("GOOGLE_OAUTH_REDIRECT_URI", ""),
             env.get("GOOGLE_OAUTH_STATE_SECRET", ""),
             env.get("GOOGLE_OAUTH_KMS_KEY", ""),
+            env.get("GOOGLE_OAUTH_ENABLED") == "true",
             env.get("GOOGLE_OAUTH_PRODUCTION_APPROVED") == "true",
         )
 
@@ -120,6 +122,7 @@ class Settings:
             raise RuntimeError("invalid_report_recipients_json")
         return value
     def validate(self, site: Site):
+        if self.google_oauth_production_approved and not self.google_oauth_enabled: raise RuntimeError("oauth_production_approval_requires_enablement")
         if not self.live_enabled: return
         if self.auth_mode not in {"token", "cloud_run"}: raise RuntimeError("unsupported_auth_mode")
         if self.auth_mode == "token" and len(self.api_token) < 32: raise RuntimeError("platform_api_token_required")
