@@ -13,11 +13,12 @@ dependencies = [
   "google-auth==2.56.3",
   "google-cloud-tasks==2.21.0",
   "psycopg[binary,pool]==3.3.3",
+  "reportlab==4.4.10",
   "uvicorn==0.52.1",
 ]
 
 [project.optional-dependencies]
-dev = ["httpx==0.28.1", "pytest==9.1.1"]
+dev = ["httpx==0.28.1", "pypdf==6.8.0", "pytest==9.1.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

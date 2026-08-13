@@ -7,7 +7,7 @@ from typing import Literal
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -17,6 +17,7 @@ from .auth import AGENCY_ROLES, TenantContext
 from .credentials import AdcCredential, GA4Admin
 from .dashboard import agency_dashboard_html, dashboard_html
 from .ga4 import GA4Reporter
+from .reports import build_client_pdf
 from .storage import Database
 from .sync import SyncEngine
 from .tasks import PERIODS, TaskQueue
@@ -34,6 +35,13 @@ class AnnotationRequest(BaseModel):
     date: date
     type: Literal["site_launch", "campaign_launch", "tracking_change", "website_redesign", "major_outage", "measurement_change"]
     note: str
+
+
+class GoalRequest(BaseModel):
+    metric: str
+    target: float
+    effectiveFrom: date
+    effectiveTo: date | None = None
 
 
 def create_app(settings=None, reporter=None, database=None, task_queue=None):
@@ -174,6 +182,28 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         except HTTPException: raise
         except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
         return {"websiteId":website_id,"annotation":value}
+
+    @app.get("/api/websites/{website_id}/goals",tags=["Reporting"])
+    async def goals(website_id:str,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        return {"websiteId":website_id,"goals":await call(database.list_goals,context,website_id),"approvedMetrics":await call(database.list_goal_metrics,context,website_id)}
+
+    @app.post("/api/websites/{website_id}/goals",status_code=201,tags=["Reporting"])
+    async def add_goal(website_id:str,request:GoalRequest,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        if request.target < 0 or request.effectiveTo and request.effectiveTo < request.effectiveFrom: raise HTTPException(status_code=422,detail="invalid_goal")
+        try: value=await call(database.create_goal,context,website_id,request.metric,request.target,request.effectiveFrom,request.effectiveTo)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        return {"websiteId":website_id,"goal":value}
+
+    @app.get("/api/websites/{website_id}/reports/pdf",tags=["Reporting"])
+    async def report_pdf(website_id:str,period:Period="28d",context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        overview_data=await call(snapshot,context,website_id,"overview",period)
+        acquisition_data=await call(snapshot,context,website_id,"acquisition",period)
+        annotation_data=await call(database.list_annotations,context,website_id)
+        content=await call(build_client_pdf,site,period,overview_data,acquisition_data,annotation_data)
+        return Response(content=content,media_type="application/pdf",headers={"Content-Disposition":f'attachment; filename="{website_id}-{period}-report.pdf"'})
 
     @app.post("/internal/schedule",dependencies=[Depends(require_internal)],include_in_schema=False)
     async def schedule(x_cloudscheduler_scheduletime: str | None = Header(default=None)):

@@ -11,7 +11,7 @@ class StubReporter:
 
 class StubDatabase:
     configured=True
-    def __init__(self,role="agency_owner"): self.role=role; self.annotations=[]
+    def __init__(self,role="agency_owner"): self.role=role; self.annotations=[]; self.goals=[]
     def close(self): pass
     def health(self): return {"status":"ok","database":"measurement","migrated":True}
     def authorize_context(self,email,organization_id=None):
@@ -35,6 +35,12 @@ class StubDatabase:
     def create_annotation(self,context,website_id,annotation_date,annotation_type,note):
         context.require_role(frozenset({"agency_owner","agency_admin","client_admin"}))
         value={"id":"annotation-1","date":annotation_date.isoformat(),"type":annotation_type,"note":note,"createdAt":"2026-08-13T00:00:00+00:00"}; self.annotations.append(value); return value
+    def list_goals(self,context,website_id): return self.goals
+    def list_goal_metrics(self,context,website_id): return [{"metric":"generated_leads","version":1,"aggregation":"SUM"}]
+    def create_goal(self,context,website_id,metric,target,effective_from,effective_to):
+        context.require_role(frozenset({"agency_owner","agency_admin","client_admin"}))
+        if metric != "generated_leads": raise PermissionError("website_or_approved_metric_not_authorized")
+        value={"id":"goal-1","metric":metric,"target":target,"effectiveFrom":effective_from.isoformat(),"effectiveTo":None,"createdAt":"2026-08-13T00:00:00+00:00"}; self.goals.append(value); return value
 
 
 def settings(): return Settings("live",True,True,"549721844","15427015396","x"*32,"127.0.0.1",3000,database_url="postgresql://configured",operator_email="operator@example.com")
@@ -92,3 +98,21 @@ def test_authorized_operator_can_create_and_read_annotations():
         assert created.status_code == 201
         listed=client.get("/api/websites/website_house_of_dental/annotations",headers=headers())
         assert listed.status_code == 200 and listed.json()["annotations"][0]["type"] == "tracking_change"
+
+
+def test_client_reports_and_approved_goals_use_tenant_scoped_data():
+    database=StubDatabase(role="client_admin")
+    with TestClient(create_app(settings(),StubReporter(),database)) as client:
+        goal=client.post("/api/websites/website_house_of_dental/goals",headers=headers(),json={"metric":"generated_leads","target":50,"effectiveFrom":"2026-09-01"})
+        assert goal.status_code == 201 and goal.json()["goal"]["target"] == 50
+        assert client.post("/api/websites/website_house_of_dental/goals",headers=headers(),json={"metric":"unapproved_revenue","target":1,"effectiveFrom":"2026-09-01"}).status_code == 403
+        pdf=client.get("/api/websites/website_house_of_dental/reports/pdf?period=28d",headers=headers())
+        assert pdf.status_code == 200 and pdf.headers["content-type"] == "application/pdf" and pdf.content.startswith(b"%PDF")
+
+
+def test_client_viewer_can_read_but_not_write_goals():
+    database=StubDatabase(role="client_viewer")
+    with TestClient(create_app(settings(),StubReporter(),database)) as client:
+        assert client.get("/api/websites/website_house_of_dental/goals",headers=headers()).status_code == 200
+        response=client.post("/api/websites/website_house_of_dental/goals",headers=headers(),json={"metric":"generated_leads","target":50,"effectiveFrom":"2026-09-01"})
+        assert response.status_code == 403

@@ -327,6 +327,61 @@ class Database:
             connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,'annotation.created','annotation',%s,%s)", (context.organization_id,context.user_id,row["id"],json.dumps({"websiteId":website_id,"type":annotation_type})))
         return {"id":str(row["id"]),"date":row["annotation_date"].isoformat(),"type":row["annotation_type"],"note":row["note"],"createdAt":row["created_at"].isoformat()}
 
+    def list_goals(self, context: TenantContext, website_id: str) -> list[dict]:
+        with self.tenant_connection(context) as connection:
+            rows = connection.execute("""
+                SELECT g.id,m.slug metric,g.target_numeric,g.effective_from,g.effective_to,g.created_at,
+                       v.version,v.aggregation
+                  FROM app.client_goals g
+                  JOIN app.metric_definition_versions v ON v.id=g.metric_definition_version_id
+                  JOIN app.metric_definitions m ON m.id=v.metric_definition_id
+                  JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=g.website_id
+                 WHERE p.public_id=%s AND v.approval_status='approved'
+                 ORDER BY g.effective_from DESC,m.slug
+            """, (website_id,)).fetchall()
+        return [{"id":str(row["id"]),"metric":row["metric"],"metricVersion":row["version"],
+                 "aggregation":row["aggregation"],"target":float(row["target_numeric"]),
+                 "effectiveFrom":row["effective_from"].isoformat(),
+                 "effectiveTo":row["effective_to"].isoformat() if row["effective_to"] else None,
+                 "createdAt":row["created_at"].isoformat()} for row in rows]
+
+    def list_goal_metrics(self, context: TenantContext, website_id: str) -> list[dict]:
+        if not self.website_authorized(context, website_id):
+            raise PermissionError("website_not_authorized")
+        with self.tenant_connection(context) as connection:
+            rows = connection.execute("""
+                SELECT DISTINCT ON (m.slug) m.slug,v.version,v.aggregation
+                  FROM app.metric_definitions m
+                  JOIN app.metric_definition_versions v ON v.metric_definition_id=m.id
+                 WHERE v.approval_status='approved'
+                 ORDER BY m.slug,v.version DESC
+            """).fetchall()
+        return [{"metric":row["slug"],"version":row["version"],"aggregation":row["aggregation"]} for row in rows]
+
+    def create_goal(self, context: TenantContext, website_id: str, metric: str, target: float,
+                    effective_from: date, effective_to: date | None) -> dict:
+        context.require_role(frozenset({"agency_owner", "agency_admin", "client_admin"}))
+        with self.tenant_connection(context) as connection:
+            row = connection.execute("""
+                INSERT INTO app.client_goals(website_id,metric_definition_version_id,target_numeric,effective_from,effective_to)
+                SELECT p.resource_id,v.id,%s,%s,%s
+                  FROM app.resource_identifiers p
+                  JOIN LATERAL (
+                    SELECT v.id FROM app.metric_definition_versions v
+                    JOIN app.metric_definitions m ON m.id=v.metric_definition_id
+                    WHERE m.slug=%s AND v.approval_status='approved'
+                    ORDER BY v.version DESC LIMIT 1
+                  ) v ON true
+                 WHERE p.resource_type='website' AND p.public_id=%s
+                RETURNING id,metric_definition_version_id,target_numeric,effective_from,effective_to,created_at
+            """, (target,effective_from,effective_to,metric,website_id)).fetchone()
+            if not row: raise PermissionError("website_or_approved_metric_not_authorized")
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,'goal.created','client_goal',%s,%s)", (context.organization_id,context.user_id,row["id"],json.dumps({"websiteId":website_id,"metric":metric})))
+        return {"id":str(row["id"]),"metric":metric,"target":float(row["target_numeric"]),
+                "effectiveFrom":row["effective_from"].isoformat(),
+                "effectiveTo":row["effective_to"].isoformat() if row["effective_to"] else None,
+                "createdAt":row["created_at"].isoformat()}
+
     def record_measurement_health(self, assignment_id, health: dict):
         with self.connection() as connection:
             connection.execute("INSERT INTO analytics.measurement_health_checks(assignment_id,status,details_json) VALUES(%s,%s,%s)",(assignment_id,health["status"],json.dumps(health)))
