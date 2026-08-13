@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
 from contextlib import contextmanager
@@ -94,7 +95,9 @@ class Database:
                 connection.execute((ROOT / "infra/postgres/003_phase4_tenant_isolation.sql").read_text())
             if "004_phase5_reporting_oauth" not in applied:
                 connection.execute((ROOT / "infra/postgres/004_phase5_reporting_oauth.sql").read_text())
-        return {"status": "ok", "migration": "004_phase5_reporting_oauth"}
+            if "005_retention_offboarding" not in applied:
+                connection.execute((ROOT / "infra/postgres/005_retention_offboarding.sql").read_text())
+        return {"status": "ok", "migration": "005_retention_offboarding"}
 
     def seed_first_site(self, site: Site) -> dict:
         ids = {
@@ -552,6 +555,112 @@ class Database:
                 connection.execute("UPDATE app.oauth_credentials SET revoked_at=now() WHERE analytics_connection_id=%s::uuid",(connection_id,))
             connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,%s,'analytics_connection',%s,%s)",(context.organization_id,context.user_id,"oauth.offboarded" if delete_token else "oauth.revoked",connection_id,json.dumps({"tokenDeleted":delete_token})))
         return True
+
+    def retention_policy(self, context: TenantContext) -> dict:
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("SELECT aggregate_days,operations_days,audit_days,deletion_grace_days,updated_at FROM app.data_retention_policies WHERE organization_id=%s::uuid",(context.organization_id,)).fetchone()
+        if not row: raise PermissionError("retention_policy_not_found")
+        return {"aggregateDays":row["aggregate_days"],"operationsDays":row["operations_days"],"auditDays":row["audit_days"],"deletionGraceDays":row["deletion_grace_days"],"updatedAt":row["updated_at"].isoformat()}
+
+    def deletion_preview(self, context: TenantContext, website_id: str) -> dict:
+        context.require_role(frozenset({"agency_owner","agency_admin","client_admin"}))
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("""
+                SELECT p.resource_id website_id,c.id company_id,
+                  (SELECT count(*) FROM app.website_analytics_assignments a WHERE a.website_id=p.resource_id) assignments,
+                  (SELECT count(*) FROM analytics.report_executions e JOIN app.website_analytics_assignments a ON a.id=e.assignment_id WHERE a.website_id=p.resource_id) executions,
+                  (SELECT count(*) FROM app.annotations x WHERE x.website_id=p.resource_id) annotations,
+                  (SELECT count(*) FROM app.client_goals x WHERE x.website_id=p.resource_id) goals,
+                  (SELECT count(*) FROM app.recurring_reports x WHERE x.website_id=p.resource_id) recurring_reports
+                FROM app.resource_identifiers p JOIN app.websites w ON w.id=p.resource_id JOIN app.companies c ON c.id=w.company_id
+                WHERE p.resource_type='website' AND p.public_id=%s
+            """,(website_id,)).fetchone()
+        if not row: raise PermissionError("website_not_authorized")
+        return {"websiteId":website_id,"assignments":row["assignments"],"reportExecutions":row["executions"],"annotations":row["annotations"],"goals":row["goals"],"recurringReports":row["recurring_reports"],"deletesWebsite":True,"deletesExclusiveConnectionCredentials":True,"clientMustRemoveServiceAccountFromGa4":True}
+
+    def request_offboarding(self, context: TenantContext, website_id: str, confirmation: str) -> dict:
+        context.require_role(frozenset({"agency_owner","agency_admin"}))
+        if not hmac.compare_digest(confirmation,website_id): raise PermissionError("offboarding_confirmation_mismatch")
+        preview=self.deletion_preview(context,website_id); policy=self.retention_policy(context)
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("""
+                INSERT INTO app.deletion_requests(organization_id,website_id,requested_by,status,execute_after,confirmation_public_id,preview_json)
+                SELECT %s::uuid,p.resource_id,%s::uuid,'scheduled',now()+(%s||' days')::interval,%s,%s
+                  FROM app.resource_identifiers p WHERE p.resource_type='website' AND p.public_id=%s
+                RETURNING id,execute_after
+            """,(context.organization_id,context.user_id,policy["deletionGraceDays"],website_id,json.dumps(preview),website_id)).fetchone()
+            if not row: raise PermissionError("website_not_authorized")
+            connection.execute("UPDATE app.recurring_reports SET enabled=false,disabled_at=now() WHERE website_id IN (SELECT resource_id FROM app.resource_identifiers WHERE resource_type='website' AND public_id=%s)",(website_id,))
+            connection.execute("UPDATE app.website_analytics_assignments SET status='disabled',effective_to=current_date WHERE website_id IN (SELECT resource_id FROM app.resource_identifiers WHERE resource_type='website' AND public_id=%s)",(website_id,))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,'website.offboarding_scheduled','website',NULL,%s)",(context.organization_id,context.user_id,json.dumps({"websiteId":website_id,"deletionRequestId":str(row["id"]),"executeAfter":row["execute_after"].isoformat()})))
+        return {"deletionRequestId":str(row["id"]),"websiteId":website_id,"status":"scheduled","executeAfter":row["execute_after"].isoformat(),"preview":preview,"revocableDuringGracePeriod":True}
+
+    def cancel_offboarding(self, context: TenantContext, request_id: str) -> bool:
+        context.require_role(frozenset({"agency_owner","agency_admin"}))
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("UPDATE app.deletion_requests SET status='cancelled',cancelled_at=now() WHERE id=%s::uuid AND status='scheduled' RETURNING id",(request_id,)).fetchone()
+            if row: connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,'website.offboarding_cancelled','deletion_request',%s,'{}')",(context.organization_id,context.user_id,row["id"]))
+        return bool(row)
+
+    def purge_retention(self) -> dict:
+        with self.connection() as connection:
+            operations=connection.execute("""
+                DELETE FROM analytics.report_deliveries d USING app.recurring_reports r,app.websites w,app.companies c,app.data_retention_policies p
+                 WHERE d.recurring_report_id=r.id AND r.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id
+                   AND d.created_at<now()-(p.operations_days||' days')::interval RETURNING d.id
+            """).rowcount
+            states=connection.execute("DELETE FROM app.oauth_authorization_states WHERE expires_at<now()-interval '1 day' RETURNING id").rowcount
+            audits=connection.execute("""
+                DELETE FROM audit.events e USING app.data_retention_policies p
+                 WHERE e.organization_id=p.organization_id AND e.created_at<now()-(p.audit_days||' days')::interval RETURNING e.id
+            """).rowcount
+        return {"expiredReportDeliveries":operations,"expiredOauthStates":states,"expiredAuditEvents":audits}
+
+    def execute_due_deletions(self, limit: int = 5) -> list[dict]:
+        results=[]
+        with self.connection() as connection:
+            requests=connection.execute("SELECT id,organization_id,website_id,confirmation_public_id FROM app.deletion_requests WHERE status='scheduled' AND execute_after<=now() ORDER BY execute_after LIMIT %s FOR UPDATE SKIP LOCKED",(limit,)).fetchall()
+            for request in requests:
+                website_id=request["website_id"]
+                connection.execute("UPDATE app.deletion_requests SET status='executing' WHERE id=%s",(request["id"],))
+                company=connection.execute("SELECT company_id FROM app.websites WHERE id=%s",(website_id,)).fetchone()
+                assignments=[row["id"] for row in connection.execute("SELECT id FROM app.website_analytics_assignments WHERE website_id=%s",(website_id,)).fetchall()]
+                connections=[row["analytics_connection_id"] for row in connection.execute("""
+                    SELECT DISTINCT a.analytics_connection_id FROM app.website_analytics_assignments a
+                     WHERE a.website_id=%s AND NOT EXISTS (
+                       SELECT 1 FROM app.website_analytics_assignments other WHERE other.analytics_connection_id=a.analytics_connection_id AND other.website_id<>%s
+                     )
+                """,(website_id,website_id)).fetchall()]
+                counts={}
+                counts["reportDeliveries"]=connection.execute("DELETE FROM analytics.report_deliveries WHERE website_id=%s RETURNING id",(website_id,)).rowcount
+                counts["recurringReports"]=connection.execute("DELETE FROM app.recurring_reports WHERE website_id=%s RETURNING id",(website_id,)).rowcount
+                for table in ("daily_property_metrics","daily_channel_metrics","daily_page_metrics","daily_event_metrics","period_metric_snapshots","daily_canonical_metrics","report_snapshots","operator_alerts","measurement_health_checks","data_quality_status"):
+                    counts[table]=connection.execute(sql.SQL("DELETE FROM analytics.{} WHERE assignment_id=ANY(%s) RETURNING 1").format(sql.Identifier(table)),(assignments,)).rowcount if assignments else 0
+                counts["reportExecutions"]=connection.execute("DELETE FROM analytics.report_executions WHERE assignment_id=ANY(%s) RETURNING id",(assignments,)).rowcount if assignments else 0
+                counts["syncJobs"]=connection.execute("DELETE FROM analytics.sync_jobs WHERE assignment_id=ANY(%s) RETURNING id",(assignments,)).rowcount if assignments else 0
+                counts["syncRuns"]=connection.execute("DELETE FROM analytics.sync_runs WHERE assignment_id=ANY(%s) RETURNING id",(assignments,)).rowcount if assignments else 0
+                counts["annotations"]=connection.execute("DELETE FROM app.annotations WHERE website_id=%s RETURNING id",(website_id,)).rowcount
+                counts["goals"]=connection.execute("DELETE FROM app.client_goals WHERE website_id=%s RETURNING id",(website_id,)).rowcount
+                counts["eventMappings"]=connection.execute("DELETE FROM app.event_mappings WHERE website_id=%s RETURNING id",(website_id,)).rowcount
+                counts["contractAssignments"]=connection.execute("DELETE FROM app.website_measurement_contract_assignments WHERE website_id=%s RETURNING website_id",(website_id,)).rowcount
+                counts["analyticsAssignments"]=connection.execute("DELETE FROM app.website_analytics_assignments WHERE website_id=%s RETURNING id",(website_id,)).rowcount
+                connection.execute("DELETE FROM app.resource_identifiers WHERE resource_type='website' AND resource_id=%s",(website_id,))
+                counts["website"]=connection.execute("DELETE FROM app.websites WHERE id=%s RETURNING id",(website_id,)).rowcount
+                for connection_id in connections:
+                    property_ids=[row["id"] for row in connection.execute("SELECT id FROM app.ga_properties WHERE analytics_connection_id=%s",(connection_id,)).fetchall()]
+                    if property_ids: connection.execute("DELETE FROM app.ga_data_streams WHERE ga_property_id=ANY(%s)",(property_ids,))
+                    connection.execute("DELETE FROM app.ga_properties WHERE analytics_connection_id=%s",(connection_id,))
+                    connection.execute("DELETE FROM app.oauth_credentials WHERE analytics_connection_id=%s",(connection_id,))
+                    connection.execute("DELETE FROM app.analytics_connections WHERE id=%s",(connection_id,))
+                if company:
+                    remaining=connection.execute("SELECT count(*) count FROM app.websites WHERE company_id=%s",(company["company_id"],)).fetchone()["count"]
+                    if not remaining:
+                        connection.execute("DELETE FROM app.resource_identifiers WHERE resource_type='company' AND resource_id=%s",(company["company_id"],))
+                        counts["company"]=connection.execute("DELETE FROM app.companies WHERE id=%s RETURNING id",(company["company_id"],)).rowcount
+                connection.execute("UPDATE app.deletion_requests SET status='completed',result_json=%s,completed_at=now() WHERE id=%s",(json.dumps(counts),request["id"]))
+                connection.execute("INSERT INTO audit.events(organization_id,action,target_type,target_id,detail_json) VALUES(%s,'website.deletion_completed','deletion_request',%s,%s)",(request["organization_id"],request["id"],json.dumps({"websiteId":request["confirmation_public_id"],"counts":counts})))
+                results.append({"deletionRequestId":str(request["id"]),"websiteId":request["confirmation_public_id"],"status":"completed","counts":counts})
+        return results
 
     def record_measurement_health(self, assignment_id, health: dict):
         with self.connection() as connection:

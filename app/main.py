@@ -61,6 +61,10 @@ class OAuthRevokeRequest(BaseModel):
     deleteToken: bool = False
 
 
+class OffboardingRequest(BaseModel):
+    confirmationWebsiteId: str
+
+
 def create_app(settings=None, reporter=None, database=None, task_queue=None):
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
     database = database or Database(settings)
@@ -317,6 +321,32 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         except Exception as error: raise HTTPException(status_code=502,detail=f"google_oauth_revocation_failed:{type(error).__name__}") from error
         if not removed: raise HTTPException(status_code=404,detail="oauth_connection_not_found")
         return {"connectionId":connection_id,"status":"offboarded" if request.deleteToken else "revoked","tokenDeleted":request.deleteToken}
+
+    @app.get("/api/websites/{website_id}/offboarding-preview",tags=["Governance"])
+    async def offboarding_preview(website_id:str,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        try: preview=await call(database.deletion_preview,context,website_id)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        return {"preview":preview,"retention":await call(database.retention_policy,context)}
+
+    @app.post("/api/websites/{website_id}/offboarding",status_code=202,tags=["Governance"])
+    async def request_offboarding(website_id:str,request:OffboardingRequest,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        try: return await call(database.request_offboarding,context,website_id,request.confirmationWebsiteId)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+
+    @app.delete("/api/offboarding/{request_id}",status_code=204,tags=["Governance"])
+    async def cancel_offboarding(request_id:str,context:TenantContext=Depends(require_context)):
+        try: cancelled=await call(database.cancel_offboarding,context,request_id)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        if not cancelled: raise HTTPException(status_code=404,detail="offboarding_request_not_found")
+        return Response(status_code=204)
+
+    @app.post("/internal/retention",dependencies=[Depends(require_internal)],include_in_schema=False)
+    async def retention():
+        expired=await call(database.purge_retention)
+        deletions=await call(database.execute_due_deletions,5)
+        return {"status":"ok","retention":expired,"deletions":deletions}
 
     @app.post("/internal/schedule",dependencies=[Depends(require_internal)],include_in_schema=False)
     async def schedule(x_cloudscheduler_scheduletime: str | None = Header(default=None)):

@@ -44,6 +44,13 @@ class StubDatabase:
     def list_recurring_reports(self,context,website_id): return []
     def due_recurring_reports(self,limit=20): return []
     def list_oauth_connections(self,context): return []
+    def retention_policy(self,context): return {"aggregateDays":760,"operationsDays":180,"auditDays":2555,"deletionGraceDays":30,"updatedAt":"2026-08-13T00:00:00+00:00"}
+    def deletion_preview(self,context,website_id):
+        context.require_role(frozenset({"agency_owner","agency_admin","client_admin"})); return {"websiteId":website_id,"reportExecutions":5}
+    def request_offboarding(self,context,website_id,confirmation):
+        context.require_role(frozenset({"agency_owner","agency_admin"}))
+        if confirmation != website_id: raise PermissionError("offboarding_confirmation_mismatch")
+        return {"websiteId":website_id,"status":"scheduled","executeAfter":"2026-09-12T00:00:00+00:00"}
 
 
 def settings(): return Settings("live",True,True,"549721844","15427015396","x"*32,"127.0.0.1",3000,database_url="postgresql://configured",operator_email="operator@example.com")
@@ -134,3 +141,16 @@ def test_oauth_stays_fail_closed_until_production_configuration_is_approved():
         status=client.get("/api/oauth/google/status",headers=headers())
         assert status.status_code == 200 and status.json()["configured"] is False
         assert client.post("/api/oauth/google/authorize",headers=headers()).status_code == 503
+
+
+def test_offboarding_requires_agency_role_and_exact_confirmation():
+    with TestClient(create_app(settings(),StubReporter(),StubDatabase())) as client:
+        preview=client.get("/api/websites/website_house_of_dental/offboarding-preview",headers=headers())
+        assert preview.status_code == 200 and preview.json()["retention"]["deletionGraceDays"] == 30
+        wrong=client.post("/api/websites/website_house_of_dental/offboarding",headers=headers(),json={"confirmationWebsiteId":"wrong"})
+        assert wrong.status_code == 403
+        valid=client.post("/api/websites/website_house_of_dental/offboarding",headers=headers(),json={"confirmationWebsiteId":"website_house_of_dental"})
+        assert valid.status_code == 202 and valid.json()["status"] == "scheduled"
+    with TestClient(create_app(settings(),StubReporter(),StubDatabase(role="client_admin"))) as client:
+        assert client.get("/api/websites/website_house_of_dental/offboarding-preview",headers=headers()).status_code == 200
+        assert client.post("/api/websites/website_house_of_dental/offboarding",headers=headers(),json={"confirmationWebsiteId":"website_house_of_dental"}).status_code == 403
