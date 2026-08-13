@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import base64
-import binascii
-import json
+from typing import Callable
+
+from google.auth.transport.requests import Request as GoogleRequest
+from google.oauth2 import id_token
 
 
 AGENCY_ROLES = frozenset({"agency_owner", "agency_admin", "agency_analyst"})
@@ -12,17 +13,20 @@ ALL_ROLES = AGENCY_ROLES | CLIENT_ROLES
 WRITE_ROLES = frozenset({"agency_owner", "agency_admin", "client_admin"})
 
 
-def cloud_identity_email(token: str, fallback: str) -> str:
-    if not token or token.count(".") != 2: return fallback
+def google_token_claims(token: str) -> dict:
+    return id_token.verify_oauth2_token(token,GoogleRequest(),audience=None)
+
+
+def cloud_identity_email(token: str, fallback: str, verifier: Callable[[str],dict] = google_token_claims) -> str:
+    if not token: return fallback
     try:
-        payload=token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        claims=json.loads(base64.urlsafe_b64decode(payload))
+        claims=verifier(token)
         email=str(claims.get("email","")).strip().lower()
         if claims.get("email_verified") is not True or claims.get("iss") not in {"https://accounts.google.com","accounts.google.com"} or "@" not in email:
             raise ValueError
         return email
-    except (ValueError,json.JSONDecodeError,UnicodeDecodeError,binascii.Error):
+    except Exception as error:
+        if isinstance(error,PermissionError): raise
         raise PermissionError("invalid_cloud_identity")
 
 
