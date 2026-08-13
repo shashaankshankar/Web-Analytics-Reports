@@ -18,7 +18,7 @@ The runtime image is multi-stage, digest-pinned, and distroless. Production imag
 
 ## Database
 
-Cloud SQL instance `measurement-db` is regional HA, deletion-protected, encrypted-only, retains 30 automated backups, and has seven-day point-in-time recovery. Query Insights is enabled without recording client addresses.
+Cloud SQL instance `measurement-db` is regional HA, deletion-protected, encrypted-only, and requires the Cloud SQL Auth Proxy or a supported Cloud SQL connector. It retains 30 automated backups and seven days of point-in-time recovery. Query Insights is enabled without recording client addresses. Maintenance uses the stable production channel on Sunday at 06:00 UTC.
 
 ## Monitoring
 
@@ -35,12 +35,15 @@ The deployed dashboard is defined by `monitoring-dashboard.json`. Active alert p
 
 Alerts notify the project-owned operator channel. Log-based metrics `measurement_scheduler_failures` and `measurement_runtime_errors` back the two control-plane policies. The default log bucket retains 180 days.
 
+Project IAM enables Admin Read, Data Read, and Data Write audit logs for `allServices` with no exempt principals. Organization policies prevent user-managed service-account key creation and upload; the project currently has no user-managed service-account keys.
+
 The billing account contains only this production project and has a $25 monthly budget with notifications at 50%, 90%, 100%, and 150% of current spend.
 
 ## Secrets and encryption
 
 - Internal trigger secret versions are pinned; disabled versions must never be re-enabled.
 - The OAuth refresh-token KMS key rotates every 90 days.
+- Scheduler and task invocation use `measurement-scheduler`, the only direct Cloud Run service-account invoker; runtime data access and task enqueueing use `analytics-reporting-reader`.
 - Secret values must not be printed by configuration audits; inspect only secret names, pinned versions, and state.
 
 ## Artifact lifecycle
