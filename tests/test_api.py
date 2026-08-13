@@ -53,6 +53,9 @@ class StubDatabase:
         return {"websiteId":website_id,"status":"scheduled","executeAfter":"2026-09-12T00:00:00+00:00"}
     def external_source_status(self,context,website_id): return [{"source":"google_ads","status":"not_configured"},{"source":"search_console","status":"not_configured"},{"source":"call_tracking","status":"not_configured"},{"source":"crm_booking","status":"not_configured"}]
     def business_outcomes(self,context,website_id,start_date,end_date): return {"websiteId":website_id,"outcomes":{},"costPerQualifiedLead":None,"caveats":["Null means unavailable"]}
+    def list_memberships(self,context): return [{"userId":"user-1","email":"operator@example.com","role":self.role}]
+    def upsert_membership(self,context,email,role):
+        context.require_role(frozenset({"agency_owner","agency_admin"})); return {"userId":"user-2","email":email,"role":role}
 
 
 def settings(): return Settings("live",True,True,"549721844","15427015396","x"*32,"127.0.0.1",3000,database_url="postgresql://configured",operator_email="operator@example.com")
@@ -165,3 +168,12 @@ def test_external_sources_and_business_outcomes_do_not_invent_missing_data():
         outcomes=client.get("/api/websites/website_house_of_dental/business-outcomes?startDate=2026-08-01&endDate=2026-08-31",headers=headers())
         assert outcomes.status_code == 200 and outcomes.json()["costPerQualifiedLead"] is None
         assert client.get("/api/websites/website_house_of_dental/business-outcomes?startDate=2026-08-31&endDate=2026-08-01",headers=headers()).status_code == 422
+
+
+def test_agency_owner_can_manage_memberships_but_viewer_cannot():
+    with TestClient(create_app(settings(),StubReporter(),StubDatabase())) as client:
+        assert client.get("/api/memberships",headers=headers()).status_code == 200
+        created=client.post("/api/memberships",headers=headers(),json={"email":"client@example.com","role":"client_viewer"})
+        assert created.status_code == 201 and created.json()["cloudRunIamRequired"] is True
+    with TestClient(create_app(settings(),StubReporter(),StubDatabase(role="client_viewer"))) as client:
+        assert client.get("/api/memberships",headers=headers()).status_code == 403

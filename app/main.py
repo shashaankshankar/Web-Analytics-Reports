@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .config import Settings, load_dotenv, load_site
-from .auth import AGENCY_ROLES, TenantContext
+from .auth import AGENCY_ROLES, TenantContext, cloud_identity_email
 from .credentials import AdcCredential, GA4Admin
 from .dashboard import agency_dashboard_html, dashboard_html
 from .ga4 import GA4Reporter
@@ -65,6 +65,11 @@ class OffboardingRequest(BaseModel):
     confirmationWebsiteId: str
 
 
+class MembershipRequest(BaseModel):
+    email: str
+    role: Literal["agency_owner","agency_admin","agency_analyst","client_admin","client_viewer"]
+
+
 def create_app(settings=None, reporter=None, database=None, task_queue=None):
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
     database = database or Database(settings)
@@ -92,7 +97,8 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
             if not hmac.compare_digest(supplied, settings.api_token):
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
         try:
-            return database.authorize_context(settings.operator_email, x_organization_id or None)
+            email=cloud_identity_email(credentials.credentials if credentials else "",settings.operator_email) if settings.auth_mode=="cloud_run" else settings.operator_email
+            return database.authorize_context(email, x_organization_id or None)
         except PermissionError as error:
             raise HTTPException(status_code=403,detail=str(error)) from error
 
@@ -358,6 +364,25 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
         if endDate<startDate or (endDate-startDate).days>366: raise HTTPException(status_code=422,detail="invalid_business_outcome_period")
         return await call(database.business_outcomes,context,website_id,startDate,endDate)
+
+    @app.get("/api/memberships",tags=["Access"])
+    async def memberships(context:TenantContext=Depends(require_agency)):
+        return {"organizationId":context.organization_id,"memberships":await call(database.list_memberships,context)}
+
+    @app.post("/api/memberships",status_code=201,tags=["Access"])
+    async def add_membership(request:MembershipRequest,context:TenantContext=Depends(require_agency)):
+        email=request.email.strip().lower()
+        if "@" not in email or len(email)>254: raise HTTPException(status_code=422,detail="invalid_member_email")
+        try: value=await call(database.upsert_membership,context,email,request.role)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        return {"membership":value,"cloudRunIamRequired":True}
+
+    @app.delete("/api/memberships/{user_id}",status_code=204,tags=["Access"])
+    async def remove_membership(user_id:str,context:TenantContext=Depends(require_agency)):
+        try: removed=await call(database.remove_membership,context,user_id)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        if not removed: raise HTTPException(status_code=404,detail="membership_not_found")
+        return Response(status_code=204)
 
     @app.post("/internal/schedule",dependencies=[Depends(require_internal)],include_in_schema=False)
     async def schedule(x_cloudscheduler_scheduletime: str | None = Header(default=None)):

@@ -751,6 +751,34 @@ class Database:
                 "sourceFamilies":["google_ads","approved_first_party"],
                 "caveats":["GA4 intent events are not treated as confirmed business outcomes.","Identity matching occurs only in approved first-party systems; prohibited identifiers are not sent to GA4.","Null KPIs mean the required approved source data is unavailable, not zero."]}
 
+    def list_memberships(self, context: TenantContext) -> list[dict]:
+        context.require_role(frozenset({"agency_owner","agency_admin","agency_analyst"}))
+        with self.tenant_connection(context) as connection:
+            rows=connection.execute("SELECT u.id,u.email,m.role FROM app.memberships m JOIN app.users u ON u.id=m.user_id ORDER BY u.email").fetchall()
+        return [{"userId":str(row["id"]),"email":row["email"],"role":row["role"]} for row in rows]
+
+    def upsert_membership(self, context: TenantContext, email: str, role: str) -> dict:
+        context.require_role(frozenset({"agency_owner","agency_admin"}))
+        if context.role=="agency_admin" and role=="agency_owner": raise PermissionError("cannot_grant_agency_owner")
+        with self.connection() as connection:
+            user=connection.execute("INSERT INTO app.users(email) VALUES(%s) ON CONFLICT(email) DO UPDATE SET email=excluded.email RETURNING id,email",(email,)).fetchone()
+            existing=connection.execute("SELECT role FROM app.memberships WHERE organization_id=%s::uuid AND user_id=%s",(context.organization_id,user["id"])).fetchone()
+            if existing and existing["role"]=="agency_owner" and context.role!="agency_owner": raise PermissionError("cannot_modify_agency_owner")
+            connection.execute("INSERT INTO app.memberships(organization_id,user_id,role) VALUES(%s::uuid,%s,%s) ON CONFLICT(organization_id,user_id) DO UPDATE SET role=excluded.role",(context.organization_id,user["id"],role))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'membership.upserted','user',%s,%s)",(context.organization_id,context.user_id,user["id"],json.dumps({"email":email,"role":role})))
+        return {"userId":str(user["id"]),"email":user["email"],"role":role}
+
+    def remove_membership(self, context: TenantContext, user_id: str) -> bool:
+        context.require_role(frozenset({"agency_owner","agency_admin"}))
+        if user_id==context.user_id: raise PermissionError("cannot_remove_current_membership")
+        with self.connection() as connection:
+            existing=connection.execute("SELECT role FROM app.memberships WHERE organization_id=%s::uuid AND user_id=%s::uuid",(context.organization_id,user_id)).fetchone()
+            if not existing: return False
+            if existing["role"]=="agency_owner" and context.role!="agency_owner": raise PermissionError("cannot_remove_agency_owner")
+            connection.execute("DELETE FROM app.memberships WHERE organization_id=%s::uuid AND user_id=%s::uuid",(context.organization_id,user_id))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'membership.removed','user',%s::uuid,'{}')",(context.organization_id,context.user_id,user_id))
+        return True
+
     def record_measurement_health(self, assignment_id, health: dict):
         with self.connection() as connection:
             connection.execute("INSERT INTO analytics.measurement_health_checks(assignment_id,status,details_json) VALUES(%s,%s,%s)",(assignment_id,health["status"],json.dumps(health)))
