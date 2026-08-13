@@ -173,7 +173,7 @@ class Database:
                   JOIN app.memberships m ON m.user_id=u.id
                   JOIN app.organizations o ON o.id=m.organization_id
                  WHERE lower(u.email)=lower(%s)
-                   AND (%s IS NULL OR o.id::text=%s)
+                   AND (%s::text IS NULL OR o.id::text=%s::text)
                  ORDER BY o.id
             """, (email, requested_organization_id, requested_organization_id)).fetchall()
         if not rows:
