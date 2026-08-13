@@ -1,6 +1,6 @@
 # Production readiness: House of Dental analytics platform
 
-Updated August 12, 2026.
+Updated August 13, 2026.
 
 ## Verified live
 
@@ -24,18 +24,19 @@ The most recent production run completed all five fixed periods on revision `000
 
 These are small live counts, not a claim that every measurement event has been manually validated.
 
-## Approved governance and remaining live evidence
+## Approved governance and live evidence
 
 Shashaank Shankar approved the healthcare/privacy policy, consent configuration, eleven public routes, measurement contract, mappings, and downstream request semantics on August 12, 2026. The live site now fails closed before analytics initialization when URL data is unsafe. The GA4 Realtime API observed exactly one each of `form_start`, `cta_click`, and `phone_click` during the approval run.
 
-Remaining evidence is operational rather than governance approval:
+The Phase 1 live measurement gate is passed:
 
-- an authorized production test was accepted by Resend and the live form displayed its success state, but the successful retry ran without analytics consent, so `form_submit`, `generate_lead`, and `appointment_request` were not observed in GA4;
-- inbox placement remains unverified without access to the dental office inbox;
+- an authorized consented production test was accepted by Resend and the live form displayed its success state;
+- the GA4 Realtime Data API observed exactly one each of `form_submit`, `generate_lead`, and `appointment_request` at `minutesAgo=00`;
+- the deployed anchor allowlist permits the site's static `#book` fragment while unknown fragments still fail closed before analytics initialization;
 - the rendered site has no mailto CTA, so `email_click` is not currently applicable;
-- UI-level DebugView/Tag Assistant parameter inspection remains unobserved, while code and fixtures prove the allowlisted payload construction.
+- inbox placement remains unverified without access to the dental office inbox and is tracked separately from provider acceptance.
 
-The dashboard reports governance as approved. Complete Phase 1 evidence remains separate from governance approval.
+The dashboard reports governance as approved. Code, fixtures, runtime integration tests, and live Data API receipts jointly prove the applicable Phase 1 event path.
 
 ## Operator access
 

@@ -1,12 +1,12 @@
 # Backlog
 
-## First-site production milestone
+## Agency console and tenant isolation
 
-Status: governance, persisted reporting, scheduling, the private dashboard, and the production request handoff are live. One operational measurement check remains before Phase 1 can be closed.
+Status: the first-site production milestone and all applicable Phase 1 event receipts pass. Phase 4 work is now authorized by the architecture gate.
 
-- Run one explicitly authorized test after granting analytics consent.
-- Verify exactly one each of `form_submit`, `generate_lead`, and `appointment_request` in the GA4 Realtime API.
-- If office-inbox access becomes available, record inbox placement separately from Resend acceptance.
-- Preserve the Admin API-verified assignment: property `549721844`, web stream `15427015396`, Measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
+- Replace the single shared API token model with authenticated organization, company, website, membership, and role context.
+- Enforce tenant context in the service layer and Postgres RLS using separate ingestion, administration, and tenant application roles.
+- Add adversarial API, service, and database isolation tests before enabling the client portal.
+- Complete portfolio, operator-alert, and annotation workflows with incompatible-contract warnings.
 
-The public website collects only consent-controlled GA4 traffic. Cloud Scheduler and Cloud Tasks synchronize fixed-period GA4 reports into Cloud SQL, and dashboard reads use stored snapshots rather than live Google requests.
+Inbox placement for the synthetic request remains optional office-side evidence; Resend acceptance and GA4 receipt are complete.

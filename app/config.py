@@ -53,6 +53,7 @@ class Settings:
     service_url: str = ""
     task_service_account: str = ""
     internal_trigger_token: str = ""
+    operator_email: str = ""
     @property
     def live_enabled(self): return self.mode == "live" and self.data_api_enabled and self.live_approved
     @classmethod
@@ -79,6 +80,7 @@ class Settings:
             env.get("SERVICE_URL", ""),
             env.get("TASK_SERVICE_ACCOUNT", ""),
             env.get("INTERNAL_TRIGGER_TOKEN", ""),
+            env.get("PLATFORM_OPERATOR_EMAIL", "").strip().lower(),
         )
 
     @property
@@ -92,6 +94,7 @@ class Settings:
         if not self.live_enabled: return
         if self.auth_mode not in {"token", "cloud_run"}: raise RuntimeError("unsupported_auth_mode")
         if self.auth_mode == "token" and len(self.api_token) < 32: raise RuntimeError("platform_api_token_required")
+        if not self.operator_email or "@" not in self.operator_email: raise RuntimeError("platform_operator_email_required")
         if self.property_id != site.property_id: raise RuntimeError("live_ga4_property_mismatch")
         if self.stream_id != site.stream_id: raise RuntimeError("live_ga4_stream_mismatch")
         if self.mode == "live" and not self.database_enabled: raise RuntimeError("production_database_required")
