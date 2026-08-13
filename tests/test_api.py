@@ -75,6 +75,7 @@ def headers(): return {"Authorization":"Bearer "+"x"*32}
 def test_docs_health_and_data_protection():
     with TestClient(create_app(settings(),StubReporter(),StubDatabase())) as client:
         assert client.get("/").status_code == 200
+        assert client.get("/favicon.ico").status_code == 204
         assert client.get("/docs").status_code == 200
         assert client.get("/health").json()["runtime"] == "fastapi"
         assert client.get("/healthz").json()["status"] == "ok"

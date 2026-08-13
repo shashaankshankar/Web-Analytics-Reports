@@ -166,6 +166,9 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
     @app.get("/",response_class=HTMLResponse,include_in_schema=False)
     def home(): return f"<!doctype html><title>Measurement Platform</title><style>body{{font:16px system-ui;margin:3rem;max-width:55rem}}</style><h1>Measurement &amp; Reporting Platform</h1><p>{site.company} stored GA4 reporting service.</p><p><a href='/agency'>Open agency console</a> · <a href='/dashboard'>Open client reporting view</a> · <a href='/docs'>Open API documentation</a></p>"
 
+    @app.get("/favicon.ico",include_in_schema=False)
+    def favicon(): return Response(status_code=204)
+
     @app.get("/dashboard",response_class=HTMLResponse,include_in_schema=False,dependencies=[Depends(require_context)])
     def dashboard(): return dashboard_html(site)
 
