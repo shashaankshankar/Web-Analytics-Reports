@@ -529,32 +529,29 @@ Only begin this after the measurement implementation passes.
 Recommended architecture:
 
 ```text
-apps/
-  web/
+app/
+  main.py
+  ga4.py
+  config.py
+  privacy.py
 
-services/
-  reporting/
-  analytics-connectors/
-
-workers/
-  ga-sync/
-
-packages/
-  measurement/
-  database/
-  analytics-types/
-  authorization/
+measurement/
+  contracts/
+  eligibility/
+  privacy/
+  sites/
 
 infra/
+tests/
 ```
 
 Use the architecture's production stack:
 
 ```text
-Next.js
-TypeScript
+FastAPI
+Python
 Postgres
-TypeScript workers
+Python workers
 Managed queue
 Managed scheduler
 Secret management

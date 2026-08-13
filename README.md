@@ -1,15 +1,17 @@
 # Measurement and Reporting Platform
 
-Production-oriented implementation scaffold for the agency GA4 reporting platform. House of Dental is the first live website. The application keeps server-side connectors disabled by default, never substitutes demo values for unavailable live data, and includes the Postgres schema needed for managed infrastructure.
+FastAPI implementation of the agency GA4 reporting platform. House of Dental is the first live website. The application keeps server-side reporting disabled by default, never substitutes demo values for unavailable live data, and includes the Postgres schema needed for managed infrastructure.
 
 ## Run locally
 
 ```sh
-npm run check
-npm run dev
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pytest
+.venv/bin/python -m uvicorn app.main:app --reload
 ```
 
-Open `http://localhost:3000`. In the default setup mode, the JSON endpoints expose House of Dental's real configuration and explicit unavailable-data states without making GA4 requests.
+Open `http://localhost:3000` for the landing page and `http://localhost:3000/docs` for interactive API documentation. The docs page supports the API bearer token through its **Authorize** button.
 
 ## Live GA4 reporting
 
@@ -17,15 +19,15 @@ The deployed House of Dental site uses property `549721844`, web stream `1540831
 
 ```sh
 PLATFORM_MODE=live \
-HOST=0.0.0.0 \
+HOST=127.0.0.1 \
 GA4_DATA_API_ENABLED=true \
 GA4_LIVE_APPROVED=true \
 GA4_PROPERTY_ID=549721844 \
 GA4_STREAM_ID=15408312790 \
-npm run dev
+.venv/bin/python -m uvicorn app.main:app
 ```
 
-The connector uses read-only ADC credentials. The overview endpoint makes live GA4 Data API requests for summary metrics and event counts; previous-period comparisons and database persistence are not yet included.
+The FastAPI service uses the official Python GA4 Data client with read-only Application Default Credentials. The overview endpoint makes live GA4 Data API requests for summary metrics and every contract event field; previous-period comparisons and database persistence are not yet included.
 
 ## Live-connection gate
 

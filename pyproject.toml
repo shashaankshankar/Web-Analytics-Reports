@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "measurement-reporting-platform"
+version = "0.2.0"
+requires-python = ">=3.12"
+dependencies = ["fastapi==0.141.1", "google-analytics-data==0.23.0", "google-auth==2.56.3", "uvicorn==0.52.1"]
+
+[project.optional-dependencies]
+dev = ["httpx==0.28.1", "pytest==9.1.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

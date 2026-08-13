@@ -14,8 +14,8 @@
     "webStreamId": "15408312790",
     "measurementId": "G-TC66MQQ0T7",
     "collectionStatus": "live",
-    "propertyTimezone": null,
-    "reportingConnectionStatus": "awaiting_client_grant"
+    "propertyTimezone": "America/New_York",
+    "reportingConnectionStatus": "active_direct_query"
   },
   "businessTimezone": "America/New_York",
   "governance": {
