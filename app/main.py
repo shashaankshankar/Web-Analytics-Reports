@@ -91,13 +91,14 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         response.headers.update({"Cache-Control":"no-store","X-Content-Type-Options":"nosniff","Referrer-Policy":"no-referrer","X-Frame-Options":"DENY","Permissions-Policy":"camera=(), microphone=(), geolocation=()","Content-Security-Policy":"default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
         return response
 
-    def require_context(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), x_organization_id: str = Header(default="")) -> TenantContext:
+    def require_context(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), x_organization_id: str = Header(default=""), x_serverless_authorization: str = Header(default="")) -> TenantContext:
         if settings.auth_mode != "cloud_run" and settings.live_enabled:
             supplied = credentials.credentials if credentials and credentials.scheme.lower() == "bearer" else ""
             if not hmac.compare_digest(supplied, settings.api_token):
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
         try:
-            email=cloud_identity_email(credentials.credentials if credentials else "",settings.operator_email) if settings.auth_mode=="cloud_run" else settings.operator_email
+            if settings.auth_mode=="cloud_run" and x_serverless_authorization: raise PermissionError("ambiguous_cloud_identity_headers")
+            email=cloud_identity_email(credentials.credentials if credentials else "",settings.operator_email,allow_cloud_run_signature_removed=settings.auth_mode=="cloud_run") if settings.auth_mode=="cloud_run" else settings.operator_email
             return database.authorize_context(email, x_organization_id or None)
         except PermissionError as error:
             raise HTTPException(status_code=403,detail=str(error)) from error
