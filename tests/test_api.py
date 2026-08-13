@@ -52,6 +52,8 @@ class StubDatabase:
         if confirmation != website_id: raise PermissionError("offboarding_confirmation_mismatch")
         return {"websiteId":website_id,"status":"scheduled","executeAfter":"2026-09-12T00:00:00+00:00"}
     def external_source_status(self,context,website_id): return [{"source":"google_ads","status":"not_configured"},{"source":"search_console","status":"not_configured"},{"source":"call_tracking","status":"not_configured"},{"source":"crm_booking","status":"not_configured"}]
+    def register_source_connection(self,context,website_id,source_type,credential_reference,external_account_id,configuration):
+        context.require_role(frozenset({"agency_owner","agency_admin"})); return {"connectionId":"source-1","sourceType":source_type,"approvalStatus":"pending_approval"}
     def business_outcomes(self,context,website_id,start_date,end_date): return {"websiteId":website_id,"outcomes":{},"costPerQualifiedLead":None,"caveats":["Null means unavailable"]}
     def list_memberships(self,context): return [{"userId":"user-1","email":"operator@example.com","role":self.role}]
     def upsert_membership(self,context,email,role):
@@ -177,3 +179,11 @@ def test_agency_owner_can_manage_memberships_but_viewer_cannot():
         assert created.status_code == 201 and created.json()["cloudRunIamRequired"] is True
     with TestClient(create_app(settings(),StubReporter(),StubDatabase(role="client_viewer"))) as client:
         assert client.get("/api/memberships",headers=headers()).status_code == 403
+
+
+def test_external_source_registration_accepts_only_versioned_secret_references():
+    with TestClient(create_app(settings(),StubReporter(),StubDatabase())) as client:
+        invalid=client.post("/api/websites/website_house_of_dental/external-sources",headers=headers(),json={"sourceType":"google_ads","credentialSecretReference":"raw-api-key","externalAccountId":"123","configuration":{}})
+        assert invalid.status_code == 422
+        valid=client.post("/api/websites/website_house_of_dental/external-sources",headers=headers(),json={"sourceType":"google_ads","credentialSecretReference":"projects/project/secrets/google-ads/versions/1","externalAccountId":"123","configuration":{}})
+        assert valid.status_code == 201 and valid.json()["connection"]["approvalStatus"]=="pending_approval"

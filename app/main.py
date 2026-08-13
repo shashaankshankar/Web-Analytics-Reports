@@ -11,7 +11,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .config import Settings, Site, load_dotenv, load_site
@@ -69,6 +69,13 @@ class OffboardingRequest(BaseModel):
 class MembershipRequest(BaseModel):
     email: str
     role: Literal["agency_owner","agency_admin","agency_analyst","client_admin","client_viewer"]
+
+
+class SourceConnectionRequest(BaseModel):
+    sourceType: Literal["google_ads","search_console","call_tracking","crm_booking"]
+    credentialSecretReference: str
+    externalAccountId: str | None = None
+    configuration: dict = Field(default_factory=dict)
 
 
 def create_app(settings=None, reporter=None, database=None, task_queue=None):
@@ -360,6 +367,24 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
     async def external_sources(website_id:str,context:TenantContext=Depends(require_context)):
         if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
         return {"websiteId":website_id,"sources":await call(database.external_source_status,context,website_id),"priorityOrder":["google_ads","search_console","call_tracking","crm_booking"]}
+
+    @app.post("/api/websites/{website_id}/external-sources",status_code=201,tags=["Connections"])
+    async def register_external_source(website_id:str,request:SourceConnectionRequest,context:TenantContext=Depends(require_agency)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        if not request.credentialSecretReference.startswith("projects/") or "/secrets/" not in request.credentialSecretReference or request.credentialSecretReference.endswith("/latest"):
+            raise HTTPException(status_code=422,detail="version_pinned_secret_reference_required")
+        if request.externalAccountId and len(request.externalAccountId)>200: raise HTTPException(status_code=422,detail="invalid_external_account_id")
+        try: value=await call(database.register_source_connection,context,website_id,request.sourceType,request.credentialSecretReference,request.externalAccountId,request.configuration)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        return {"connection":value,"nextStep":"validate_source_access_before_approval"}
+
+    @app.delete("/api/websites/{website_id}/external-sources/{source_type}",status_code=204,tags=["Connections"])
+    async def disable_external_source(website_id:str,source_type:Literal["google_ads","search_console","call_tracking","crm_booking"],context:TenantContext=Depends(require_agency)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        try: disabled=await call(database.disable_source_connection,context,website_id,source_type)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        if not disabled: raise HTTPException(status_code=404,detail="source_connection_not_found")
+        return Response(status_code=204)
 
     @app.get("/api/websites/{website_id}/business-outcomes",tags=["Reporting"])
     async def business_outcomes(website_id:str,startDate:date,endDate:date,context:TenantContext=Depends(require_context)):

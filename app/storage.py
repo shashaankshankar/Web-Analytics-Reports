@@ -102,7 +102,9 @@ class Database:
                 connection.execute((ROOT / "infra/postgres/006_external_sources.sql").read_text())
             if "007_external_sync_provenance" not in applied:
                 connection.execute((ROOT / "infra/postgres/007_external_sync_provenance.sql").read_text())
-        return {"status": "ok", "migration": "007_external_sync_provenance"}
+            if "008_source_connection_management" not in applied:
+                connection.execute((ROOT / "infra/postgres/008_source_connection_management.sql").read_text())
+        return {"status": "ok", "migration": "008_source_connection_management"}
 
     def seed_first_site(self, site: Site) -> dict:
         ids = {
@@ -766,6 +768,41 @@ class Database:
                 state=ExternalSourceState(source,"active" if row["last_sync_at"] else "approved_awaiting_first_sync",row["approval_status"],row["last_validated_at"],row["last_sync_at"],None)
             result.append(state.as_dict())
         return result
+
+    def register_source_connection(self, context: TenantContext, website_id: str, source_type: str,
+                                   credential_reference: str, external_account_id: str | None, configuration: dict) -> dict:
+        context.require_role(frozenset({"agency_owner","agency_admin"}))
+        allowed_configuration={
+            "google_ads":{"loginCustomerId"},
+            "search_console":{"siteUrl","privacyApprovedQueries"},
+            "call_tracking":{"provider","identityPolicyReference"},
+            "crm_booking":{"provider","identityPolicyReference"},
+        }
+        if source_type not in allowed_configuration or set(configuration)-allowed_configuration[source_type]: raise PermissionError("unapproved_source_configuration")
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("""
+                INSERT INTO app.source_connections(organization_id,website_id,source_type,credential_secret_reference,external_account_id,configuration_json,approval_status,disabled_at)
+                SELECT %s::uuid,p.resource_id,%s,%s,%s,%s,'pending_approval',NULL FROM app.resource_identifiers p
+                 WHERE p.resource_type='website' AND p.public_id=%s
+                ON CONFLICT(website_id,source_type) DO UPDATE SET credential_secret_reference=excluded.credential_secret_reference,
+                  external_account_id=excluded.external_account_id,configuration_json=excluded.configuration_json,
+                  approval_status='pending_approval',last_validated_at=NULL,disabled_at=NULL
+                RETURNING id,source_type,external_account_id,configuration_json,approval_status,created_at
+            """,(context.organization_id,source_type,credential_reference,external_account_id,json.dumps(configuration),website_id)).fetchone()
+            if not row: raise PermissionError("website_not_authorized")
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'source_connection.registered','source_connection',%s,%s)",(context.organization_id,context.user_id,row["id"],json.dumps({"websiteId":website_id,"sourceType":source_type,"approvalStatus":"pending_approval"})))
+        return {"connectionId":str(row["id"]),"sourceType":row["source_type"],"externalAccountId":row["external_account_id"],"configuration":row["configuration_json"],"approvalStatus":row["approval_status"],"createdAt":row["created_at"].isoformat()}
+
+    def disable_source_connection(self, context: TenantContext, website_id: str, source_type: str) -> bool:
+        context.require_role(frozenset({"agency_owner","agency_admin"}))
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("""
+                UPDATE app.source_connections c SET approval_status='disabled',disabled_at=now()
+                  FROM app.resource_identifiers p WHERE p.resource_type='website' AND p.public_id=%s AND p.resource_id=c.website_id AND c.source_type=%s
+                RETURNING c.id
+            """,(website_id,source_type)).fetchone()
+            if row: connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'source_connection.disabled','source_connection',%s,%s)",(context.organization_id,context.user_id,row["id"],json.dumps({"websiteId":website_id,"sourceType":source_type})))
+        return bool(row)
 
     def business_outcomes(self, context: TenantContext, website_id: str, start_date: date, end_date: date) -> dict:
         with self.tenant_connection(context) as connection:

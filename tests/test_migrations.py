@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_all_incremental_migrations_record_their_version():
     root=Path(__file__).resolve().parents[1]/"infra"/"postgres"
-    for version in ("002_production","003_phase4_tenant_isolation","004_phase5_reporting_oauth","005_retention_offboarding","006_external_sources","007_external_sync_provenance"):
+    for version in ("002_production","003_phase4_tenant_isolation","004_phase5_reporting_oauth","005_retention_offboarding","006_external_sources","007_external_sync_provenance","008_source_connection_management"):
         sql=(root/f"{version.split('_',1)[0]}_{version.split('_',1)[1]}.sql").read_text()
         assert f"VALUES('{version}')" in sql
 
