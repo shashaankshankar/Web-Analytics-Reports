@@ -50,7 +50,8 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 
 ## Additional operational evidence
 
-1. Inbox placement remains a separate office-inbox check; Resend acceptance is already proven.
-2. DebugView/Tag Assistant parameter inspection is optional additional UI evidence because the live Data API receipt plus code and fixture proof cover the Phase 1 gate.
+1. The ignored local House of Dental Resend key returns HTTP 401. The deployed website Worker uses a different valid secret, proven by provider acceptance, but Cloudflare correctly does not permit that secret to be read back or copied into the reporting service.
+2. Inbox placement remains a separate office-inbox check; Resend acceptance is already proven.
+3. DebugView/Tag Assistant parameter inspection is optional additional UI evidence because the live Data API receipt plus code and fixture proof cover the Phase 1 gate.
 
 These items do not reopen the passed Phase 1 gate.
