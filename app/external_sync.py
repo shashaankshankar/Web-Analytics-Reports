@@ -10,9 +10,9 @@ class ExternalSyncEngine:
     def __init__(self, database, connection_id: str, connector: SourceConnector):
         self.database=database; self.connection_id=connection_id; self.connector=connector
 
-    def run(self, start_date: date, end_date: date) -> dict:
+    def run(self, start_date: date, end_date: date, request_key: str | None = None) -> dict:
         if end_date<start_date or (end_date-start_date).days>366: raise ValueError("invalid_external_sync_period")
-        request_hash=canonical_hash({"source":self.connector.source_type,"connectionId":self.connection_id,"startDate":start_date,"endDate":end_date})
+        request_hash=canonical_hash({"source":self.connector.source_type,"connectionId":self.connection_id,"startDate":start_date,"endDate":end_date,"requestKey":request_key})
         execution=self.database.begin_external_sync(self.connection_id,self.connector.source_type,start_date,end_date,request_hash)
         if execution.get("idempotentReplay"): return execution
         try:
@@ -30,7 +30,7 @@ class ExternalSyncEngine:
         if self.connector.source_type=="google_ads":
             result.update({"costMicros":sum(row["costMicros"] for row in rows),"clicks":sum(row["clicks"] for row in rows),"impressions":sum(row["impressions"] for row in rows)})
         elif self.connector.source_type=="search_console":
-            result.update({"clicks":sum(row["clicks"] for row in rows),"impressions":sum(row["impressions"] for row in rows),"queryTextRetained":any(row["queryText"] is not None for row in rows)})
+            result.update({"clicks":sum(row["clicks"] for row in rows),"impressions":sum(row["impressions"] for row in rows),"queryTextRetained":any(row["queryText"] is not None for row in rows),"complete":False,"sourceRowCoverage":"top_rows_only"})
         else:
             result["outcomes"]={name:sum(1 for row in rows if row["outcomeType"]==name) for name in sorted({row["outcomeType"] for row in rows})}
         return result

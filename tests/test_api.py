@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.auth import TenantContext
+from app.external_sources import FirstPartyOutcomeConnector
 from app.main import create_app
 
 
@@ -55,6 +56,13 @@ class StubDatabase:
     def register_source_connection(self,context,website_id,source_type,credential_reference,external_account_id,configuration):
         context.require_role(frozenset({"agency_owner","agency_admin"})); return {"connectionId":"source-1","sourceType":source_type,"approvalStatus":"pending_approval"}
     def business_outcomes(self,context,website_id,start_date,end_date): return {"websiteId":website_id,"outcomes":{},"costPerQualifiedLead":None,"caveats":["Null means unavailable"]}
+    def google_ads_performance(self,context,website_id,start_date,end_date): return {"websiteId":website_id,"dataStatus":"unavailable","totals":None,"rows":[],"caveats":["Unavailable is not zero"]}
+    def search_console_performance(self,context,website_id,start_date,end_date): return {"websiteId":website_id,"dataStatus":"unavailable","totals":None,"pages":[],"queries":[],"caveats":["Unavailable is not zero"]}
+    def source_connection_for_website(self,context,website_id,source_type): return {"id":"00000000-0000-0000-0000-000000000001","source_type":source_type,"credential_secret_reference":"projects/project/secrets/source/versions/1","external_account_id":"123","configuration_json":{"identityPolicyReference":"approved_policy_v1"},"approval_status":"approved","disabled_at":None}
+    def approve_source_connection(self,context,website_id,source_type,approval_reference,validation): return {"connectionId":"source-1","sourceType":source_type,"approvalStatus":"approved"}
+    def begin_external_sync(self,connection_id,source_type,start_date,end_date,request_hash): return {"executionId":"execution-1","websiteId":"website_house_of_dental","idempotentReplay":False}
+    def complete_external_sync(self,execution,connection_id,source_type,rows,response_hash,reconciliation): return {"executionId":execution["executionId"],"websiteId":execution["websiteId"],"source":source_type,"status":"succeeded","rowCount":len(rows),"reconciliation":reconciliation}
+    def fail_external_sync(self,execution_id,error_code): self.external_failure=error_code
     def list_memberships(self,context): return [{"userId":"user-1","email":"operator@example.com","role":self.role}]
     def upsert_membership(self,context,email,role):
         context.require_role(frozenset({"agency_owner","agency_admin"})); return {"userId":"user-2","email":email,"role":role}
@@ -171,6 +179,10 @@ def test_external_sources_and_business_outcomes_do_not_invent_missing_data():
         assert [item["status"] for item in sources["sources"]] == ["not_configured"]*4
         outcomes=client.get("/api/websites/website_house_of_dental/business-outcomes?startDate=2026-08-01&endDate=2026-08-31",headers=headers())
         assert outcomes.status_code == 200 and outcomes.json()["costPerQualifiedLead"] is None
+        paid=client.get("/api/websites/website_house_of_dental/paid-performance?startDate=2026-08-01&endDate=2026-08-31",headers=headers())
+        search=client.get("/api/websites/website_house_of_dental/search-performance?startDate=2026-08-01&endDate=2026-08-31",headers=headers())
+        assert paid.json()["dataStatus"]=="unavailable" and paid.json()["totals"] is None
+        assert search.json()["dataStatus"]=="unavailable" and search.json()["totals"] is None
         assert client.get("/api/websites/website_house_of_dental/business-outcomes?startDate=2026-08-31&endDate=2026-08-01",headers=headers()).status_code == 422
 
 
@@ -189,3 +201,25 @@ def test_external_source_registration_accepts_only_versioned_secret_references()
         assert invalid.status_code == 422
         valid=client.post("/api/websites/website_house_of_dental/external-sources",headers=headers(),json={"sourceType":"google_ads","credentialSecretReference":"projects/project/secrets/google-ads/versions/1","externalAccountId":"123","configuration":{}})
         assert valid.status_code == 201 and valid.json()["connection"]["approvalStatus"]=="pending_approval"
+
+
+class SourceFactory:
+    def create(self,target):
+        if target["source_type"] in {"call_tracking","crm_booking"}:
+            return FirstPartyOutcomeConnector(target["source_type"],"s"*32,"approved_policy_v1")
+        class Connector:
+            def validate_access(self): return {"status":"ok","account":"validated"}
+        return Connector()
+
+
+def test_source_approval_and_first_party_ingestion_are_operable_and_audited():
+    database=StubDatabase()
+    with TestClient(create_app(settings(),StubReporter(),database,source_connector_factory=SourceFactory())) as client:
+        approval=client.post("/api/websites/website_house_of_dental/external-sources/google_ads/approve",headers=headers(),json={"confirmationSourceType":"google_ads","approvalReference":"owner-review-2026-08-13"})
+        assert approval.status_code==200 and approval.json()["connection"]["approvalStatus"]=="approved"
+        mismatch=client.post("/api/websites/website_house_of_dental/external-sources/google_ads/approve",headers=headers(),json={"confirmationSourceType":"search_console","approvalReference":"owner-review-2026-08-13"})
+        assert mismatch.status_code==422
+        batch=client.post("/api/websites/website_house_of_dental/external-sources/crm_booking/outcomes",headers=headers(),json={"requestId":"batch-2026-08-13-1","records":[{"sourceRecordId":"crm-123","outcomeType":"booked_appointment","outcomeDate":"2026-08-13"}]})
+        assert batch.status_code==200 and batch.json()["rowCount"]==1
+        rejected=client.post("/api/websites/website_house_of_dental/external-sources/crm_booking/outcomes",headers=headers(),json={"requestId":"batch-2026-08-13-2","records":[{"sourceRecordId":"crm-124","outcomeType":"customer","outcomeDate":"2026-08-13","email":"patient@example.com"}]})
+        assert rejected.status_code==502 and not hasattr(database,"external_failure")

@@ -25,6 +25,8 @@ from .oauth import ANALYTICS_READONLY_SCOPE, KmsCipher, OAuthManager
 from .storage import Database
 from .sync import SyncEngine
 from .tasks import PERIODS, TaskQueue
+from .external_sync import ExternalSyncEngine
+from .source_runtime import BufferedOutcomeConnector, PINNED_SECRET, SourceConnectorFactory, external_sync_window
 
 Period = Literal["7d", "28d", "90d", "this_month", "last_month"]
 bearer = HTTPBearer(auto_error=False, description="Dashboard API token when token authentication is enabled")
@@ -78,17 +80,35 @@ class SourceConnectionRequest(BaseModel):
     configuration: dict = Field(default_factory=dict)
 
 
+class SourceApprovalRequest(BaseModel):
+    confirmationSourceType: Literal["google_ads","search_console","call_tracking","crm_booking"]
+    approvalReference: str = Field(min_length=3,max_length=160,pattern=r"^[A-Za-z0-9_.:-]+$")
+
+
+class ExternalSyncRequest(BaseModel):
+    connectionId: str
+    sourceType: Literal["google_ads","search_console"]
+    startDate: date
+    endDate: date
+
+
+class OutcomeBatchRequest(BaseModel):
+    requestId: str = Field(min_length=8,max_length=160,pattern=r"^[A-Za-z0-9_.:-]+$")
+    records: list[dict] = Field(min_length=1,max_length=1000)
+
+
 class OAuthAssignmentRequest(BaseModel):
     websiteId: str
     propertyId: str
     streamId: str
 
 
-def create_app(settings=None, reporter=None, database=None, task_queue=None):
+def create_app(settings=None, reporter=None, database=None, task_queue=None, source_connector_factory=None):
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
     database = database or Database(settings)
     report_sender = ReportEmailSender(settings.report_email_api_key,settings.report_email_from,settings.report_recipients)
     oauth_manager = OAuthManager(settings.google_oauth_client_id,settings.google_oauth_client_secret,settings.google_oauth_redirect_uri,settings.google_oauth_state_secret,KmsCipher(settings.google_oauth_kms_key),settings.google_oauth_production_approved)
+    source_connector_factory = source_connector_factory or SourceConnectorFactory()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -410,12 +430,46 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
     @app.post("/api/websites/{website_id}/external-sources",status_code=201,tags=["Connections"])
     async def register_external_source(website_id:str,request:SourceConnectionRequest,context:TenantContext=Depends(require_agency)):
         if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
-        if not request.credentialSecretReference.startswith("projects/") or "/secrets/" not in request.credentialSecretReference or request.credentialSecretReference.endswith("/latest"):
+        if not PINNED_SECRET.fullmatch(request.credentialSecretReference):
             raise HTTPException(status_code=422,detail="version_pinned_secret_reference_required")
         if request.externalAccountId and len(request.externalAccountId)>200: raise HTTPException(status_code=422,detail="invalid_external_account_id")
+        if request.sourceType=="google_ads" and not request.externalAccountId: raise HTTPException(status_code=422,detail="google_ads_customer_id_required")
+        if request.sourceType=="search_console" and not isinstance(request.configuration.get("siteUrl"),str): raise HTTPException(status_code=422,detail="search_console_site_required")
+        if request.sourceType in {"call_tracking","crm_booking"} and not isinstance(request.configuration.get("identityPolicyReference"),str): raise HTTPException(status_code=422,detail="identity_policy_reference_required")
+        if "timezone" in request.configuration:
+            try: ZoneInfo(request.configuration["timezone"])
+            except (TypeError,ZoneInfoNotFoundError): raise HTTPException(status_code=422,detail="invalid_source_timezone")
+        for key,minimum,maximum in (("lookbackDays",1,90),("finalizationLagDays",1,14)):
+            if key in request.configuration and (isinstance(request.configuration[key],bool) or not isinstance(request.configuration[key],int) or not minimum<=request.configuration[key]<=maximum):
+                raise HTTPException(status_code=422,detail=f"invalid_{key}")
         try: value=await call(database.register_source_connection,context,website_id,request.sourceType,request.credentialSecretReference,request.externalAccountId,request.configuration)
         except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
         return {"connection":value,"nextStep":"validate_source_access_before_approval"}
+
+    @app.post("/api/websites/{website_id}/external-sources/{source_type}/approve",tags=["Connections"])
+    async def approve_external_source(website_id:str,source_type:Literal["google_ads","search_console","call_tracking","crm_booking"],request:SourceApprovalRequest,context:TenantContext=Depends(require_agency)):
+        if request.confirmationSourceType != source_type: raise HTTPException(status_code=422,detail="source_approval_confirmation_mismatch")
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        try:
+            target=await call(database.source_connection_for_website,context,website_id,source_type)
+            connector=await call(source_connector_factory.create,target)
+            validation=await call(connector.validate_access)
+            if validation.get("status") not in {"ok","configuration_valid"}: raise RuntimeError("source_access_validation_failed")
+            return {"connection":await call(database.approve_source_connection,context,website_id,source_type,request.approvalReference,validation)}
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+
+    @app.post("/api/websites/{website_id}/external-sources/{source_type}/outcomes",tags=["Connections"])
+    async def ingest_outcomes(website_id:str,source_type:Literal["call_tracking","crm_booking"],request:OutcomeBatchRequest,context:TenantContext=Depends(require_agency)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        try:
+            target=await call(database.source_connection_for_website,context,website_id,source_type)
+            if target["approval_status"]!="approved" or target["disabled_at"]: raise PermissionError("external_source_not_approved")
+            normalizer=await call(source_connector_factory.create,target)
+            connector=await call(BufferedOutcomeConnector,normalizer,request.records)
+            dates=[date.fromisoformat(row["outcomeDate"]) for row in connector.rows]
+            result=await call(ExternalSyncEngine(database,str(target["id"]),connector).run,min(dates),max(dates),request.requestId)
+            return {"websiteId":website_id,**result}
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
 
     @app.delete("/api/websites/{website_id}/external-sources/{source_type}",status_code=204,tags=["Connections"])
     async def disable_external_source(website_id:str,source_type:Literal["google_ads","search_console","call_tracking","crm_booking"],context:TenantContext=Depends(require_agency)):
@@ -430,6 +484,18 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
         if endDate<startDate or (endDate-startDate).days>366: raise HTTPException(status_code=422,detail="invalid_business_outcome_period")
         return await call(database.business_outcomes,context,website_id,startDate,endDate)
+
+    @app.get("/api/websites/{website_id}/paid-performance",tags=["Reporting"])
+    async def paid_performance(website_id:str,startDate:date,endDate:date,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        if endDate<startDate or (endDate-startDate).days>366: raise HTTPException(status_code=422,detail="invalid_paid_performance_period")
+        return await call(database.google_ads_performance,context,website_id,startDate,endDate)
+
+    @app.get("/api/websites/{website_id}/search-performance",tags=["Reporting"])
+    async def search_performance(website_id:str,startDate:date,endDate:date,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        if endDate<startDate or (endDate-startDate).days>366: raise HTTPException(status_code=422,detail="invalid_search_performance_period")
+        return await call(database.search_console_performance,context,website_id,startDate,endDate)
 
     @app.get("/api/memberships",tags=["Access"])
     async def memberships(context:TenantContext=Depends(require_agency)):
@@ -456,6 +522,27 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         scheduled_for=x_cloudscheduler_scheduletime or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         targets=await call(database.active_sync_targets)
         return {"status":"accepted","scheduledFor":scheduled_for,"assignments":len(targets),"tasks":await call(queue.enqueue_periods,scheduled_for,targets)}
+
+    @app.post("/internal/external-sources/schedule",dependencies=[Depends(require_internal)],include_in_schema=False)
+    async def schedule_external_sources(x_cloudscheduler_scheduletime: str | None = Header(default=None)):
+        queue = task_queue or TaskQueue(settings)
+        scheduled_for=x_cloudscheduler_scheduletime or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        targets=await call(database.active_external_sync_targets)
+        tasks=[]
+        for target in targets:
+            start_date,end_date=external_sync_window(scheduled_for,target)
+            tasks.append({"connectionId":target["connection_id"],"sourceType":target["source_type"],"startDate":start_date.isoformat(),"endDate":end_date.isoformat()})
+        return {"status":"accepted","scheduledFor":scheduled_for,"connections":len(tasks),"tasks":await call(queue.enqueue_external_sources,scheduled_for,tasks)}
+
+    @app.post("/internal/external-sources/sync",dependencies=[Depends(require_internal)],include_in_schema=False)
+    async def sync_external_source(request:ExternalSyncRequest):
+        if request.endDate<request.startDate or (request.endDate-request.startDate).days>366: raise HTTPException(status_code=422,detail="invalid_external_sync_period")
+        try:
+            target=await call(database.source_sync_target,request.connectionId)
+            if target["source_type"] != request.sourceType: raise PermissionError("external_source_type_mismatch")
+            connector=await call(source_connector_factory.create,target)
+            return await call(ExternalSyncEngine(database,request.connectionId,connector).run,request.startDate,request.endDate)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
 
     @app.post("/internal/sync",dependencies=[Depends(require_internal)],include_in_schema=False)
     async def sync(request: SyncRequest, x_cloudtasks_taskretrycount: int = Header(default=0)):

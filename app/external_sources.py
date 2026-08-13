@@ -192,8 +192,12 @@ class ExternalSourceState:
     last_validated_at: datetime | None
     last_sync_at: datetime | None
     blocker: str | None
+    last_attempt_at: datetime | None = None
+    last_error_code: str | None = None
 
     def as_dict(self) -> dict:
         return {"source":self.source,"status":self.status,"approvalStatus":self.approval_status,
                 "lastValidatedAt":self.last_validated_at.isoformat() if self.last_validated_at else None,
-                "lastSyncAt":self.last_sync_at.isoformat() if self.last_sync_at else None,"blocker":self.blocker}
+                "lastSyncAt":self.last_sync_at.isoformat() if self.last_sync_at else None,"blocker":self.blocker,
+                "lastAttemptAt":self.last_attempt_at.isoformat() if self.last_attempt_at else None,
+                "lastErrorCode":self.last_error_code}

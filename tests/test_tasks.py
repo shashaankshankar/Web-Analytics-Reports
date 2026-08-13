@@ -24,3 +24,17 @@ def test_scheduler_creates_fixed_period_jobs_per_assignment():
     assert {body["assignmentId"] for body in bodies}=={"assignment-a","assignment-b"}
     assert {body["period"] for body in bodies}==set(PERIODS)
     assert len({task["name"] for task in client.created})==len(client.created)
+
+
+def test_external_source_tasks_are_isolated_and_idempotently_named():
+    client=Tasks(); queue=TaskQueue(settings(),client)
+    targets=[
+      {"connectionId":"source-a","sourceType":"google_ads","startDate":"2026-08-01","endDate":"2026-08-12"},
+      {"connectionId":"source-b","sourceType":"search_console","startDate":"2026-07-30","endDate":"2026-08-10"},
+    ]
+    result=queue.enqueue_external_sources("2026-08-13T05:00:00Z",targets)
+    assert len(result)==2 and len(client.created)==2
+    bodies=[json.loads(task["http_request"]["body"]) for task in client.created]
+    assert bodies==targets
+    assert all(task["http_request"]["url"].endswith("/internal/external-sources/sync") for task in client.created)
+    assert len({task["name"] for task in client.created})==2

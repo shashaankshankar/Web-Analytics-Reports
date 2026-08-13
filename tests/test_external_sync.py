@@ -32,3 +32,13 @@ def test_external_sync_failure_is_recorded_without_becoming_empty_data():
     database=Database()
     with pytest.raises(RuntimeError): ExternalSyncEngine(database,"connection-1",Failed()).run(date(2026,8,1),date(2026,8,2))
     assert database.failed=="RuntimeError" and database.completed is None
+
+
+def test_search_console_reconciliation_discloses_top_row_coverage():
+    class SearchConnector(Connector):
+        source_type="search_console"
+        def sync(self,start,end): return [{"clicks":2,"impressions":10,"queryText":None}]
+    database=Database()
+    result=ExternalSyncEngine(database,"connection-1",SearchConnector()).run(date(2026,8,1),date(2026,8,2))
+    assert result["reconciliation"]["complete"] is False
+    assert result["reconciliation"]["sourceRowCoverage"]=="top_rows_only"

@@ -776,8 +776,13 @@ class Database:
                 SELECT c.source_type,c.approval_status,c.last_validated_at,c.disabled_at,
                        GREATEST((SELECT max(source_sync_at) FROM analytics.google_ads_daily x WHERE x.source_connection_id=c.id),
                                 (SELECT max(source_sync_at) FROM analytics.search_console_daily x WHERE x.source_connection_id=c.id),
-                                (SELECT max(source_sync_at) FROM analytics.first_party_outcomes x WHERE x.source_connection_id=c.id)) last_sync_at
+                                (SELECT max(source_sync_at) FROM analytics.first_party_outcomes x WHERE x.source_connection_id=c.id)) last_sync_at,
+                       latest.started_at last_attempt_at,latest.status latest_status,latest.error_code last_error_code
                   FROM app.source_connections c JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=c.website_id
+                  LEFT JOIN LATERAL (
+                    SELECT started_at,status,error_code FROM analytics.source_sync_executions e
+                     WHERE e.source_connection_id=c.id ORDER BY started_at DESC LIMIT 1
+                  ) latest ON true
                  WHERE p.public_id=%s
             """,(website_id,)).fetchall()
         by_source={row["source_type"]:row for row in rows}
@@ -787,11 +792,15 @@ class Database:
             if not row:
                 state=ExternalSourceState(source,"not_configured",None,None,None,"approved_source_account_and_credential_required")
             elif row["disabled_at"]:
-                state=ExternalSourceState(source,"disabled",row["approval_status"],row["last_validated_at"],row["last_sync_at"],"connection_disabled")
+                state=ExternalSourceState(source,"disabled",row["approval_status"],row["last_validated_at"],row["last_sync_at"],"connection_disabled",row["last_attempt_at"],row["last_error_code"])
             elif row["approval_status"]!="approved":
-                state=ExternalSourceState(source,"pending_approval",row["approval_status"],row["last_validated_at"],row["last_sync_at"],"source_governance_approval_required")
+                state=ExternalSourceState(source,"pending_approval",row["approval_status"],row["last_validated_at"],row["last_sync_at"],"source_governance_approval_required",row["last_attempt_at"],row["last_error_code"])
+            elif row["latest_status"]=="failed":
+                state=ExternalSourceState(source,"sync_failed",row["approval_status"],row["last_validated_at"],row["last_sync_at"],"source_sync_failed",row["last_attempt_at"],row["last_error_code"])
+            elif row["latest_status"]=="incomplete":
+                state=ExternalSourceState(source,"partial_data",row["approval_status"],row["last_validated_at"],row["last_sync_at"],"source_dimension_coverage_limited",row["last_attempt_at"],row["last_error_code"])
             else:
-                state=ExternalSourceState(source,"active" if row["last_sync_at"] else "approved_awaiting_first_sync",row["approval_status"],row["last_validated_at"],row["last_sync_at"],None)
+                state=ExternalSourceState(source,"active" if row["last_sync_at"] else "approved_awaiting_first_sync",row["approval_status"],row["last_validated_at"],row["last_sync_at"],None,row["last_attempt_at"],row["last_error_code"])
             result.append(state.as_dict())
         return result
 
@@ -799,8 +808,8 @@ class Database:
                                    credential_reference: str, external_account_id: str | None, configuration: dict) -> dict:
         context.require_role(frozenset({"agency_owner","agency_admin"}))
         allowed_configuration={
-            "google_ads":{"loginCustomerId"},
-            "search_console":{"siteUrl","privacyApprovedQueries"},
+            "google_ads":{"loginCustomerId","timezone","lookbackDays","finalizationLagDays"},
+            "search_console":{"siteUrl","privacyApprovedQueries","timezone","lookbackDays","finalizationLagDays"},
             "call_tracking":{"provider","identityPolicyReference"},
             "crm_booking":{"provider","identityPolicyReference"},
         }
@@ -818,6 +827,55 @@ class Database:
             if not row: raise PermissionError("website_not_authorized")
             connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'source_connection.registered','source_connection',%s,%s)",(context.organization_id,context.user_id,row["id"],json.dumps({"websiteId":website_id,"sourceType":source_type,"approvalStatus":"pending_approval"})))
         return {"connectionId":str(row["id"]),"sourceType":row["source_type"],"externalAccountId":row["external_account_id"],"configuration":row["configuration_json"],"approvalStatus":row["approval_status"],"createdAt":row["created_at"].isoformat()}
+
+    def source_connection_for_website(self, context: TenantContext, website_id: str, source_type: str) -> dict:
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("""
+                SELECT c.id,c.source_type,c.credential_secret_reference,c.external_account_id,c.configuration_json,
+                       c.approval_status,c.last_validated_at,c.disabled_at
+                  FROM app.source_connections c JOIN app.resource_identifiers p
+                    ON p.resource_type='website' AND p.resource_id=c.website_id
+                 WHERE p.public_id=%s AND c.source_type=%s
+            """,(website_id,source_type)).fetchone()
+        if not row: raise PermissionError("source_connection_not_authorized")
+        return dict(row)
+
+    def approve_source_connection(self, context: TenantContext, website_id: str, source_type: str,
+                                  approval_reference: str, validation: dict) -> dict:
+        context.require_role(frozenset({"agency_owner","agency_admin"}))
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("""
+                UPDATE app.source_connections c
+                   SET approval_status='approved',last_validated_at=now(),disabled_at=NULL
+                  FROM app.resource_identifiers p
+                 WHERE p.resource_type='website' AND p.public_id=%s AND p.resource_id=c.website_id
+                   AND c.source_type=%s
+                RETURNING c.id,c.source_type,c.last_validated_at
+            """,(website_id,source_type)).fetchone()
+            if not row: raise PermissionError("source_connection_not_authorized")
+            detail={"websiteId":website_id,"sourceType":source_type,"approvalReference":approval_reference,"validation":validation}
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'source_connection.approved','source_connection',%s,%s)",(context.organization_id,context.user_id,row["id"],json.dumps(detail)))
+        return {"connectionId":str(row["id"]),"sourceType":row["source_type"],"approvalStatus":"approved","lastValidatedAt":row["last_validated_at"].isoformat()}
+
+    def active_external_sync_targets(self) -> list[dict]:
+        with self.connection() as connection:
+            rows=connection.execute("""
+                SELECT id,source_type,configuration_json FROM app.source_connections
+                 WHERE approval_status='approved' AND disabled_at IS NULL
+                   AND source_type IN ('google_ads','search_console')
+                 ORDER BY id
+            """).fetchall()
+        return [{"connection_id":str(row["id"]),"source_type":row["source_type"],"configuration_json":row["configuration_json"]} for row in rows]
+
+    def source_sync_target(self, connection_id: str) -> dict:
+        with self.connection() as connection:
+            row=connection.execute("""
+                SELECT id,source_type,credential_secret_reference,external_account_id,configuration_json
+                  FROM app.source_connections
+                 WHERE id=%s::uuid AND approval_status='approved' AND disabled_at IS NULL
+            """,(connection_id,)).fetchone()
+        if not row: raise PermissionError("external_source_not_approved")
+        return dict(row)
 
     def disable_source_connection(self, context: TenantContext, website_id: str, source_type: str) -> bool:
         context.require_role(frozenset({"agency_owner","agency_admin"}))
@@ -861,6 +919,70 @@ class Database:
                 "sourceFamilies":["google_ads","approved_first_party"],
                 "caveats":["GA4 intent events are not treated as confirmed business outcomes.","Identity matching occurs only in approved first-party systems; prohibited identifiers are not sent to GA4.","Null KPIs mean the required approved source data is unavailable, not zero."]}
 
+    def google_ads_performance(self, context: TenantContext, website_id: str, start_date: date, end_date: date) -> dict:
+        with self.tenant_connection(context) as connection:
+            total=connection.execute("""
+                SELECT count(*) row_count,sum(cost_micros) cost_micros,sum(clicks) clicks,
+                       sum(impressions) impressions,min(currency_code) currency_code,max(source_sync_at) last_sync_at
+                  FROM analytics.google_ads_daily a JOIN app.resource_identifiers p
+                    ON p.resource_type='website' AND p.resource_id=a.website_id
+                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
+            """,(website_id,start_date,end_date)).fetchone()
+            rows=connection.execute("""
+                SELECT campaign_id,campaign_name,ad_group_id,sum(cost_micros) cost_micros,
+                       sum(clicks) clicks,sum(impressions) impressions,min(currency_code) currency_code
+                  FROM analytics.google_ads_daily a JOIN app.resource_identifiers p
+                    ON p.resource_type='website' AND p.resource_id=a.website_id
+                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
+                 GROUP BY campaign_id,campaign_name,ad_group_id ORDER BY cost_micros DESC,campaign_id,ad_group_id
+            """,(website_id,start_date,end_date)).fetchall()
+        available=total["row_count"]>0
+        return {"websiteId":website_id,"startDate":start_date.isoformat(),"endDate":end_date.isoformat(),
+                "dataStatus":"available" if available else "unavailable","source":"google_ads",
+                "totals":{"costMicros":total["cost_micros"],"clicks":total["clicks"],"impressions":total["impressions"],"currency":total["currency_code"]} if available else None,
+                "rows":[{"campaignId":row["campaign_id"],"campaign":row["campaign_name"],"adGroupId":row["ad_group_id"],"costMicros":row["cost_micros"],"clicks":row["clicks"],"impressions":row["impressions"],"currency":row["currency_code"]} for row in rows],
+                "lastSyncAt":total["last_sync_at"].isoformat() if total["last_sync_at"] else None,
+                "caveats":[] if available else ["Google Ads is not configured or has no approved rows for this period; unavailable does not mean zero."]}
+
+    def search_console_performance(self, context: TenantContext, website_id: str, start_date: date, end_date: date) -> dict:
+        with self.tenant_connection(context) as connection:
+            total=connection.execute("""
+                SELECT count(*) row_count,sum(clicks) clicks,sum(impressions) impressions,
+                       CASE WHEN sum(impressions)>0 THEN sum(clicks)::numeric/sum(impressions) END ctr,
+                       CASE WHEN sum(impressions)>0 THEN sum(position*impressions)/sum(impressions) END position,
+                       max(source_sync_at) last_sync_at
+                  FROM analytics.search_console_daily s JOIN app.resource_identifiers p
+                    ON p.resource_type='website' AND p.resource_id=s.website_id
+                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
+            """,(website_id,start_date,end_date)).fetchone()
+            pages=connection.execute("""
+                SELECT page_path,sum(clicks) clicks,sum(impressions) impressions,
+                       CASE WHEN sum(impressions)>0 THEN sum(clicks)::numeric/sum(impressions) END ctr,
+                       CASE WHEN sum(impressions)>0 THEN sum(position*impressions)/sum(impressions) END position
+                  FROM analytics.search_console_daily s JOIN app.resource_identifiers p
+                    ON p.resource_type='website' AND p.resource_id=s.website_id
+                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
+                 GROUP BY page_path ORDER BY clicks DESC,impressions DESC,page_path LIMIT 100
+            """,(website_id,start_date,end_date)).fetchall()
+            queries=connection.execute("""
+                SELECT query_hash,min(query_text) query_text,sum(clicks) clicks,sum(impressions) impressions,
+                       CASE WHEN sum(impressions)>0 THEN sum(clicks)::numeric/sum(impressions) END ctr,
+                       CASE WHEN sum(impressions)>0 THEN sum(position*impressions)/sum(impressions) END position
+                  FROM analytics.search_console_daily s JOIN app.resource_identifiers p
+                    ON p.resource_type='website' AND p.resource_id=s.website_id
+                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
+                 GROUP BY query_hash ORDER BY clicks DESC,impressions DESC,query_hash LIMIT 100
+            """,(website_id,start_date,end_date)).fetchall()
+        available=total["row_count"]>0
+        metric=lambda row:{"clicks":row["clicks"],"impressions":row["impressions"],"ctr":float(row["ctr"]) if row["ctr"] is not None else None,"position":float(row["position"]) if row["position"] is not None else None}
+        return {"websiteId":website_id,"startDate":start_date.isoformat(),"endDate":end_date.isoformat(),
+                "dataStatus":"partial_top_rows" if available else "unavailable","source":"search_console",
+                "totals":metric(total) if available else None,
+                "pages":[{"page":row["page_path"],**metric(row)} for row in pages],
+                "queries":[{"queryKey":row["query_hash"],"query":row["query_text"],**metric(row)} for row in queries],
+                "lastSyncAt":total["last_sync_at"].isoformat() if total["last_sync_at"] else None,
+                "caveats":["Search Console Search Analytics returns top rows and does not guarantee complete dimension coverage."] if available else ["Search Console is not configured or has no approved rows for this period; unavailable does not mean zero."]}
+
     def list_memberships(self, context: TenantContext) -> list[dict]:
         context.require_role(frozenset({"agency_owner","agency_admin","agency_analyst"}))
         with self.tenant_connection(context) as connection:
@@ -898,7 +1020,7 @@ class Database:
             """,(connection_id,source_type)).fetchone()
             if not source: raise PermissionError("external_source_not_approved")
             existing=connection.execute("SELECT id,status,row_count,response_hash,reconciliation_json FROM analytics.source_sync_executions WHERE source_connection_id=%s::uuid AND requested_start_date=%s AND requested_end_date=%s AND request_hash=%s",(connection_id,start_date,end_date,request_hash)).fetchone()
-            if existing and existing["status"]=="succeeded":
+            if existing and existing["status"] in {"succeeded","incomplete"}:
                 return {"executionId":str(existing["id"]),"websiteId":source["website_public_id"],"idempotentReplay":True,"rowCount":existing["row_count"],"responseHash":existing["response_hash"],"reconciliation":existing["reconciliation_json"]}
             row=connection.execute("""
                 INSERT INTO analytics.source_sync_executions(source_connection_id,website_id,requested_start_date,requested_end_date,request_hash,status)
@@ -935,9 +1057,10 @@ class Database:
                     ON CONFLICT(source_connection_id,source_record_hash,outcome_type) DO UPDATE SET subject_key=excluded.subject_key,outcome_date=excluded.outcome_date,revenue_minor_units=excluded.revenue_minor_units,currency_code=excluded.currency_code,attribution_json=excluded.attribution_json,identity_policy_reference=excluded.identity_policy_reference,source_sync_at=excluded.source_sync_at
                 """,[(connection_id,website_uuid,row["sourceRecordHash"],row["subjectKey"],row["outcomeType"],row["outcomeDate"],row["revenueMinorUnits"],row["currency"],json.dumps(row["attribution"]),row["identityPolicyReference"],synced_at) for row in rows])
             else: raise ValueError("unsupported_external_source")
-            connection.execute("UPDATE analytics.source_sync_executions SET status='succeeded',response_hash=%s,row_count=%s,reconciliation_json=%s,completed_at=now() WHERE id=%s::uuid",(response_hash,len(rows),json.dumps(reconciliation),execution["executionId"]))
+            execution_status="succeeded" if reconciliation.get("complete",True) else "incomplete"
+            connection.execute("UPDATE analytics.source_sync_executions SET status=%s,response_hash=%s,row_count=%s,reconciliation_json=%s,completed_at=now() WHERE id=%s::uuid",(execution_status,response_hash,len(rows),json.dumps(reconciliation),execution["executionId"]))
             connection.execute("UPDATE app.source_connections SET last_validated_at=coalesce(last_validated_at,now()) WHERE id=%s::uuid",(connection_id,))
-        return {"executionId":execution["executionId"],"websiteId":execution["websiteId"],"source":source_type,"status":"succeeded","rowCount":len(rows),"responseHash":response_hash,"reconciliation":reconciliation}
+        return {"executionId":execution["executionId"],"websiteId":execution["websiteId"],"source":source_type,"status":execution_status,"rowCount":len(rows),"responseHash":response_hash,"reconciliation":reconciliation}
 
     def fail_external_sync(self, execution_id: str, error_code: str) -> None:
         with self.connection() as connection:
