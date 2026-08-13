@@ -7,7 +7,7 @@ Status: the first-site production milestone, all applicable Phase 1 receipts, an
 - Supply approved client users and real goal targets before creating either.
 - Supply an approved report recipient and a new owned transactional-email credential before enabling recurring email delivery. The ignored local House of Dental Resend key returns HTTP 401; the different deployed Worker secret is valid but intentionally cannot be read or exported from Cloudflare.
 - Create and approve a Google OAuth production client and consent screen before self-service connection can be enabled.
-- Authorize and configure Google Ads, Search Console, call tracking, CRM/booking, and revenue sources before their later-stage integrations can go live.
+- Authorize and configure Google Ads, call tracking, CRM/booking, and revenue sources before those later-stage integrations can go live. Search Console is connected; monitor the new property until Google supplies finalized rows, while preserving the required partial-coverage label.
 
 The corresponding application flows, tenant schemas, KMS key, four schedulers, retention policy, external-source workers, and fail-closed status surfaces are already deployed. `EXTERNAL-SOURCE-ONBOARDING.md` lists the exact remaining owner-supplied values and approvals.
 

@@ -21,7 +21,7 @@ Updated August 13, 2026.
 | Recurring reporting | Deployed, inactive | PDF generation, delivery ledger, idempotency, error handling, and the daily scheduler are live. The ignored local Resend key returns 401, while the separate valid Cloudflare Worker secret is non-exportable; a new owned reporting credential is required. |
 | OAuth | Deployed, inactive | KMS, PKCE, signed state, `analytics.readonly`, refresh-token encryption, revocation, re-consent, and offboarding are implemented. Google production approval/client secrets are absent. |
 | Retention/deletion | Active | 760-day aggregate, 180-day operations, seven-year audit, and 30-day deletion-grace defaults are active and configurable. A temporary production tenant passed full deletion and cleanup. |
-| External sources | Runtime deployed, inactive by ownership | Version-pinned secret resolution, approval/audit, daily Ads/Search scheduling, idempotent provenance, privacy-validated call/CRM ingestion, and truthful paid/search/business APIs are live. Search Console API is enabled, but operator and runtime credentials see zero properties; no source account is configured. |
+| External sources | Search Console active with partial coverage | Version-pinned secret resolution, approval/audit, daily Ads/Search scheduling, idempotent provenance, privacy-validated call/CRM ingestion, and truthful paid/search/business APIs are live. The House of Dental URL-prefix property is verified, the runtime ADC connection is approved, and a signed production sync returned 200. The property is new and has no approved historical rows, so the API correctly reports unavailable totals and `partial_data`; Ads, call tracking, and CRM remain unconfigured. |
 | Database resilience | Active | Cloud SQL has automated backups and point-in-time recovery enabled with seven-day retention. |
 | Secrets | Active | Database and internal trigger values are in Secret Manager. Trigger versions 1 through 4 are disabled; production and every scheduler are pinned to version 5. |
 
@@ -37,7 +37,7 @@ Shashaank Shankar approved the healthcare/privacy policy, consent configuration,
 
 The Phase 1 live measurement gate is passed:
 
-- an authorized consented production test was accepted by Resend and the live form displayed its success state;
+- authorized consented production tests were accepted by Resend and the live form displayed its success state, including a fresh one-request test on August 13, 2026;
 - the GA4 Realtime Data API observed exactly one each of `form_submit`, `generate_lead`, and `appointment_request` at `minutesAgo=00`;
 - the deployed anchor allowlist permits the site's static `#book` fragment while unknown fragments still fail closed before analytics initialization;
 - the rendered site has no mailto CTA, so `email_click` is not currently applicable;

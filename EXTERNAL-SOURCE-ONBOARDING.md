@@ -28,7 +28,7 @@ Activation requires explicit ownership and scope for each source:
 | Source | Required owner-supplied configuration | Approval boundary |
 | --- | --- | --- |
 | Google Ads | Developer token, customer ID, optional manager ID, read-only OAuth grant, currency confirmation | Cost/click reconciliation and campaign identifier review |
-| Search Console | Verified property matching `https://thehouseofdentalwp.com`, read access for the runtime identity or approved OAuth connection | Query retention/privacy review; the API is enabled, but current operator and runtime credentials list zero accessible sites |
+| Search Console | Verified property matching `https://thehouseofdentalwp.com`, read access for the runtime identity or approved OAuth connection | Connected: the URL-prefix property is verified, the operator and runtime service account are owners, and the pinned ADC connection is approved. Query text retention remains disabled. |
 | Call tracking | Selected vendor, account/source identifier, credential or signed webhook secret, approved outcome mapping | No recordings, transcripts, phone numbers, or caller identifiers enter analytics storage |
 | CRM/booking | Selected first-party system, credential, source-record identifiers, lifecycle mapping, identity-policy reference | Healthcare/privacy approval for matching outside GA4; only one-way keyed identifiers enter reporting |
 
