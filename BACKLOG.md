@@ -1,15 +1,12 @@
 # Backlog
 
-## First-site reporting activation
+## First-site production milestone
 
-Status: direct GA4 reporting is active locally. The remaining items are governance and persistence work, not blockers for local live reads.
+Status: governance, persisted reporting, scheduling, the private dashboard, and the production request handoff are live. One operational measurement check remains before Phase 1 can be closed.
 
-- Obtain approval for healthcare/privacy status.
-- Approve route-level analytics eligibility.
-- Approve consent behavior and production wording.
+- Run one explicitly authorized test after granting analytics consent.
+- Verify exactly one each of `form_submit`, `generate_lead`, and `appointment_request` in the GA4 Realtime API.
+- If office-inbox access becomes available, record inbox placement separately from Resend acceptance.
 - Preserve the Admin API-verified assignment: property `549721844`, web stream `15427015396`, Measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
-- Verify the appointment backend success semantics.
-- Record the named privacy/legal approval for the already-live consent and route policy.
-- Record the authorized reporting principal and retain its Viewer-level access for the FastAPI runtime.
 
-The public website is already collecting consent-controlled GA4 traffic. The FastAPI dashboard reads GA4 directly on request and returns zero only when GA4 returns no matching event rows; persistence and scheduled synchronization remain separate future work.
+The public website collects only consent-controlled GA4 traffic. Cloud Scheduler and Cloud Tasks synchronize fixed-period GA4 reports into Cloud SQL, and dashboard reads use stored snapshots rather than live Google requests.

@@ -30,7 +30,8 @@ Shashaank Shankar approved the healthcare/privacy policy, consent configuration,
 
 Remaining evidence is operational rather than governance approval:
 
-- no authorized production form submission was sent to the dental office, so the three post-success events, Resend acceptance, and inbox delivery were not observed;
+- an authorized production test was accepted by Resend and the live form displayed its success state, but the successful retry ran without analytics consent, so `form_submit`, `generate_lead`, and `appointment_request` were not observed in GA4;
+- inbox placement remains unverified without access to the dental office inbox;
 - the rendered site has no mailto CTA, so `email_click` is not currently applicable;
 - UI-level DebugView/Tag Assistant parameter inspection remains unobserved, while code and fixtures prove the allowlisted payload construction.
 
