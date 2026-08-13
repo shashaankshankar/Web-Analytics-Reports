@@ -100,7 +100,9 @@ class Database:
                 connection.execute((ROOT / "infra/postgres/005_retention_offboarding.sql").read_text())
             if "006_external_sources" not in applied:
                 connection.execute((ROOT / "infra/postgres/006_external_sources.sql").read_text())
-        return {"status": "ok", "migration": "006_external_sources"}
+            if "007_external_sync_provenance" not in applied:
+                connection.execute((ROOT / "infra/postgres/007_external_sync_provenance.sql").read_text())
+        return {"status": "ok", "migration": "007_external_sync_provenance"}
 
     def seed_first_site(self, site: Site) -> dict:
         ids = {
@@ -627,6 +629,7 @@ class Database:
             aggregate_counts["googleAds"]=connection.execute("DELETE FROM analytics.google_ads_daily d USING app.websites w,app.companies c,app.data_retention_policies p WHERE d.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id AND d.metric_date<current_date-p.aggregate_days RETURNING 1").rowcount
             aggregate_counts["searchConsole"]=connection.execute("DELETE FROM analytics.search_console_daily d USING app.websites w,app.companies c,app.data_retention_policies p WHERE d.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id AND d.metric_date<current_date-p.aggregate_days RETURNING 1").rowcount
             aggregate_counts["firstPartyOutcomes"]=connection.execute("DELETE FROM analytics.first_party_outcomes d USING app.websites w,app.companies c,app.data_retention_policies p WHERE d.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id AND d.outcome_date<current_date-p.aggregate_days RETURNING 1").rowcount
+            aggregate_counts["sourceSyncExecutions"]=connection.execute("DELETE FROM analytics.source_sync_executions e USING app.websites w,app.companies c,app.data_retention_policies p WHERE e.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id AND e.requested_end_date<current_date-p.operations_days RETURNING 1").rowcount
             operations=connection.execute("""
                 DELETE FROM analytics.report_deliveries d USING app.recurring_reports r,app.websites w,app.companies c,app.data_retention_policies p
                  WHERE d.recurring_report_id=r.id AND r.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id
@@ -666,6 +669,7 @@ class Database:
                 counts["googleAds"]=connection.execute("DELETE FROM analytics.google_ads_daily WHERE website_id=%s RETURNING 1",(website_id,)).rowcount
                 counts["searchConsole"]=connection.execute("DELETE FROM analytics.search_console_daily WHERE website_id=%s RETURNING 1",(website_id,)).rowcount
                 counts["firstPartyOutcomes"]=connection.execute("DELETE FROM analytics.first_party_outcomes WHERE website_id=%s RETURNING 1",(website_id,)).rowcount
+                counts["sourceSyncExecutions"]=connection.execute("DELETE FROM analytics.source_sync_executions WHERE website_id=%s RETURNING 1",(website_id,)).rowcount
                 counts["sourceConnections"]=connection.execute("DELETE FROM app.source_connections WHERE website_id=%s RETURNING id",(website_id,)).rowcount
                 for table in ("daily_property_metrics","daily_channel_metrics","daily_page_metrics","daily_event_metrics","period_metric_snapshots","daily_canonical_metrics","report_snapshots","operator_alerts","measurement_health_checks","data_quality_status"):
                     counts[table]=connection.execute(sql.SQL("DELETE FROM analytics.{} WHERE assignment_id=ANY(%s) RETURNING 1").format(sql.Identifier(table)),(assignments,)).rowcount if assignments else 0
@@ -778,6 +782,60 @@ class Database:
             connection.execute("DELETE FROM app.memberships WHERE organization_id=%s::uuid AND user_id=%s::uuid",(context.organization_id,user_id))
             connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'membership.removed','user',%s::uuid,'{}')",(context.organization_id,context.user_id,user_id))
         return True
+
+    def begin_external_sync(self, connection_id: str, source_type: str, start_date: date, end_date: date, request_hash: str) -> dict:
+        with self.connection() as connection:
+            source=connection.execute("""
+                SELECT c.id,c.website_id,c.source_type,p.public_id website_public_id
+                  FROM app.source_connections c JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=c.website_id
+                 WHERE c.id=%s::uuid AND c.source_type=%s AND c.approval_status='approved' AND c.disabled_at IS NULL
+            """,(connection_id,source_type)).fetchone()
+            if not source: raise PermissionError("external_source_not_approved")
+            existing=connection.execute("SELECT id,status,row_count,response_hash,reconciliation_json FROM analytics.source_sync_executions WHERE source_connection_id=%s::uuid AND requested_start_date=%s AND requested_end_date=%s AND request_hash=%s",(connection_id,start_date,end_date,request_hash)).fetchone()
+            if existing and existing["status"]=="succeeded":
+                return {"executionId":str(existing["id"]),"websiteId":source["website_public_id"],"idempotentReplay":True,"rowCount":existing["row_count"],"responseHash":existing["response_hash"],"reconciliation":existing["reconciliation_json"]}
+            row=connection.execute("""
+                INSERT INTO analytics.source_sync_executions(source_connection_id,website_id,requested_start_date,requested_end_date,request_hash,status)
+                VALUES(%s::uuid,%s,%s,%s,%s,'running')
+                ON CONFLICT(source_connection_id,requested_start_date,requested_end_date,request_hash)
+                DO UPDATE SET status='running',error_code=NULL,started_at=now(),completed_at=NULL
+                RETURNING id
+            """,(connection_id,source["website_id"],start_date,end_date,request_hash)).fetchone()
+        return {"executionId":str(row["id"]),"websiteId":source["website_public_id"],"websiteUuid":str(source["website_id"]),"idempotentReplay":False}
+
+    def complete_external_sync(self, execution: dict, connection_id: str, source_type: str, rows: list[dict], response_hash: str, reconciliation: dict) -> dict:
+        synced_at=datetime.now(timezone.utc)
+        with self.connection() as connection:
+            execution_row=connection.execute("SELECT website_id,requested_start_date,requested_end_date FROM analytics.source_sync_executions WHERE id=%s::uuid AND status='running' FOR UPDATE",(execution["executionId"],)).fetchone()
+            if not execution_row: raise RuntimeError("external_sync_not_running")
+            start_date,end_date=execution_row["requested_start_date"],execution_row["requested_end_date"]
+            website_uuid=execution_row["website_id"]
+            if source_type=="google_ads":
+                connection.execute("DELETE FROM analytics.google_ads_daily WHERE source_connection_id=%s::uuid AND metric_date BETWEEN %s AND %s",(connection_id,start_date,end_date))
+                connection.cursor().executemany("""
+                    INSERT INTO analytics.google_ads_daily(source_connection_id,website_id,metric_date,campaign_id,campaign_name,ad_group_id,cost_micros,clicks,impressions,currency_code,source_sync_at)
+                    VALUES(%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,[(connection_id,website_uuid,row["date"],row["campaignId"],row["campaignName"],row["adGroupId"],row["costMicros"],row["clicks"],row["impressions"],row["currency"],synced_at) for row in rows])
+            elif source_type=="search_console":
+                connection.execute("DELETE FROM analytics.search_console_daily WHERE source_connection_id=%s::uuid AND metric_date BETWEEN %s AND %s",(connection_id,start_date,end_date))
+                connection.cursor().executemany("""
+                    INSERT INTO analytics.search_console_daily(source_connection_id,website_id,metric_date,query_hash,query_text,page_path,clicks,impressions,ctr,position,privacy_approved,source_sync_at)
+                    VALUES(%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,[(connection_id,website_uuid,row["date"],row["queryHash"],row["queryText"],row["pagePath"],row["clicks"],row["impressions"],row["ctr"],row["position"],row["privacyApproved"],synced_at) for row in rows])
+            elif source_type in {"call_tracking","crm_booking"}:
+                connection.cursor().executemany("""
+                    INSERT INTO analytics.first_party_outcomes(source_connection_id,website_id,source_record_hash,subject_key,outcome_type,outcome_date,revenue_minor_units,currency_code,attribution_json,identity_policy_reference,source_sync_at)
+                    VALUES(%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT(source_connection_id,source_record_hash,outcome_type) DO UPDATE SET subject_key=excluded.subject_key,outcome_date=excluded.outcome_date,revenue_minor_units=excluded.revenue_minor_units,currency_code=excluded.currency_code,attribution_json=excluded.attribution_json,identity_policy_reference=excluded.identity_policy_reference,source_sync_at=excluded.source_sync_at
+                """,[(connection_id,website_uuid,row["sourceRecordHash"],row["subjectKey"],row["outcomeType"],row["outcomeDate"],row["revenueMinorUnits"],row["currency"],json.dumps(row["attribution"]),row["identityPolicyReference"],synced_at) for row in rows])
+            else: raise ValueError("unsupported_external_source")
+            connection.execute("UPDATE analytics.source_sync_executions SET status='succeeded',response_hash=%s,row_count=%s,reconciliation_json=%s,completed_at=now() WHERE id=%s::uuid",(response_hash,len(rows),json.dumps(reconciliation),execution["executionId"]))
+            connection.execute("UPDATE app.source_connections SET last_validated_at=coalesce(last_validated_at,now()) WHERE id=%s::uuid",(connection_id,))
+        return {"executionId":execution["executionId"],"websiteId":execution["websiteId"],"source":source_type,"status":"succeeded","rowCount":len(rows),"responseHash":response_hash,"reconciliation":reconciliation}
+
+    def fail_external_sync(self, execution_id: str, error_code: str) -> None:
+        with self.connection() as connection:
+            connection.execute("UPDATE analytics.source_sync_executions SET status='failed',error_code=%s,completed_at=now() WHERE id=%s::uuid",(error_code[:120],execution_id))
 
     def record_measurement_health(self, assignment_id, health: dict):
         with self.connection() as connection:
