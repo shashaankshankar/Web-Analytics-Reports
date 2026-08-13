@@ -12,10 +12,10 @@
     "first_website": "The House of Dental",
     "domain": "https://thehouseofdentalwp.com",
     "ga4_property": "549721844",
-    "ga4_web_stream": "15408312790",
+    "ga4_web_stream": "15427015396",
     "ga4_measurement_id": "G-TC66MQQ0T7",
     "public_collection_status": "live",
-    "reporting_connection_status": "awaiting_client_grant"
+    "reporting_connection_status": "active_readonly_adc"
   },
   "privacy": {
     "default_analytics_eligibility": "prohibited",

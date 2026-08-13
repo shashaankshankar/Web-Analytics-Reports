@@ -20,7 +20,7 @@ This is the first client website in scope. The platform should preserve its reus
 | Location | 6504 University Blvd, Winter Park, FL 32792 | `src/data/site.json`; site footer/contact page |
 | Primary phone | (407) 678-1400 | `src/data/site.json`; telephone CTAs throughout the site |
 | GA4 property | `549721844` | Repository value; account-level access not yet verified |
-| GA4 web stream | `15408312790` | Canonical website repository value; account-level access not yet verified |
+| GA4 web stream | `15427015396` | Verified through the GA4 Admin API on 2026-08-12 |
 | GA4 Measurement ID | `G-TC66MQQ0T7` | Enabled in the live website bundle |
 | Public GA4 collection | Active after consent | Browser observed a GA4 collection response with HTTP 204 on August 12, 2026 |
 | Reporting connection | Awaiting client grant | Service principal and read-only access are not configured |
@@ -134,7 +134,7 @@ The deployment also defines legacy redirects for `/home`, `/about-us`, `/dental-
 
 These items do not block the already-live website, but they block a trustworthy production reporting launch:
 
-1. Confirm client ownership of property `549721844`, web stream `15408312790`, and Measurement ID `G-TC66MQQ0T7` through an authorized GA4 account.
+1. Confirm client ownership of property `549721844`, web stream `15427015396`, and Measurement ID `G-TC66MQQ0T7` through an authorized GA4 account.
 2. Confirm the GA4 property timezone and reporting scope.
 3. Record the named healthcare/privacy decision and approval for the live consent and route policy.
 4. Grant the reporting principal Viewer access and verify a read-only Data API request.

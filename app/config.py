@@ -33,15 +33,66 @@ def load_site() -> Site:
 
 @dataclass(frozen=True)
 class Settings:
-    mode: str; data_api_enabled: bool; live_approved: bool; property_id: str; stream_id: str; api_token: str; host: str; port: int
+    mode: str
+    data_api_enabled: bool
+    live_approved: bool
+    property_id: str
+    stream_id: str
+    api_token: str
+    host: str
+    port: int
+    auth_mode: str = "token"
+    database_url: str = ""
+    db_name: str = "measurement"
+    db_user: str = "measurement_app"
+    db_password: str = ""
+    db_socket: str = ""
+    google_cloud_project: str = ""
+    google_cloud_region: str = "us-central1"
+    tasks_queue: str = ""
+    service_url: str = ""
+    task_service_account: str = ""
+    internal_trigger_token: str = ""
     @property
     def live_enabled(self): return self.mode == "live" and self.data_api_enabled and self.live_approved
     @classmethod
     def from_environment(cls, env: Mapping[str, str] | None = None):
         env = os.environ if env is None else env
-        return cls(env.get("PLATFORM_MODE", "demo"), env.get("GA4_DATA_API_ENABLED") == "true", env.get("GA4_LIVE_APPROVED") == "true", env.get("GA4_PROPERTY_ID", ""), env.get("GA4_STREAM_ID", ""), env.get("PLATFORM_API_TOKEN", ""), env.get("HOST", "127.0.0.1"), int(env.get("PORT", "3000")))
+        return cls(
+            env.get("PLATFORM_MODE", "demo"),
+            env.get("GA4_DATA_API_ENABLED") == "true",
+            env.get("GA4_LIVE_APPROVED") == "true",
+            env.get("GA4_PROPERTY_ID", ""),
+            env.get("GA4_STREAM_ID", ""),
+            env.get("PLATFORM_API_TOKEN", ""),
+            env.get("HOST", "127.0.0.1"),
+            int(env.get("PORT", "3000")),
+            env.get("PLATFORM_AUTH_MODE", "token"),
+            env.get("DATABASE_URL", ""),
+            env.get("DB_NAME", "measurement"),
+            env.get("DB_USER", "measurement_app"),
+            env.get("DB_PASSWORD", ""),
+            env.get("INSTANCE_UNIX_SOCKET", ""),
+            env.get("GOOGLE_CLOUD_PROJECT", ""),
+            env.get("GOOGLE_CLOUD_REGION", "us-central1"),
+            env.get("CLOUD_TASKS_QUEUE", ""),
+            env.get("SERVICE_URL", ""),
+            env.get("TASK_SERVICE_ACCOUNT", ""),
+            env.get("INTERNAL_TRIGGER_TOKEN", ""),
+        )
+
+    @property
+    def database_enabled(self):
+        return bool(self.database_url or (self.db_password and self.db_socket))
+
+    @property
+    def queue_enabled(self):
+        return all((self.google_cloud_project, self.tasks_queue, self.service_url, self.task_service_account))
     def validate(self, site: Site):
         if not self.live_enabled: return
-        if len(self.api_token) < 32: raise RuntimeError("platform_api_token_required")
+        if self.auth_mode not in {"token", "cloud_run"}: raise RuntimeError("unsupported_auth_mode")
+        if self.auth_mode == "token" and len(self.api_token) < 32: raise RuntimeError("platform_api_token_required")
         if self.property_id != site.property_id: raise RuntimeError("live_ga4_property_mismatch")
         if self.stream_id != site.stream_id: raise RuntimeError("live_ga4_stream_mismatch")
+        if self.mode == "live" and not self.database_enabled: raise RuntimeError("production_database_required")
+        if self.queue_enabled and len(self.internal_trigger_token) < 32: raise RuntimeError("internal_trigger_token_required")

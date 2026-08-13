@@ -1,0 +1,44 @@
+# Requirement audit
+
+Updated August 12, 2026. This is the evidence ledger for `Measurement and Reporting Platform.md`. A later stage is not treated as authorization to bypass an earlier hard gate.
+
+## Current release boundary
+
+| Scope | Status | Evidence or blocker |
+| --- | --- | --- |
+| Steps 1-6 | Implemented, approval pending | First-site, contract, eligibility, prohibited-data, and validation artifacts exist. Contract, route manifest, and mappings remain pending authorized healthcare/privacy approval. |
+| Steps 7-9 | Implemented, release not approved | The live site has one collection owner and semantic events, but the governance record remains default-deny. |
+| Steps 10-13 | Blocked on current manual evidence | No current reviewer evidence proves all seven events, correct parameters, duplicate absence, consent states, prohibited-route denial, and URL/payload leakage absence. |
+| Step 14 | Live | Measurement health exposes contract, stream, measurement ID, timezone, event, consent/governance, persistence, and collection states. |
+| Phase 1 gate | **Not passed** | Named privacy/legal approval, route approval, consent approval, downstream success semantics, and complete manual DebugView/Tag Assistant evidence are absent. |
+| Steps 15-39 | Live | FastAPI, Cloud SQL schemas, versioned semantics, ADC credential abstraction, Admin/Data API adapters, fixed reports, exact provenance, daily/period facts, Scheduler, Tasks, workers, retries, replay/dead-letter state, idempotency, reconciliation, and data-quality states are deployed. |
+| Phase 2 gate | Passed for the first-site backend | A repeated production job returned `idempotentReplay: true`; all six report definitions pass GA4 compatibility; all facts link to executions; failed validation jobs replayed; quota, thresholding, restrictions, dimension loss, freshness, and errors are visible. Cross-property failure isolation remains a multi-client test. |
+| Steps 40-49 | Live | Stored product APIs and a private dashboard expose overview, fixed periods/comparisons, acquisition, conversion, landing pages, expected events, measurement health, and sync status. |
+| Phase 3 gate | Passed for available approved metrics | Dashboard values resolve to stored snapshots, report executions, report version 1, and exact GA4 requests. Outcome metrics remain zero/unapproved rather than being inferred. |
+| Step 50 | Complete | `ONBOARDING.md` documents the repeatable client onboarding path and hard gates. |
+| First production milestone | **Not passed** | The technical reporting platform is live, but the milestone explicitly requires an approved measurement contract and privacy-safe instrumentation evidence. |
+| Steps 51-57 | Gated | Portfolio, alert, and annotation foundations exist, but full agency-console expansion and tenant-isolation acceptance must wait for the first milestone per the plan. |
+| Steps 58-62 | Gated | Client roles, portal, goals, recurring reports, and OAuth are prohibited before Phase 4 passes. |
+| Steps 63-68 | Gated and dependency-blocked | No approved Google Ads, Search Console, call-tracking, CRM/booking, outcome-matching, or revenue-source authorization/configuration exists. The plan forbids inventing these integrations. |
+| Step 69 | Not justified | BigQuery raw-event analytics is optional and the plan says to add it only when aggregate reporting is insufficient. |
+
+## Live production evidence
+
+- Cloud Run revision `measurement-reporting-platform-00009-k7n` serves 100% of traffic and rejects unauthenticated requests with HTTP 403.
+- `/ready` reports the `measurement` Cloud SQL database migrated and ready.
+- GA4 Admin API verifies property `549721844`, web stream `15427015396`, measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
+- Cloud Scheduler and Cloud Tasks completed all five fixed-period jobs on revision `00009-k7n` with HTTP 200; queue and failed-job counts returned to zero.
+- Period boundaries use the GA4 property timezone. At the verification time, the latest complete date was `2026-08-11`; current-local-day activity is excluded.
+- Re-dispatching the exact `28d` schedule key returned `idempotentReplay: true` for job `dbb74a68-014c-57d7-b30f-a0679d7bc5c5`.
+- Source requests and metadata are stored on every new execution. Daily property, channel, page, and event facts are populated when rows exist. Canonical facts remain empty while mappings are unapproved.
+- Cloud SQL backups, point-in-time recovery, seven retained backups, and seven days of transaction logs are enabled.
+
+## Evidence required to pass Phase 1
+
+1. Named authorized approval for healthcare/privacy/legal review.
+2. Approved route eligibility manifest and consent configuration.
+3. Confirmed downstream success condition for `generate_lead` and `appointment_request` without claiming a booked appointment.
+4. Current manual DebugView or Tag Assistant evidence for all seven contract events, correct parameters, and no duplicates.
+5. Current evidence that prohibited routes, URLs, payloads, and form values do not reach GA4.
+
+Until these are supplied, the correct production state is `attention_required`, not fully approved.

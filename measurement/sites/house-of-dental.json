@@ -11,11 +11,11 @@
   },
   "ga4": {
     "propertyId": "549721844",
-    "webStreamId": "15408312790",
+    "webStreamId": "15427015396",
     "measurementId": "G-TC66MQQ0T7",
     "collectionStatus": "live",
     "propertyTimezone": "America/New_York",
-    "reportingConnectionStatus": "active_direct_query"
+    "reportingConnectionStatus": "active_stored_sync"
   },
   "businessTimezone": "America/New_York",
   "governance": {

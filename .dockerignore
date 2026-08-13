@@ -1,0 +1,15 @@
+.git
+.venv
+.env
+.env.*
+__pycache__
+.pytest_cache
+*.pyc
+*.pyo
+*.pdf
+*.pptx
+tests
+BACKLOG.md
+PRODUCTION-READINESS.md
+Measurement and Reporting Platform.md
+ARCHITECTURE-PLAN.md

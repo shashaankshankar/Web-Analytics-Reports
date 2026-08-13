@@ -1,8 +1,27 @@
 # Measurement and Reporting Platform
 
-FastAPI implementation of the agency GA4 reporting platform. House of Dental is the first live website. The application keeps server-side reporting disabled by default, never substitutes demo values for unavailable live data, and includes the Postgres schema needed for managed infrastructure.
+Production FastAPI service for privacy-aware, stored GA4 reporting. House of Dental is the first website. The service is deployed privately on Cloud Run, uses read-only Application Default Credentials, synchronizes fixed reporting windows through Cloud Scheduler and Cloud Tasks, and stores versioned facts and report provenance in Cloud SQL Postgres.
 
-## Run locally
+## Production
+
+- Cloud Run service: `measurement-reporting-platform`, `us-central1`
+- Canonical private URL: `https://measurement-reporting-platform-ptlwmdunva-uc.a.run.app`
+- Cloud SQL: `web-analytics-agency-prod:us-central1:measurement-db`
+- Queue: `measurement-sync`, one concurrent dispatch, five attempts
+- Scheduler: `measurement-daily-sync`, daily at 3:15 AM `America/New_York`
+- Runtime identity: `analytics-reporting-reader@web-analytics-agency-prod.iam.gserviceaccount.com`
+
+Cloud Run IAM protects the entire production service. Authorized operators can open it through a local authenticated proxy:
+
+```sh
+gcloud run services proxy measurement-reporting-platform \
+  --region us-central1 \
+  --project web-analytics-agency-prod
+```
+
+Then open `http://127.0.0.1:8080/dashboard`.
+
+## Local development
 
 ```sh
 python3 -m venv .venv
@@ -11,28 +30,15 @@ python3 -m venv .venv
 .venv/bin/python -m uvicorn app.main:app --reload
 ```
 
-Open `http://localhost:3000` for the landing page and `http://localhost:3000/docs` for interactive API documentation. The docs page supports the API bearer token through its **Authorize** button.
+The reporting APIs read stored snapshots, not live GA4 requests. Sync workers are the only path that queries GA4. Failed or incomplete queries do not become zeros; a successful complete query with no matching rows is represented as `empty_complete`.
 
-## Live GA4 reporting
+## Production operations
 
-The deployed House of Dental site uses property `549721844`, web stream `15408312790`, and Measurement ID `G-TC66MQQ0T7`. These values match the canonical website repository. Live reporting mode is explicitly gated. Provision `PLATFORM_API_TOKEN` as a secret with at least 32 characters before using this configuration:
+- `/health` is process liveness only.
+- `/ready` verifies live configuration and database migration state.
+- `/dashboard` is the single-client dashboard.
+- `/api/websites/website_house_of_dental/sync-status` exposes freshness, failures, and quality.
+- `/api/websites/website_house_of_dental/measurement-health` keeps collection, persistence, assignment, and governance separate.
+- Internal `/internal/schedule` and `/internal/sync` routes require Cloud Run IAM and a rotated Secret Manager trigger.
 
-```sh
-PLATFORM_MODE=live \
-HOST=127.0.0.1 \
-GA4_DATA_API_ENABLED=true \
-GA4_LIVE_APPROVED=true \
-GA4_PROPERTY_ID=549721844 \
-GA4_STREAM_ID=15408312790 \
-.venv/bin/python -m uvicorn app.main:app
-```
-
-The FastAPI service uses the official Python GA4 Data client with read-only Application Default Credentials. The overview endpoint makes live GA4 Data API requests for summary metrics and every contract event field; previous-period comparisons and database persistence are not yet included.
-
-## Live-connection gate
-
-Set the credential-related environment values only after the site's privacy, route, consent, property, stream, and assignment evidence is recorded. The connector rejects live work unless explicitly enabled, an approved assignment is present, and the configured property and stream exactly match the first-site record.
-
-The public website's GA4 collection and this platform's read-only reporting connection are separate states. Public browser verification confirms a consent-controlled request to the configured Measurement ID; it does not establish Viewer access, property receipt, historical sync, or database persistence.
-
-The database migration is at `infra/postgres/001_core.sql`; it is intentionally not applied by this repository.
+Database migrations are in `infra/postgres/`. Reapplying them is safe. Do not place database, trigger, Google, or API credentials in the repository.

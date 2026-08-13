@@ -1,6 +1,28 @@
 # Measurement and Reporting Platform
 ## Step-by-Step Implementation Plan
 
+## Current implementation status — August 12, 2026
+
+House of Dental is the first live website. The reporting service is deployed privately on Cloud Run and uses the official Python GA4 Data API client with read-only Application Default Credentials (ADC).
+
+- Runtime: `app/main.py` served by Uvicorn; no Node.js runtime remains.
+- Production dashboard: `GET /dashboard`; interactive endpoint documentation: `GET /docs`.
+- Service liveness: `GET /health` and `GET /healthz`; neither proves GA4 access.
+- Production access is private and enforced by Cloud Run IAM; token authentication remains available for local operation.
+- Cloud Scheduler creates five fixed-period jobs through Cloud Tasks. Workers query GA4, preserve execution metadata and quota state, and persist versioned facts/snapshots in Cloud SQL Postgres.
+- The GA4 Admin API verifies the property, active web stream, Measurement ID, key-event inventory, and property timezone. Fixed periods are calculated in that property timezone.
+- Dashboard requests read stored snapshots. Correct period comparisons, retries, freshness, and data-quality states are active; exact job retries are idempotent.
+- The reporting infrastructure is live. The healthcare governance record remains unapproved, so the product visibly reports `attention_required` rather than claiming full measurement approval.
+- `REQUIREMENTS-AUDIT.md` records the live evidence and the hard-gated work that cannot proceed without authorized approvals and source-system configuration.
+
+Start locally with:
+
+```sh
+.venv/bin/python -m uvicorn app.main:app --reload
+```
+
+Then open `http://127.0.0.1:3000/dashboard`. Production operators use the authenticated Cloud Run proxy documented in `README.md`.
+
 ### Objective
 
 Build the smallest production-ready version of the measurement and reporting platform around the first live website before expanding it into a broader agency platform.
@@ -803,35 +825,33 @@ The aggregation contract is necessary to prevent mathematically invalid dashboar
 
 ## Step 23. Define the internal credential interface
 
-Implement:
+Implement a Python protocol or concrete credential provider with equivalent responsibilities:
 
-```typescript
-interface AnalyticsCredential {
-  getAuthorizedClient()
-  validateAccess()
-  listAccessibleProperties()
-  disable()
-}
+```python
+class AnalyticsCredential(Protocol):
+    def get_authorized_client(self): ...
+    def validate_access(self) -> bool: ...
+    def list_accessible_properties(self) -> list[dict]: ...
 ```
 
 The rest of the system should not know whether authentication came through OAuth or a service account.
 
 ---
 
-## Step 24. Implement service-account authentication
+## Step 24. Implement read-only authentication
 
-Start with service accounts for agency-managed clients.
+Start with Application Default Credentials (ADC) for agency-managed deployments. Use workload identity or a managed runtime identity in production; only support a service-account JSON key when there is no safer approved option.
 
 Requirements:
 
 - Read-only GA4 access
 - No credentials committed to source control
-- Prefer managed runtime identity
-- Avoid downloadable long-lived key files where possible
+- Prefer managed runtime identity or ADC
+- Avoid downloadable long-lived key files
 
 OAuth comes later.
 
-The service-account path is explicitly the MVP authentication mechanism.
+The MVP authentication mechanism is read-only ADC; OAuth is a later client-facing capability.
 
 ---
 
@@ -1289,7 +1309,13 @@ GET /websites/:websiteId/conversion
 GET /websites/:websiteId/measurement-health
 
 GET /websites/:websiteId/sync-status
+
+GET /health
+
+GET /healthz
 ```
+
+The live FastAPI routes use literal IDs in the path and an optional fixed `period` query value (`7d`, `28d`, `90d`, `this_month`, or `last_month`). `GET /health` and `GET /healthz` are unauthenticated liveness checks only. `GET /docs` is the interactive OpenAPI test surface; reporting endpoints remain bearer-token protected.
 
 Do not expose:
 
