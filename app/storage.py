@@ -104,7 +104,9 @@ class Database:
                 connection.execute((ROOT / "infra/postgres/007_external_sync_provenance.sql").read_text())
             if "008_source_connection_management" not in applied:
                 connection.execute((ROOT / "infra/postgres/008_source_connection_management.sql").read_text())
-        return {"status": "ok", "migration": "008_source_connection_management"}
+            if "009_oauth_assignment_management" not in applied:
+                connection.execute((ROOT / "infra/postgres/009_oauth_assignment_management.sql").read_text())
+        return {"status": "ok", "migration": "009_oauth_assignment_management"}
 
     def seed_first_site(self, site: Site) -> dict:
         ids = {
@@ -599,12 +601,36 @@ class Database:
                  WHERE id=%s::uuid AND credential_type='oauth' RETURNING id
             """,(connection_id,)).fetchone()
             if not row: return False
+            connection.execute("UPDATE app.website_analytics_assignments SET status='revoked',effective_to=current_date WHERE analytics_connection_id=%s::uuid AND effective_to IS NULL",(connection_id,))
             if delete_token:
                 connection.execute("DELETE FROM app.oauth_credentials WHERE analytics_connection_id=%s::uuid",(connection_id,))
             else:
                 connection.execute("UPDATE app.oauth_credentials SET revoked_at=now() WHERE analytics_connection_id=%s::uuid",(connection_id,))
             connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,%s,'analytics_connection',%s,%s)",(context.organization_id,context.user_id,"oauth.offboarded" if delete_token else "oauth.revoked",connection_id,json.dumps({"tokenDeleted":delete_token})))
         return True
+
+    def assign_oauth_property(self, context: TenantContext, connection_id: str, website_id: str,
+                              property_id: str, stream_id: str, property_name: str | None,
+                              timezone_name: str | None, currency_code: str | None,
+                              stream_name: str | None, measurement_id: str | None) -> dict:
+        context.require_role(frozenset({"agency_owner","agency_admin","client_admin"}))
+        property_uuid=stable_id(f"oauth-property:{connection_id}:{property_id}")
+        stream_uuid=stable_id(f"oauth-stream:{connection_id}:{property_id}:{stream_id}")
+        assignment_uuid=stable_id(f"oauth-assignment:{website_id}:{connection_id}:{property_id}:{stream_id}")
+        with self.tenant_connection(context) as connection:
+            connection_row=connection.execute("SELECT id FROM app.analytics_connections WHERE id=%s::uuid AND credential_type='oauth' AND status='pending_approval' AND disabled_at IS NULL",(connection_id,)).fetchone()
+            website=connection.execute("SELECT resource_id FROM app.resource_identifiers WHERE resource_type='website' AND public_id=%s",(website_id,)).fetchone()
+            if not connection_row or not website: raise PermissionError("oauth_connection_or_website_not_authorized")
+            active=connection.execute("SELECT id,analytics_connection_id FROM app.website_analytics_assignments WHERE website_id=%s AND effective_to IS NULL AND status='approved'",(website["resource_id"],)).fetchone()
+            if active: raise PermissionError("website_already_has_approved_assignment")
+            connection.execute("INSERT INTO app.ga_properties(id,analytics_connection_id,external_property_id,display_name,timezone,currency_code,metadata_json) VALUES(%s,%s::uuid,%s,%s,%s,%s,'{}') ON CONFLICT(analytics_connection_id,external_property_id) DO UPDATE SET display_name=excluded.display_name,timezone=excluded.timezone,currency_code=excluded.currency_code",(property_uuid,connection_id,property_id,property_name,timezone_name,currency_code))
+            connection.execute("INSERT INTO app.ga_data_streams(id,ga_property_id,external_stream_id,display_name,stream_type) VALUES(%s,%s,%s,%s,'WEB_DATA_STREAM') ON CONFLICT(ga_property_id,external_stream_id) DO UPDATE SET display_name=excluded.display_name",(stream_uuid,property_uuid,stream_id,stream_name))
+            reporting_scope={"propertyId":property_id,"streamId":stream_id,"measurementId":measurement_id,"onePropertyPerWebsite":True}
+            connection.execute("INSERT INTO app.website_analytics_assignments(id,website_id,analytics_connection_id,ga_property_id,ga_stream_id,reporting_scope,effective_from,status) VALUES(%s,%s,%s::uuid,%s,%s,%s,current_date,'approved')",(assignment_uuid,website["resource_id"],connection_id,property_uuid,stream_uuid,json.dumps(reporting_scope)))
+            connection.execute("UPDATE app.analytics_connections SET status='approved' WHERE id=%s::uuid",(connection_id,))
+            connection.execute("UPDATE app.oauth_credentials SET last_validated_at=now() WHERE analytics_connection_id=%s::uuid",(connection_id,))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'oauth.assignment_approved','website_analytics_assignment',%s,%s)",(context.organization_id,context.user_id,assignment_uuid,json.dumps({"websiteId":website_id,"propertyId":property_id,"streamId":stream_id,"scope":"https://www.googleapis.com/auth/analytics.readonly"})))
+        return {"assignmentId":str(assignment_uuid),"websiteId":website_id,"connectionId":connection_id,"propertyId":property_id,"streamId":stream_id,"measurementId":measurement_id,"status":"approved"}
 
     def retention_policy(self, context: TenantContext) -> dict:
         with self.tenant_connection(context) as connection:

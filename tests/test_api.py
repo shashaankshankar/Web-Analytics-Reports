@@ -148,6 +148,8 @@ def test_oauth_stays_fail_closed_until_production_configuration_is_approved():
         status=client.get("/api/oauth/google/status",headers=headers())
         assert status.status_code == 200 and status.json()["configured"] is False
         assert client.post("/api/oauth/google/authorize",headers=headers()).status_code == 503
+        invalid=client.post("/api/oauth/google/connections/connection-1/assign",headers=headers(),json={"websiteId":"website_house_of_dental","propertyId":"not-a-number","streamId":"1"})
+        assert invalid.status_code == 422
 
 
 def test_offboarding_requires_agency_role_and_exact_confirmation():

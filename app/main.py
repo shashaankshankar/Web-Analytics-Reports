@@ -78,6 +78,12 @@ class SourceConnectionRequest(BaseModel):
     configuration: dict = Field(default_factory=dict)
 
 
+class OAuthAssignmentRequest(BaseModel):
+    websiteId: str
+    propertyId: str
+    streamId: str
+
+
 def create_app(settings=None, reporter=None, database=None, task_queue=None):
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
     database = database or Database(settings)
@@ -336,6 +342,39 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         except Exception as error: raise HTTPException(status_code=502,detail=f"google_oauth_revocation_failed:{type(error).__name__}") from error
         if not removed: raise HTTPException(status_code=404,detail="oauth_connection_not_found")
         return {"connectionId":connection_id,"status":"offboarded" if request.deleteToken else "revoked","tokenDeleted":request.deleteToken}
+
+    async def oauth_credential(context:TenantContext,connection_id:str):
+        ciphertext=await call(database.oauth_refresh_ciphertext,context,connection_id)
+        refresh_token=await call(oauth_manager.cipher.decrypt,ciphertext,f"oauth-refresh:{context.organization_id}")
+        return OAuthCredential(refresh_token,settings.google_oauth_client_id,settings.google_oauth_client_secret)
+
+    @app.get("/api/oauth/google/connections/{connection_id}/properties",tags=["Connections"])
+    async def oauth_properties(connection_id:str,context:TenantContext=Depends(require_context)):
+        try:
+            context.require_role(frozenset({"agency_owner","agency_admin","client_admin"}))
+            credential=await oauth_credential(context,connection_id)
+            properties=await call(credential.list_accessible_properties)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        except Exception as error: raise HTTPException(status_code=502,detail=f"google_property_discovery_failed:{type(error).__name__}") from error
+        return {"connectionId":connection_id,"properties":properties,"readOnly":True}
+
+    @app.post("/api/oauth/google/connections/{connection_id}/assign",status_code=201,tags=["Connections"])
+    async def oauth_assign(connection_id:str,request:OAuthAssignmentRequest,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,request.websiteId): raise HTTPException(status_code=403,detail="forbidden_website")
+        if not request.propertyId.isdigit() or not request.streamId.isdigit(): raise HTTPException(status_code=422,detail="invalid_google_resource_identifier")
+        try:
+            context.require_role(frozenset({"agency_owner","agency_admin","client_admin"}))
+            credential=await oauth_credential(context,connection_id)
+            admin=GA4Admin(credential); inspected=await call(admin.inspect,request.propertyId)
+            stream_name=f"properties/{request.propertyId}/dataStreams/{request.streamId}"
+            stream=next((item for item in inspected["streams"] if item.get("name")==stream_name and item.get("type")=="WEB_DATA_STREAM"),None)
+            if not stream: raise HTTPException(status_code=422,detail="approved_web_stream_not_accessible")
+            prop=inspected["property"]
+            value=await call(database.assign_oauth_property,context,connection_id,request.websiteId,request.propertyId,request.streamId,prop.get("display_name"),prop.get("time_zone"),prop.get("currency_code"),stream.get("display_name"),stream.get("web_stream_data",{}).get("measurement_id"))
+        except HTTPException: raise
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        except Exception as error: raise HTTPException(status_code=502,detail=f"google_assignment_validation_failed:{type(error).__name__}") from error
+        return {"assignment":value,"validation":{"property":f"properties/{request.propertyId}","stream":stream_name,"scope":ANALYTICS_READONLY_SCOPE}}
 
     @app.get("/api/websites/{website_id}/offboarding-preview",tags=["Governance"])
     async def offboarding_preview(website_id:str,context:TenantContext=Depends(require_context)):
