@@ -57,6 +57,7 @@ class Settings:
     report_email_api_key: str = ""
     report_email_from: str = ""
     report_recipients_json: str = "{}"
+    report_email_endpoint: str = "https://api.resend.com/emails"
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_redirect_uri: str = ""
@@ -93,6 +94,7 @@ class Settings:
             env.get("REPORT_EMAIL_API_KEY", ""),
             env.get("REPORT_EMAIL_FROM", ""),
             env.get("REPORT_RECIPIENTS_JSON", "{}"),
+            env.get("REPORT_EMAIL_ENDPOINT", "https://api.resend.com/emails"),
             env.get("GOOGLE_OAUTH_CLIENT_ID", ""),
             env.get("GOOGLE_OAUTH_CLIENT_SECRET", ""),
             env.get("GOOGLE_OAUTH_REDIRECT_URI", ""),

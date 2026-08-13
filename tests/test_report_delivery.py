@@ -18,3 +18,11 @@ def test_sender_configuration_and_recipient_validation_fail_closed():
     assert valid_email("office@example.com")
     assert not valid_email("not-an-email")
     with pytest.raises(RuntimeError,match="recipient_not_configured"): sender.resolve_recipient("office")
+
+
+def test_sender_supports_a_https_relay_without_weakening_configuration_checks():
+    sender=ReportEmailSender("r"*48,"reports@example.com",{"operator":"operator@example.com"},"https://thehouseofdentalwp.com/api/report-email")
+    assert sender.configured is True
+    assert sender.resolve_recipient("operator") == "operator@example.com"
+    assert ReportEmailSender("short","reports@example.com",{"operator":"operator@example.com"},sender.endpoint).configured is False
+    assert ReportEmailSender("r"*48,"reports@example.com",{"operator":"operator@example.com"},"http://example.com").configured is False

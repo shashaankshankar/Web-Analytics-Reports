@@ -106,7 +106,7 @@ class OAuthAssignmentRequest(BaseModel):
 def create_app(settings=None, reporter=None, database=None, task_queue=None, source_connector_factory=None):
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
     database = database or Database(settings)
-    report_sender = ReportEmailSender(settings.report_email_api_key,settings.report_email_from,settings.report_recipients)
+    report_sender = ReportEmailSender(settings.report_email_api_key,settings.report_email_from,settings.report_recipients,settings.report_email_endpoint)
     oauth_manager = OAuthManager(settings.google_oauth_client_id,settings.google_oauth_client_secret,settings.google_oauth_redirect_uri,settings.google_oauth_state_secret,KmsCipher(settings.google_oauth_kms_key),settings.google_oauth_production_approved)
     source_connector_factory = source_connector_factory or SourceConnectorFactory()
 

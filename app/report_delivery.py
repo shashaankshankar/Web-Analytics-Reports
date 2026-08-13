@@ -35,7 +35,7 @@ class ReportEmailSender:
 
     @property
     def configured(self) -> bool:
-        return self.api_key.startswith("re_") and valid_email(self.sender) and bool(self.recipients)
+        return len(self.api_key) >= 32 and valid_email(self.sender) and bool(self.recipients) and self.endpoint.startswith("https://")
 
     def resolve_recipient(self, reference: str) -> str:
         recipient = self.recipients.get(reference, "")
