@@ -118,6 +118,11 @@ class SearchConsoleConnector:
 def assert_no_direct_identifiers(value: dict) -> None:
     found=DIRECT_IDENTIFIER_KEYS & {key.lower() for key in value}
     if found: raise ValueError("prohibited_direct_identifier_fields")
+    for item in value.values():
+        if isinstance(item,dict): assert_no_direct_identifiers(item)
+        elif isinstance(item,list):
+            for nested in item:
+                if isinstance(nested,dict): assert_no_direct_identifiers(nested)
 
 
 def safe_source_id(value: str) -> str:
@@ -136,6 +141,47 @@ def opaque_record_hash(source_id: str, secret: str) -> str:
     if len(secret)<32: raise ValueError("outcome_hash_secret_required")
     safe_source_id(source_id)
     return hmac.new(secret.encode(),source_id.encode(),hashlib.sha256).hexdigest()
+
+
+class FirstPartyOutcomeConnector:
+    """Normalizes approved call/CRM outcomes without retaining source identifiers."""
+
+    OUTCOMES=frozenset({"generated_lead","qualified_lead","booked_appointment","customer","call_answered","call_qualified","revenue"})
+
+    def __init__(self, source_type: str, hash_secret: str, identity_policy_reference: str):
+        if source_type not in {"call_tracking","crm_booking"}: raise ValueError("unsupported_first_party_source")
+        if len(hash_secret)<32: raise ValueError("outcome_hash_secret_required")
+        if not SAFE_ID.fullmatch(identity_policy_reference): raise ValueError("identity_policy_reference_required")
+        self.source_type=source_type; self.hash_secret=hash_secret; self.identity_policy_reference=identity_policy_reference; self._disabled=False
+
+    def validate_access(self) -> dict:
+        if self._disabled: raise RuntimeError("source_connection_disabled")
+        return {"status":"configuration_valid","source":self.source_type,"identityPolicyReference":self.identity_policy_reference}
+
+    def sync(self, start_date: date, end_date: date) -> list[dict]:
+        raise RuntimeError("provider_pull_not_configured")
+
+    def normalize(self, record: dict) -> dict:
+        if self._disabled: raise RuntimeError("source_connection_disabled")
+        assert_no_direct_identifiers(record)
+        allowed={"sourceRecordId","subjectKey","outcomeType","outcomeDate","revenueMinorUnits","currency","attribution"}
+        if set(record)-allowed: raise ValueError("unapproved_outcome_fields")
+        outcome=record.get("outcomeType")
+        if outcome not in self.OUTCOMES: raise ValueError("unapproved_outcome_type")
+        outcome_date=date.fromisoformat(record["outcomeDate"])
+        revenue=record.get("revenueMinorUnits")
+        if (outcome=="revenue") != (isinstance(revenue,int) and revenue>=0): raise ValueError("invalid_revenue_outcome")
+        subject=record.get("subjectKey")
+        if subject is not None and not re.fullmatch(r"[a-f0-9]{64}",subject): raise ValueError("subject_key_must_be_approved_hmac")
+        attribution=record.get("attribution",{})
+        if set(attribution)-{"channel","campaignId","source"}: raise ValueError("unapproved_attribution_fields")
+        for value in attribution.values(): safe_source_id(str(value))
+        return {"sourceRecordHash":opaque_record_hash(record["sourceRecordId"],self.hash_secret),"subjectKey":subject,
+                "outcomeType":outcome,"outcomeDate":outcome_date.isoformat(),"revenueMinorUnits":revenue,
+                "currency":record.get("currency"),"attribution":attribution,"identityPolicyReference":self.identity_policy_reference}
+
+    def disable(self) -> None:
+        self._disabled=True; self.hash_secret=""
 
 
 @dataclass(frozen=True)
