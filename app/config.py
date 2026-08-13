@@ -54,6 +54,15 @@ class Settings:
     task_service_account: str = ""
     internal_trigger_token: str = ""
     operator_email: str = ""
+    report_email_api_key: str = ""
+    report_email_from: str = ""
+    report_recipients_json: str = "{}"
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = ""
+    google_oauth_state_secret: str = ""
+    google_oauth_kms_key: str = ""
+    google_oauth_production_approved: bool = False
     @property
     def live_enabled(self): return self.mode == "live" and self.data_api_enabled and self.live_approved
     @classmethod
@@ -81,6 +90,15 @@ class Settings:
             env.get("TASK_SERVICE_ACCOUNT", ""),
             env.get("INTERNAL_TRIGGER_TOKEN", ""),
             env.get("PLATFORM_OPERATOR_EMAIL", "").strip().lower(),
+            env.get("REPORT_EMAIL_API_KEY", ""),
+            env.get("REPORT_EMAIL_FROM", ""),
+            env.get("REPORT_RECIPIENTS_JSON", "{}"),
+            env.get("GOOGLE_OAUTH_CLIENT_ID", ""),
+            env.get("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+            env.get("GOOGLE_OAUTH_REDIRECT_URI", ""),
+            env.get("GOOGLE_OAUTH_STATE_SECRET", ""),
+            env.get("GOOGLE_OAUTH_KMS_KEY", ""),
+            env.get("GOOGLE_OAUTH_PRODUCTION_APPROVED") == "true",
         )
 
     @property
@@ -90,6 +108,15 @@ class Settings:
     @property
     def queue_enabled(self):
         return all((self.google_cloud_project, self.tasks_queue, self.service_url, self.task_service_account))
+    @property
+    def report_recipients(self) -> dict[str, str]:
+        try:
+            value = json.loads(self.report_recipients_json)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("invalid_report_recipients_json") from error
+        if not isinstance(value, dict) or not all(isinstance(key,str) and isinstance(item,str) for key,item in value.items()):
+            raise RuntimeError("invalid_report_recipients_json")
+        return value
     def validate(self, site: Site):
         if not self.live_enabled: return
         if self.auth_mode not in {"token", "cloud_run"}: raise RuntimeError("unsupported_auth_mode")

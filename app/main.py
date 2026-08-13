@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -18,6 +20,8 @@ from .credentials import AdcCredential, GA4Admin
 from .dashboard import agency_dashboard_html, dashboard_html
 from .ga4 import GA4Reporter
 from .reports import build_client_pdf
+from .report_delivery import ReportEmailSender, delivery_html
+from .oauth import ANALYTICS_READONLY_SCOPE, KmsCipher, OAuthManager
 from .storage import Database
 from .sync import SyncEngine
 from .tasks import PERIODS, TaskQueue
@@ -44,9 +48,24 @@ class GoalRequest(BaseModel):
     effectiveTo: date | None = None
 
 
+class RecurringReportRequest(BaseModel):
+    name: str
+    period: Period
+    cadence: Literal["weekly", "monthly"]
+    timezone: str
+    recipientReference: str
+    nextRunAt: datetime
+
+
+class OAuthRevokeRequest(BaseModel):
+    deleteToken: bool = False
+
+
 def create_app(settings=None, reporter=None, database=None, task_queue=None):
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
     database = database or Database(settings)
+    report_sender = ReportEmailSender(settings.report_email_api_key,settings.report_email_from,settings.report_recipients)
+    oauth_manager = OAuthManager(settings.google_oauth_client_id,settings.google_oauth_client_secret,settings.google_oauth_redirect_uri,settings.google_oauth_state_secret,KmsCipher(settings.google_oauth_kms_key),settings.google_oauth_production_approved)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -204,6 +223,100 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         annotation_data=await call(database.list_annotations,context,website_id)
         content=await call(build_client_pdf,site,period,overview_data,acquisition_data,annotation_data)
         return Response(content=content,media_type="application/pdf",headers={"Content-Disposition":f'attachment; filename="{website_id}-{period}-report.pdf"'})
+
+    @app.get("/api/websites/{website_id}/recurring-reports",tags=["Reporting"])
+    async def recurring_reports(website_id:str,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        return {"websiteId":website_id,"emailDeliveryConfigured":report_sender.configured,"reports":await call(database.list_recurring_reports,context,website_id)}
+
+    @app.post("/api/websites/{website_id}/recurring-reports",status_code=201,tags=["Reporting"])
+    async def add_recurring_report(website_id:str,request:RecurringReportRequest,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        if not report_sender.configured: raise HTTPException(status_code=503,detail="report_email_not_configured")
+        try:
+            ZoneInfo(request.timezone)
+            report_sender.resolve_recipient(request.recipientReference)
+        except (ZoneInfoNotFoundError,RuntimeError) as error: raise HTTPException(status_code=422,detail=str(error)) from error
+        if not request.name.strip() or len(request.name.strip())>120 or request.nextRunAt.tzinfo is None: raise HTTPException(status_code=422,detail="invalid_recurring_report")
+        try: value=await call(database.create_recurring_report,context,website_id,request.name.strip(),request.period,request.cadence,request.timezone,request.recipientReference,request.nextRunAt)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        return {"websiteId":website_id,"report":value}
+
+    @app.delete("/api/websites/{website_id}/recurring-reports/{report_id}",status_code=204,tags=["Reporting"])
+    async def remove_recurring_report(website_id:str,report_id:str,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        try: removed=await call(database.disable_recurring_report,context,website_id,report_id)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        if not removed: raise HTTPException(status_code=404,detail="recurring_report_not_found")
+        return Response(status_code=204)
+
+    @app.post("/internal/reports/dispatch",dependencies=[Depends(require_internal)],include_in_schema=False)
+    async def dispatch_reports():
+        results=[]
+        for report in await call(database.due_recurring_reports,20):
+            delivery_id=await call(database.begin_report_delivery,report)
+            if not delivery_id:
+                results.append({"reportId":report["id"],"status":"already_sent"}); continue
+            report_hash=""
+            try:
+                context=TenantContext(report["organization_id"],report["created_by"],"", "agency_owner")
+                overview_data=await call(snapshot,context,report["website_id"],"overview",report["period_key"])
+                acquisition_data=await call(snapshot,context,report["website_id"],"acquisition",report["period_key"])
+                annotation_data=await call(database.list_annotations,context,report["website_id"])
+                content=await call(build_client_pdf,site,report["period_key"],overview_data,acquisition_data,annotation_data)
+                report_hash=hashlib.sha256(content).hexdigest()
+                message_id=await call(report_sender.send_pdf,report["recipient_secret_reference"],f"{report['company']} analytics report",delivery_html(report["company"],report["period_key"]),f"{report['website_id']}-{report['period_key']}-report.pdf",content,f"report-delivery/{delivery_id}")
+                await call(database.finish_report_delivery,report,delivery_id,report_hash,message_id,None)
+                results.append({"reportId":report["id"],"status":"sent","deliveryId":delivery_id})
+            except Exception as error:
+                code=str(error) if isinstance(error,RuntimeError) else type(error).__name__
+                await call(database.finish_report_delivery,report,delivery_id,report_hash,None,code[:120])
+                results.append({"reportId":report["id"],"status":"failed","errorCode":code[:120]})
+        return {"status":"ok","processed":len(results),"deliveries":results}
+
+    @app.get("/api/oauth/google/status",tags=["Connections"])
+    async def oauth_status(context:TenantContext=Depends(require_context)):
+        return {"provider":"google_analytics","configured":oauth_manager.configured,"productionApproved":settings.google_oauth_production_approved,"requiredScopes":[ANALYTICS_READONLY_SCOPE],"connections":await call(database.list_oauth_connections,context)}
+
+    @app.post("/api/oauth/google/authorize",tags=["Connections"])
+    async def oauth_authorize(context:TenantContext=Depends(require_context)):
+        try:
+            context.require_role(frozenset({"agency_owner","agency_admin","client_admin"}))
+            authorization=oauth_manager.create_authorization(context.organization_id,context.user_id)
+            verifier_ciphertext=await call(oauth_manager.cipher.encrypt,authorization["verifier"],f"oauth-state:{authorization['stateHash']}")
+            await call(database.create_oauth_state,context,authorization["stateHash"],verifier_ciphertext,[ANALYTICS_READONLY_SCOPE],settings.google_oauth_redirect_uri,authorization["expiresAt"])
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        except RuntimeError as error: raise HTTPException(status_code=503,detail=str(error)) from error
+        return {"authorizationUrl":authorization["url"],"expiresAt":authorization["expiresAt"].isoformat(),"scope":ANALYTICS_READONLY_SCOPE}
+
+    @app.get("/oauth/google/callback",response_class=HTMLResponse,include_in_schema=False)
+    async def oauth_callback(state:str="",code:str="",error:str=""):
+        if error: raise HTTPException(status_code=400,detail="google_oauth_authorization_denied")
+        if not state or not code: raise HTTPException(status_code=400,detail="google_oauth_callback_missing_parameters")
+        try:
+            signed=oauth_manager.verify_state(state)
+            context=await call(database.context_for_oauth_callback,signed["organizationId"],signed["userId"])
+            state_hash=hashlib.sha256(state.encode()).hexdigest()
+            stored=await call(database.consume_oauth_state,context,state_hash)
+            verifier=await call(oauth_manager.cipher.decrypt,stored["pkce_verifier_ciphertext"],f"oauth-state:{state_hash}")
+            token=await call(oauth_manager.exchange_code,code,verifier)
+            refresh_ciphertext=await call(oauth_manager.cipher.encrypt,token["refresh_token"],f"oauth-refresh:{context.organization_id}")
+            connection=await call(database.save_oauth_connection,context,refresh_ciphertext,token.get("scope","").split(),None)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        except Exception as error: raise HTTPException(status_code=502,detail=f"google_oauth_connection_failed:{type(error).__name__}") from error
+        return f"<!doctype html><title>Google Analytics connected</title><main><h1>Connection received</h1><p>Connection {connection['connectionId']} is pending assignment review. You may close this window.</p></main>"
+
+    @app.post("/api/oauth/google/connections/{connection_id}/revoke",tags=["Connections"])
+    async def oauth_revoke(connection_id:str,request:OAuthRevokeRequest,context:TenantContext=Depends(require_context)):
+        try:
+            ciphertext=await call(database.oauth_refresh_ciphertext,context,connection_id)
+            refresh_token=await call(oauth_manager.cipher.decrypt,ciphertext,f"oauth-refresh:{context.organization_id}")
+            await call(oauth_manager.revoke,refresh_token)
+            removed=await call(database.revoke_oauth_connection,context,connection_id,request.deleteToken)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        except Exception as error: raise HTTPException(status_code=502,detail=f"google_oauth_revocation_failed:{type(error).__name__}") from error
+        if not removed: raise HTTPException(status_code=404,detail="oauth_connection_not_found")
+        return {"connectionId":connection_id,"status":"offboarded" if request.deleteToken else "revoked","tokenDeleted":request.deleteToken}
 
     @app.post("/internal/schedule",dependencies=[Depends(require_internal)],include_in_schema=False)
     async def schedule(x_cloudscheduler_scheduletime: str | None = Header(default=None)):

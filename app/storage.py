@@ -14,6 +14,7 @@ from psycopg_pool import ConnectionPool
 
 from .config import Settings, Site
 from .auth import TenantContext
+from .report_delivery import advance_schedule
 
 ROOT = Path(__file__).resolve().parents[1]
 NAMESPACE = uuid.UUID("e43717fb-78e8-4b90-bf04-472c24f885fb")
@@ -83,9 +84,17 @@ class Database:
             ).fetchone()["exists"]
             if not exists:
                 connection.execute((ROOT / "infra/postgres/001_core.sql").read_text())
-            connection.execute((ROOT / "infra/postgres/002_production.sql").read_text())
-            connection.execute((ROOT / "infra/postgres/003_phase4_tenant_isolation.sql").read_text())
-        return {"status": "ok", "migration": "003_phase4_tenant_isolation"}
+            migrations_exist = connection.execute("SELECT to_regclass('app.schema_migrations') IS NOT NULL AS exists").fetchone()["exists"]
+            applied = set()
+            if migrations_exist:
+                applied = {row["version"] for row in connection.execute("SELECT version FROM app.schema_migrations").fetchall()}
+            if "002_production" not in applied:
+                connection.execute((ROOT / "infra/postgres/002_production.sql").read_text())
+            if "003_phase4_tenant_isolation" not in applied:
+                connection.execute((ROOT / "infra/postgres/003_phase4_tenant_isolation.sql").read_text())
+            if "004_phase5_reporting_oauth" not in applied:
+                connection.execute((ROOT / "infra/postgres/004_phase5_reporting_oauth.sql").read_text())
+        return {"status": "ok", "migration": "004_phase5_reporting_oauth"}
 
     def seed_first_site(self, site: Site) -> dict:
         ids = {
@@ -381,6 +390,168 @@ class Database:
                 "effectiveFrom":row["effective_from"].isoformat(),
                 "effectiveTo":row["effective_to"].isoformat() if row["effective_to"] else None,
                 "createdAt":row["created_at"].isoformat()}
+
+    def list_recurring_reports(self, context: TenantContext, website_id: str) -> list[dict]:
+        with self.tenant_connection(context) as connection:
+            rows = connection.execute("""
+                SELECT r.id,r.name,r.period_key,r.cadence,r.timezone,r.recipient_secret_reference,
+                       r.enabled,r.next_run_at,r.created_at,r.disabled_at
+                  FROM app.recurring_reports r
+                  JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=r.website_id
+                 WHERE p.public_id=%s ORDER BY r.created_at DESC
+            """, (website_id,)).fetchall()
+        return [{"id":str(row["id"]),"name":row["name"],"period":row["period_key"],"cadence":row["cadence"],
+                 "timezone":row["timezone"],"recipientReference":row["recipient_secret_reference"],
+                 "enabled":row["enabled"],"nextRunAt":row["next_run_at"].isoformat(),
+                 "createdAt":row["created_at"].isoformat(),"disabledAt":row["disabled_at"].isoformat() if row["disabled_at"] else None} for row in rows]
+
+    def create_recurring_report(self, context: TenantContext, website_id: str, name: str, period: str,
+                                cadence: str, timezone_name: str, recipient_reference: str,
+                                next_run_at: datetime) -> dict:
+        context.require_role(frozenset({"agency_owner", "agency_admin", "client_admin"}))
+        with self.tenant_connection(context) as connection:
+            row = connection.execute("""
+                INSERT INTO app.recurring_reports(website_id,name,period_key,cadence,timezone,recipient_secret_reference,enabled,next_run_at,created_by)
+                SELECT p.resource_id,%s,%s,%s,%s,%s,true,%s,%s::uuid FROM app.resource_identifiers p
+                 WHERE p.resource_type='website' AND p.public_id=%s
+                RETURNING id,name,period_key,cadence,timezone,recipient_secret_reference,enabled,next_run_at,created_at
+            """, (name,period,cadence,timezone_name,recipient_reference,next_run_at,context.user_id,website_id)).fetchone()
+            if not row: raise PermissionError("website_not_authorized")
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,'recurring_report.created','recurring_report',%s,%s)", (context.organization_id,context.user_id,row["id"],json.dumps({"websiteId":website_id,"cadence":cadence,"period":period})))
+        return {"id":str(row["id"]),"name":row["name"],"period":row["period_key"],"cadence":row["cadence"],
+                "timezone":row["timezone"],"recipientReference":row["recipient_secret_reference"],
+                "enabled":row["enabled"],"nextRunAt":row["next_run_at"].isoformat(),"createdAt":row["created_at"].isoformat()}
+
+    def disable_recurring_report(self, context: TenantContext, website_id: str, report_id: str) -> bool:
+        context.require_role(frozenset({"agency_owner", "agency_admin", "client_admin"}))
+        with self.tenant_connection(context) as connection:
+            row = connection.execute("""
+                UPDATE app.recurring_reports r SET enabled=false,disabled_at=now()
+                 FROM app.resource_identifiers p
+                 WHERE r.id=%s::uuid AND p.resource_type='website' AND p.public_id=%s AND p.resource_id=r.website_id
+                RETURNING r.id
+            """, (report_id,website_id)).fetchone()
+            if row:
+                connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,'recurring_report.disabled','recurring_report',%s,%s)", (context.organization_id,context.user_id,row["id"],json.dumps({"websiteId":website_id})))
+        return bool(row)
+
+    def due_recurring_reports(self, limit: int = 20) -> list[dict]:
+        with self.connection() as connection:
+            rows = connection.execute("""
+                SELECT r.id,r.name,r.period_key,r.cadence,r.timezone,r.recipient_secret_reference,r.next_run_at,
+                       p.public_id website_id,c.name company,c.organization_id,r.created_by
+                  FROM app.recurring_reports r
+                  JOIN app.websites w ON w.id=r.website_id
+                  JOIN app.companies c ON c.id=w.company_id
+                  JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=w.id
+                 WHERE r.enabled AND r.next_run_at<=now()
+                 ORDER BY r.next_run_at LIMIT %s FOR UPDATE OF r SKIP LOCKED
+            """, (limit,)).fetchall()
+        return [{**row,"id":str(row["id"]),"organization_id":str(row["organization_id"]),"created_by":str(row["created_by"]),"next_run_at":row["next_run_at"]} for row in rows]
+
+    def begin_report_delivery(self, report: dict) -> str | None:
+        with self.connection() as connection:
+            row = connection.execute("""
+                INSERT INTO analytics.report_deliveries(recurring_report_id,website_id,scheduled_for,status)
+                SELECT r.id,r.website_id,%s,'generating' FROM app.recurring_reports r WHERE r.id=%s
+                ON CONFLICT(recurring_report_id,scheduled_for) DO UPDATE
+                  SET status='generating',error_code=NULL,attempt_count=analytics.report_deliveries.attempt_count+1,completed_at=NULL
+                  WHERE analytics.report_deliveries.status IN ('failed','blocked_configuration')
+                    AND analytics.report_deliveries.completed_at<=now()-interval '15 minutes'
+                RETURNING id
+            """, (report["next_run_at"],report["id"])).fetchone()
+        return str(row["id"]) if row else None
+
+    def finish_report_delivery(self, report: dict, delivery_id: str, report_hash: str,
+                               provider_message_id: str | None = None, error_code: str | None = None) -> None:
+        status = "sent" if provider_message_id else ("blocked_configuration" if error_code and "configured" in error_code else "failed")
+        next_run = advance_schedule(report["next_run_at"], report["cadence"])
+        with self.connection() as connection:
+            connection.execute("""
+                UPDATE analytics.report_deliveries SET status=%s,provider_message_id=%s,report_hash=%s,error_code=%s,completed_at=now()
+                 WHERE id=%s::uuid
+            """, (status,provider_message_id,report_hash,error_code,delivery_id))
+            if status == "sent":
+                connection.execute("UPDATE app.recurring_reports SET next_run_at=%s WHERE id=%s", (next_run,report["id"]))
+
+    def create_oauth_state(self, context: TenantContext, state_hash: str, verifier_ciphertext: bytes,
+                           scopes: list[str], redirect_uri: str, expires_at: datetime) -> None:
+        context.require_role(frozenset({"agency_owner", "agency_admin", "client_admin"}))
+        with self.tenant_connection(context) as connection:
+            connection.execute("""
+                INSERT INTO app.oauth_authorization_states(organization_id,actor_user_id,state_hash,pkce_verifier_ciphertext,requested_scopes,redirect_uri,expires_at)
+                VALUES(%s,%s,%s,%s,%s,%s,%s)
+            """, (context.organization_id,context.user_id,state_hash,verifier_ciphertext,scopes,redirect_uri,expires_at))
+
+    def context_for_oauth_callback(self, organization_id: str, user_id: str) -> TenantContext:
+        with self.connection() as connection:
+            row=connection.execute("""
+                SELECT o.id organization_id,u.id user_id,u.email,m.role
+                  FROM app.organizations o JOIN app.memberships m ON m.organization_id=o.id
+                  JOIN app.users u ON u.id=m.user_id
+                 WHERE o.id=%s::uuid AND u.id=%s::uuid
+            """,(organization_id,user_id)).fetchone()
+        if not row: raise PermissionError("oauth_membership_not_found")
+        return TenantContext(str(row["organization_id"]),str(row["user_id"]),row["email"],row["role"])
+
+    def consume_oauth_state(self, context: TenantContext, state_hash: str) -> dict:
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("""
+                UPDATE app.oauth_authorization_states SET consumed_at=now()
+                 WHERE state_hash=%s AND actor_user_id=%s::uuid AND consumed_at IS NULL AND expires_at>now()
+                RETURNING pkce_verifier_ciphertext,requested_scopes,redirect_uri
+            """,(state_hash,context.user_id)).fetchone()
+        if not row: raise PermissionError("invalid_or_consumed_oauth_state")
+        return row
+
+    def save_oauth_connection(self, context: TenantContext, encrypted_refresh_token: bytes,
+                              scopes: list[str], provider_subject: str | None = None) -> dict:
+        context.require_role(frozenset({"agency_owner", "agency_admin", "client_admin"}))
+        connection_id=uuid.uuid4()
+        with self.tenant_connection(context) as connection:
+            connection.execute("""
+                INSERT INTO app.analytics_connections(id,organization_id,credential_type,credential_reference,status)
+                VALUES(%s,%s,'oauth','postgres-kms-envelope:v1','pending_approval')
+            """,(connection_id,context.organization_id))
+            connection.execute("""
+                INSERT INTO app.oauth_credentials(analytics_connection_id,organization_id,encrypted_refresh_token,granted_scopes,token_endpoint,provider_subject,connected_by)
+                VALUES(%s,%s,%s,%s,'https://oauth2.googleapis.com/token',%s,%s)
+            """,(connection_id,context.organization_id,encrypted_refresh_token,scopes,provider_subject,context.user_id))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,'oauth.connected','analytics_connection',%s,%s)",(context.organization_id,context.user_id,connection_id,json.dumps({"scopes":scopes,"status":"pending_approval"})))
+        return {"connectionId":str(connection_id),"status":"pending_approval","credentialType":"oauth","scopes":scopes}
+
+    def list_oauth_connections(self, context: TenantContext) -> list[dict]:
+        with self.tenant_connection(context) as connection:
+            rows=connection.execute("""
+                SELECT c.id,c.status,c.created_at,c.disabled_at,o.granted_scopes,o.connected_at,o.revoked_at,o.last_validated_at
+                  FROM app.analytics_connections c JOIN app.oauth_credentials o ON o.analytics_connection_id=c.id
+                 ORDER BY c.created_at DESC
+            """).fetchall()
+        return [{"connectionId":str(row["id"]),"status":row["status"],"credentialType":"oauth",
+                 "scopes":row["granted_scopes"],"connectedAt":row["connected_at"].isoformat(),
+                 "revokedAt":row["revoked_at"].isoformat() if row["revoked_at"] else None,
+                 "lastValidatedAt":row["last_validated_at"].isoformat() if row["last_validated_at"] else None} for row in rows]
+
+    def oauth_refresh_ciphertext(self, context: TenantContext, connection_id: str) -> bytes:
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("SELECT encrypted_refresh_token FROM app.oauth_credentials WHERE analytics_connection_id=%s::uuid AND revoked_at IS NULL",(connection_id,)).fetchone()
+        if not row: raise PermissionError("oauth_connection_not_authorized")
+        return row["encrypted_refresh_token"]
+
+    def revoke_oauth_connection(self, context: TenantContext, connection_id: str, delete_token: bool = False) -> bool:
+        context.require_role(frozenset({"agency_owner", "agency_admin", "client_admin"}))
+        with self.tenant_connection(context) as connection:
+            row=connection.execute("""
+                UPDATE app.analytics_connections SET status='revoked',disabled_at=now()
+                 WHERE id=%s::uuid AND credential_type='oauth' RETURNING id
+            """,(connection_id,)).fetchone()
+            if not row: return False
+            if delete_token:
+                connection.execute("DELETE FROM app.oauth_credentials WHERE analytics_connection_id=%s::uuid",(connection_id,))
+            else:
+                connection.execute("UPDATE app.oauth_credentials SET revoked_at=now() WHERE analytics_connection_id=%s::uuid",(connection_id,))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s,%s,%s,'analytics_connection',%s,%s)",(context.organization_id,context.user_id,"oauth.offboarded" if delete_token else "oauth.revoked",connection_id,json.dumps({"tokenDeleted":delete_token})))
+        return True
 
     def record_measurement_health(self, assignment_id, health: dict):
         with self.connection() as connection:

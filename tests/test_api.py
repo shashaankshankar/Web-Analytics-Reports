@@ -41,6 +41,9 @@ class StubDatabase:
         context.require_role(frozenset({"agency_owner","agency_admin","client_admin"}))
         if metric != "generated_leads": raise PermissionError("website_or_approved_metric_not_authorized")
         value={"id":"goal-1","metric":metric,"target":target,"effectiveFrom":effective_from.isoformat(),"effectiveTo":None,"createdAt":"2026-08-13T00:00:00+00:00"}; self.goals.append(value); return value
+    def list_recurring_reports(self,context,website_id): return []
+    def due_recurring_reports(self,limit=20): return []
+    def list_oauth_connections(self,context): return []
 
 
 def settings(): return Settings("live",True,True,"549721844","15427015396","x"*32,"127.0.0.1",3000,database_url="postgresql://configured",operator_email="operator@example.com")
@@ -116,3 +119,18 @@ def test_client_viewer_can_read_but_not_write_goals():
         assert client.get("/api/websites/website_house_of_dental/goals",headers=headers()).status_code == 200
         response=client.post("/api/websites/website_house_of_dental/goals",headers=headers(),json={"metric":"generated_leads","target":50,"effectiveFrom":"2026-09-01"})
         assert response.status_code == 403
+
+
+def test_recurring_email_stays_fail_closed_without_owned_configuration():
+    with TestClient(create_app(settings(),StubReporter(),StubDatabase())) as client:
+        listed=client.get("/api/websites/website_house_of_dental/recurring-reports",headers=headers())
+        assert listed.status_code == 200 and listed.json()["emailDeliveryConfigured"] is False
+        created=client.post("/api/websites/website_house_of_dental/recurring-reports",headers=headers(),json={"name":"Monthly report","period":"last_month","cadence":"monthly","timezone":"America/New_York","recipientReference":"office","nextRunAt":"2026-09-01T13:00:00-04:00"})
+        assert created.status_code == 503 and created.json()["detail"] == "report_email_not_configured"
+
+
+def test_oauth_stays_fail_closed_until_production_configuration_is_approved():
+    with TestClient(create_app(settings(),StubReporter(),StubDatabase())) as client:
+        status=client.get("/api/oauth/google/status",headers=headers())
+        assert status.status_code == 200 and status.json()["configured"] is False
+        assert client.post("/api/oauth/google/authorize",headers=headers()).status_code == 503
