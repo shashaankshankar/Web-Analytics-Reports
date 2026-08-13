@@ -14,9 +14,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from .config import Settings, load_dotenv, load_site
+from .config import Settings, Site, load_dotenv, load_site
 from .auth import AGENCY_ROLES, TenantContext, cloud_identity_email
-from .credentials import AdcCredential, GA4Admin
+from .credentials import AdcCredential, GA4Admin, OAuthCredential
 from .dashboard import agency_dashboard_html, dashboard_html
 from .ga4 import GA4Reporter
 from .reports import build_client_pdf
@@ -33,6 +33,7 @@ bearer = HTTPBearer(auto_error=False, description="Dashboard API token when toke
 class SyncRequest(BaseModel):
     period: Period
     scheduledFor: str | None = None
+    assignmentId: str | None = None
 
 
 class AnnotationRequest(BaseModel):
@@ -389,22 +390,31 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
     async def schedule(x_cloudscheduler_scheduletime: str | None = Header(default=None)):
         queue = task_queue or TaskQueue(settings)
         scheduled_for=x_cloudscheduler_scheduletime or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-        return {"status":"accepted","scheduledFor":scheduled_for,"tasks":await call(queue.enqueue_periods,scheduled_for)}
+        targets=await call(database.active_sync_targets)
+        return {"status":"accepted","scheduledFor":scheduled_for,"assignments":len(targets),"tasks":await call(queue.enqueue_periods,scheduled_for,targets)}
 
     @app.post("/internal/sync",dependencies=[Depends(require_internal)],include_in_schema=False)
     async def sync(request: SyncRequest, x_cloudtasks_taskretrycount: int = Header(default=0)):
+        target=await call(database.sync_target,request.assignmentId) if request.assignmentId else None
         credential=AdcCredential()
-        engine=SyncEngine(database,ga4(),GA4Admin(credential),site)
-        return await call(engine.run,request.period,request.scheduledFor,x_cloudtasks_taskretrycount >= 4)
+        run_site=site; assignment_id=None
+        if target:
+            assignment_id=target["assignment_id"]
+            run_site=Site(target["website_id"],target["company_id"],target["company"],target["canonical_domain"],"live",target["property_timezone"] or site.business_timezone,target["property_id"],target["stream_id"] or "",target["measurement_id"] or (site.measurement_id if target["website_id"]==site.site_id else ""),target["property_timezone"],"active","approved")
+            if target["credential_type"]=="oauth":
+                secret=await call(database.internal_oauth_credential,target["analytics_connection_id"])
+                refresh_token=await call(oauth_manager.cipher.decrypt,secret["encrypted_refresh_token"],f"oauth-refresh:{secret['organization_id']}")
+                credential=OAuthCredential(refresh_token,settings.google_oauth_client_id,settings.google_oauth_client_secret)
+        engine=SyncEngine(database,GA4Reporter(run_site,credential.get_authorized_client()),GA4Admin(credential),run_site)
+        return await call(engine.run,request.period,request.scheduledFor,x_cloudtasks_taskretrycount >= 4,assignment_id)
 
     @app.post("/api/operations/sync-jobs/{job_id}/replay",tags=["Operations"])
     async def replay(job_id: str,context:TenantContext=Depends(require_agency)):
         try: payload=await call(database.replay_payload,job_id)
         except HTTPException: raise
         except ValueError as error: raise HTTPException(status_code=404,detail=str(error)) from error
-        credential=AdcCredential()
-        engine=SyncEngine(database,ga4(),GA4Admin(credential),site)
-        return await call(engine.run,payload["period"],payload["scheduledFor"],False)
+        replay_request=SyncRequest(period=payload["period"],scheduledFor=payload["scheduledFor"],assignmentId=payload.get("assignmentId"))
+        return await sync(replay_request,0)
 
     return app
 

@@ -182,6 +182,49 @@ class Database:
             rows = connection.execute("SELECT key,value_uuid,value_text FROM app.platform_identifiers").fetchall()
         return {row["key"]: row["value_uuid"] or row["value_text"] for row in rows}
 
+    def active_sync_targets(self) -> list[dict]:
+        with self.connection() as connection:
+            rows=connection.execute("""
+                SELECT a.id assignment_id,p.public_id website_id,c.credential_type
+                  FROM app.website_analytics_assignments a
+                  JOIN app.websites w ON w.id=a.website_id
+                  JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=w.id
+                  JOIN app.analytics_connections c ON c.id=a.analytics_connection_id
+                 WHERE a.status='approved' AND a.effective_to IS NULL AND c.status='approved' AND c.disabled_at IS NULL
+                 ORDER BY a.id
+            """).fetchall()
+        return [{"assignmentId":str(row["assignment_id"]),"websiteId":row["website_id"],"credentialType":row["credential_type"]} for row in rows]
+
+    def sync_target(self, assignment_id: str) -> dict:
+        with self.connection() as connection:
+            row=connection.execute("""
+                SELECT a.id assignment_id,a.reporting_scope,a.analytics_connection_id,c.credential_type,c.status connection_status,
+                       w.id website_uuid,p.public_id website_id,w.canonical_domain,w.healthcare_eligibility,
+                       company_public.public_id company_id,co.name company,gp.external_property_id property_id,
+                       gs.external_stream_id stream_id,gp.timezone property_timezone
+                  FROM app.website_analytics_assignments a
+                  JOIN app.analytics_connections c ON c.id=a.analytics_connection_id
+                  JOIN app.websites w ON w.id=a.website_id JOIN app.companies co ON co.id=w.company_id
+                  JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=w.id
+                  JOIN app.resource_identifiers company_public ON company_public.resource_type='company' AND company_public.resource_id=co.id
+                  JOIN app.ga_properties gp ON gp.id=a.ga_property_id
+                  LEFT JOIN app.ga_data_streams gs ON gs.id=a.ga_stream_id
+                 WHERE a.id=%s::uuid AND a.status='approved' AND a.effective_to IS NULL AND c.status='approved' AND c.disabled_at IS NULL
+            """,(assignment_id,)).fetchone()
+        if not row: raise PermissionError("sync_assignment_not_approved")
+        measurement_id=(row["reporting_scope"] or {}).get("measurementId","")
+        return {**row,"assignment_id":str(row["assignment_id"]),"analytics_connection_id":str(row["analytics_connection_id"]),"website_uuid":str(row["website_uuid"]),"measurement_id":measurement_id}
+
+    def internal_oauth_credential(self, connection_id: str) -> dict:
+        with self.connection() as connection:
+            row=connection.execute("""
+                SELECT o.organization_id,o.encrypted_refresh_token,o.granted_scopes
+                  FROM app.oauth_credentials o JOIN app.analytics_connections c ON c.id=o.analytics_connection_id
+                 WHERE o.analytics_connection_id=%s::uuid AND o.revoked_at IS NULL AND c.status='approved' AND c.disabled_at IS NULL
+            """,(connection_id,)).fetchone()
+        if not row: raise PermissionError("oauth_connection_not_approved")
+        return {"organization_id":str(row["organization_id"]),"encrypted_refresh_token":row["encrypted_refresh_token"],"granted_scopes":row["granted_scopes"]}
+
     def authorize_context(self, email: str, requested_organization_id: str | None = None) -> TenantContext:
         with self.connection() as connection:
             rows = connection.execute("""

@@ -18,10 +18,10 @@ class SyncEngine:
         self.admin = admin
         self.site = site
 
-    def run(self, period: str, scheduled_for: str | None = None, final_attempt: bool = False) -> dict:
+    def run(self, period: str, scheduled_for: str | None = None, final_attempt: bool = False, assignment_id=None) -> dict:
         scheduled_for = scheduled_for or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         identifiers = self.database.identifiers()
-        assignment_id = identifiers["first_assignment"]
+        assignment_id = assignment_id or identifiers["first_assignment"]
         report_version_id = identifiers["report_bundle_v1"]
         sync_run_id = stable_id(f"sync-run:{assignment_id}:{scheduled_for}:{period}")
         execution_key = canonical_hash({"assignment":str(assignment_id),"report":"website_reporting_bundle_v1","period":period,"scheduledFor":scheduled_for})
@@ -38,7 +38,7 @@ class SyncEngine:
                   requested_end_date,idempotency_key,status,period_key,scheduled_for,payload_json
                 ) VALUES(%s,%s,%s,%s,current_date,current_date,%s,'queued',%s,%s,%s)
                 ON CONFLICT(idempotency_key) DO NOTHING
-            """, (job_id,sync_run_id,assignment_id,report_version_id,execution_key,period,scheduled_for,json.dumps({"period":period,"scheduledFor":scheduled_for})))
+            """, (job_id,sync_run_id,assignment_id,report_version_id,execution_key,period,scheduled_for,json.dumps({"period":period,"scheduledFor":scheduled_for,"assignmentId":str(assignment_id)})))
             job = connection.execute("SELECT id,status,attempt_count FROM analytics.sync_jobs WHERE idempotency_key=%s",(execution_key,)).fetchone()
             if job["status"] == "succeeded":
                 return {"status":"succeeded","idempotentReplay":True,"jobId":str(job["id"]),"period":period}
