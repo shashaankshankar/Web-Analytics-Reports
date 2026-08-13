@@ -16,6 +16,7 @@ from psycopg_pool import ConnectionPool
 from .config import Settings, Site
 from .auth import TenantContext
 from .report_delivery import advance_schedule
+from .external_sources import SOURCES, ExternalSourceState
 
 ROOT = Path(__file__).resolve().parents[1]
 NAMESPACE = uuid.UUID("e43717fb-78e8-4b90-bf04-472c24f885fb")
@@ -97,7 +98,9 @@ class Database:
                 connection.execute((ROOT / "infra/postgres/004_phase5_reporting_oauth.sql").read_text())
             if "005_retention_offboarding" not in applied:
                 connection.execute((ROOT / "infra/postgres/005_retention_offboarding.sql").read_text())
-        return {"status": "ok", "migration": "005_retention_offboarding"}
+            if "006_external_sources" not in applied:
+                connection.execute((ROOT / "infra/postgres/006_external_sources.sql").read_text())
+        return {"status": "ok", "migration": "006_external_sources"}
 
     def seed_first_site(self, site: Site) -> dict:
         ids = {
@@ -604,17 +607,43 @@ class Database:
 
     def purge_retention(self) -> dict:
         with self.connection() as connection:
+            aggregate_counts={}
+            for table in ("daily_property_metrics","daily_channel_metrics","daily_page_metrics","daily_event_metrics","period_metric_snapshots","daily_canonical_metrics"):
+                aggregate_counts[table]=connection.execute(sql.SQL("""
+                    DELETE FROM analytics.{} f USING analytics.report_executions e,app.website_analytics_assignments a,app.websites w,app.companies c,app.data_retention_policies p
+                     WHERE f.report_execution_id=e.id AND e.assignment_id=a.id AND a.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id
+                       AND e.requested_end_date<current_date-p.aggregate_days RETURNING 1
+                """).format(sql.Identifier(table))).rowcount
+            aggregate_counts["reportSnapshots"]=connection.execute("""
+                DELETE FROM analytics.report_snapshots s USING analytics.report_executions e,app.website_analytics_assignments a,app.websites w,app.companies c,app.data_retention_policies p
+                 WHERE s.execution_id=e.id AND e.assignment_id=a.id AND a.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id
+                   AND e.requested_end_date<current_date-p.aggregate_days RETURNING s.id
+            """).rowcount
+            aggregate_counts["reportExecutions"]=connection.execute("""
+                DELETE FROM analytics.report_executions e USING app.website_analytics_assignments a,app.websites w,app.companies c,app.data_retention_policies p
+                 WHERE e.assignment_id=a.id AND a.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id
+                   AND e.requested_end_date<current_date-p.aggregate_days RETURNING e.id
+            """).rowcount
+            aggregate_counts["googleAds"]=connection.execute("DELETE FROM analytics.google_ads_daily d USING app.websites w,app.companies c,app.data_retention_policies p WHERE d.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id AND d.metric_date<current_date-p.aggregate_days RETURNING 1").rowcount
+            aggregate_counts["searchConsole"]=connection.execute("DELETE FROM analytics.search_console_daily d USING app.websites w,app.companies c,app.data_retention_policies p WHERE d.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id AND d.metric_date<current_date-p.aggregate_days RETURNING 1").rowcount
+            aggregate_counts["firstPartyOutcomes"]=connection.execute("DELETE FROM analytics.first_party_outcomes d USING app.websites w,app.companies c,app.data_retention_policies p WHERE d.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id AND d.outcome_date<current_date-p.aggregate_days RETURNING 1").rowcount
             operations=connection.execute("""
                 DELETE FROM analytics.report_deliveries d USING app.recurring_reports r,app.websites w,app.companies c,app.data_retention_policies p
                  WHERE d.recurring_report_id=r.id AND r.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id
                    AND d.created_at<now()-(p.operations_days||' days')::interval RETURNING d.id
+            """).rowcount
+            sync_jobs=connection.execute("""
+                DELETE FROM analytics.sync_jobs j USING app.website_analytics_assignments a,app.websites w,app.companies c,app.data_retention_policies p
+                 WHERE j.assignment_id=a.id AND a.website_id=w.id AND w.company_id=c.id AND p.organization_id=c.organization_id
+                   AND coalesce(j.completed_at,j.scheduled_for,j.requested_end_date::timestamptz)<now()-(p.operations_days||' days')::interval
+                   AND NOT EXISTS(SELECT 1 FROM analytics.report_executions e WHERE e.sync_job_id=j.id) RETURNING j.id
             """).rowcount
             states=connection.execute("DELETE FROM app.oauth_authorization_states WHERE expires_at<now()-interval '1 day' RETURNING id").rowcount
             audits=connection.execute("""
                 DELETE FROM audit.events e USING app.data_retention_policies p
                  WHERE e.organization_id=p.organization_id AND e.created_at<now()-(p.audit_days||' days')::interval RETURNING e.id
             """).rowcount
-        return {"expiredReportDeliveries":operations,"expiredOauthStates":states,"expiredAuditEvents":audits}
+        return {"expiredAggregates":aggregate_counts,"expiredSyncJobs":sync_jobs,"expiredReportDeliveries":operations,"expiredOauthStates":states,"expiredAuditEvents":audits}
 
     def execute_due_deletions(self, limit: int = 5) -> list[dict]:
         results=[]
@@ -634,6 +663,10 @@ class Database:
                 counts={}
                 counts["reportDeliveries"]=connection.execute("DELETE FROM analytics.report_deliveries WHERE website_id=%s RETURNING id",(website_id,)).rowcount
                 counts["recurringReports"]=connection.execute("DELETE FROM app.recurring_reports WHERE website_id=%s RETURNING id",(website_id,)).rowcount
+                counts["googleAds"]=connection.execute("DELETE FROM analytics.google_ads_daily WHERE website_id=%s RETURNING 1",(website_id,)).rowcount
+                counts["searchConsole"]=connection.execute("DELETE FROM analytics.search_console_daily WHERE website_id=%s RETURNING 1",(website_id,)).rowcount
+                counts["firstPartyOutcomes"]=connection.execute("DELETE FROM analytics.first_party_outcomes WHERE website_id=%s RETURNING 1",(website_id,)).rowcount
+                counts["sourceConnections"]=connection.execute("DELETE FROM app.source_connections WHERE website_id=%s RETURNING id",(website_id,)).rowcount
                 for table in ("daily_property_metrics","daily_channel_metrics","daily_page_metrics","daily_event_metrics","period_metric_snapshots","daily_canonical_metrics","report_snapshots","operator_alerts","measurement_health_checks","data_quality_status"):
                     counts[table]=connection.execute(sql.SQL("DELETE FROM analytics.{} WHERE assignment_id=ANY(%s) RETURNING 1").format(sql.Identifier(table)),(assignments,)).rowcount if assignments else 0
                 counts["reportExecutions"]=connection.execute("DELETE FROM analytics.report_executions WHERE assignment_id=ANY(%s) RETURNING id",(assignments,)).rowcount if assignments else 0
@@ -661,6 +694,62 @@ class Database:
                 connection.execute("INSERT INTO audit.events(organization_id,action,target_type,target_id,detail_json) VALUES(%s,'website.deletion_completed','deletion_request',%s,%s)",(request["organization_id"],request["id"],json.dumps({"websiteId":request["confirmation_public_id"],"counts":counts})))
                 results.append({"deletionRequestId":str(request["id"]),"websiteId":request["confirmation_public_id"],"status":"completed","counts":counts})
         return results
+
+    def external_source_status(self, context: TenantContext, website_id: str) -> list[dict]:
+        with self.tenant_connection(context) as connection:
+            rows=connection.execute("""
+                SELECT c.source_type,c.approval_status,c.last_validated_at,c.disabled_at,
+                       GREATEST((SELECT max(source_sync_at) FROM analytics.google_ads_daily x WHERE x.source_connection_id=c.id),
+                                (SELECT max(source_sync_at) FROM analytics.search_console_daily x WHERE x.source_connection_id=c.id),
+                                (SELECT max(source_sync_at) FROM analytics.first_party_outcomes x WHERE x.source_connection_id=c.id)) last_sync_at
+                  FROM app.source_connections c JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=c.website_id
+                 WHERE p.public_id=%s
+            """,(website_id,)).fetchall()
+        by_source={row["source_type"]:row for row in rows}
+        result=[]
+        for source in SOURCES:
+            row=by_source.get(source)
+            if not row:
+                state=ExternalSourceState(source,"not_configured",None,None,None,"approved_source_account_and_credential_required")
+            elif row["disabled_at"]:
+                state=ExternalSourceState(source,"disabled",row["approval_status"],row["last_validated_at"],row["last_sync_at"],"connection_disabled")
+            elif row["approval_status"]!="approved":
+                state=ExternalSourceState(source,"pending_approval",row["approval_status"],row["last_validated_at"],row["last_sync_at"],"source_governance_approval_required")
+            else:
+                state=ExternalSourceState(source,"active" if row["last_sync_at"] else "approved_awaiting_first_sync",row["approval_status"],row["last_validated_at"],row["last_sync_at"],None)
+            result.append(state.as_dict())
+        return result
+
+    def business_outcomes(self, context: TenantContext, website_id: str, start_date: date, end_date: date) -> dict:
+        with self.tenant_connection(context) as connection:
+            outcomes=connection.execute("""
+                SELECT outcome_type,count(*) count,coalesce(sum(revenue_minor_units),0) revenue_minor_units,
+                       min(currency_code) FILTER(WHERE currency_code IS NOT NULL) currency_code
+                  FROM analytics.first_party_outcomes o JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=o.website_id
+                 WHERE p.public_id=%s AND outcome_date BETWEEN %s AND %s GROUP BY outcome_type
+            """,(website_id,start_date,end_date)).fetchall()
+            ads=connection.execute("""
+                SELECT coalesce(sum(cost_micros),0) cost_micros,coalesce(sum(clicks),0) clicks,min(currency_code) currency_code
+                  FROM analytics.google_ads_daily a JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=a.website_id
+                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
+            """,(website_id,start_date,end_date)).fetchone()
+            revenue_channels=connection.execute("""
+                SELECT coalesce(attribution_json->>'channel','Unattributed') channel,sum(revenue_minor_units) revenue_minor_units
+                  FROM analytics.first_party_outcomes o JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=o.website_id
+                 WHERE p.public_id=%s AND outcome_type='revenue' AND outcome_date BETWEEN %s AND %s GROUP BY 1 ORDER BY 2 DESC
+            """,(website_id,start_date,end_date)).fetchall()
+        counts={row["outcome_type"]:row["count"] for row in outcomes}
+        qualified=counts.get("qualified_lead",0); appointments=counts.get("booked_appointment",0); customers=counts.get("customer",0)
+        cost=float(ads["cost_micros"])/1_000_000
+        return {"websiteId":website_id,"startDate":start_date.isoformat(),"endDate":end_date.isoformat(),
+                "outcomes":counts,"cost":cost,"clicks":ads["clicks"],"currency":ads["currency_code"],
+                "costPerQualifiedLead":cost/qualified if qualified else None,
+                "leadToAppointmentRate":appointments/qualified if qualified else None,
+                "appointmentToCustomerRate":customers/appointments if appointments else None,
+                "revenueMinorUnits":sum(row["revenue_minor_units"] for row in outcomes if row["outcome_type"]=="revenue"),
+                "revenueByChannel":[{"channel":row["channel"],"revenueMinorUnits":row["revenue_minor_units"]} for row in revenue_channels],
+                "sourceFamilies":["google_ads","approved_first_party"],
+                "caveats":["GA4 intent events are not treated as confirmed business outcomes.","Identity matching occurs only in approved first-party systems; prohibited identifiers are not sent to GA4.","Null KPIs mean the required approved source data is unavailable, not zero."]}
 
     def record_measurement_health(self, assignment_id, health: dict):
         with self.connection() as connection:

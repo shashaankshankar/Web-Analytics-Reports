@@ -348,6 +348,17 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None):
         deletions=await call(database.execute_due_deletions,5)
         return {"status":"ok","retention":expired,"deletions":deletions}
 
+    @app.get("/api/websites/{website_id}/external-sources",tags=["Connections"])
+    async def external_sources(website_id:str,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        return {"websiteId":website_id,"sources":await call(database.external_source_status,context,website_id),"priorityOrder":["google_ads","search_console","call_tracking","crm_booking"]}
+
+    @app.get("/api/websites/{website_id}/business-outcomes",tags=["Reporting"])
+    async def business_outcomes(website_id:str,startDate:date,endDate:date,context:TenantContext=Depends(require_context)):
+        if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        if endDate<startDate or (endDate-startDate).days>366: raise HTTPException(status_code=422,detail="invalid_business_outcome_period")
+        return await call(database.business_outcomes,context,website_id,startDate,endDate)
+
     @app.post("/internal/schedule",dependencies=[Depends(require_internal)],include_in_schema=False)
     async def schedule(x_cloudscheduler_scheduletime: str | None = Header(default=None)):
         queue = task_queue or TaskQueue(settings)

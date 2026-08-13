@@ -16,6 +16,8 @@ def main() -> None:
         "company": uuid.uuid4(),
         "website": uuid.uuid4(),
         "user": uuid.uuid4(),
+        "primary_source": uuid.uuid4(),
+        "secondary_source": uuid.uuid4(),
     }
     connection = psycopg.connect(database_url)
     try:
@@ -34,11 +36,13 @@ def main() -> None:
         connection.execute("INSERT INTO app.users(id,email) VALUES(%s,'isolation-test@example.invalid')", (temporary["user"],))
         connection.execute("INSERT INTO app.memberships(organization_id,user_id,role) VALUES(%s,%s,'client_viewer')", (temporary["organization"],temporary["user"]))
         connection.execute("INSERT INTO app.resource_identifiers(organization_id,resource_type,resource_id,public_id) VALUES(%s,'company',%s,'isolation_company'),(%s,'website',%s,'isolation_website')", (temporary["organization"],temporary["company"],temporary["organization"],temporary["website"]))
+        connection.execute("INSERT INTO app.source_connections(id,organization_id,website_id,source_type,credential_secret_reference,approval_status) VALUES(%s,%s,%s,'search_console','isolation-primary','pending_approval'),(%s,%s,%s,'call_tracking','isolation-secondary','pending_approval')",(temporary["primary_source"],primary_organization,primary[0],temporary["secondary_source"],temporary["organization"],temporary["website"]))
 
         connection.execute("SET LOCAL ROLE measurement_tenant")
         connection.execute("SELECT set_config('app.organization_id',%s,true)", (str(primary_organization),))
         primary_companies = connection.execute("SELECT count(*) FROM app.companies").fetchone()[0]
         leaked_secondary = connection.execute("SELECT count(*) FROM app.websites WHERE id=%s", (temporary["website"],)).fetchone()[0]
+        primary_sources = connection.execute("SELECT count(*) FROM app.source_connections").fetchone()[0]
         denied_write = False
         try:
             with connection.transaction():
@@ -58,6 +62,7 @@ def main() -> None:
         secondary_companies = connection.execute("SELECT count(*) FROM app.companies").fetchone()[0]
         leaked_primary = connection.execute("SELECT count(*) FROM app.websites WHERE id=%s", (primary[0],)).fetchone()[0]
         leaked_primary_report = connection.execute("SELECT count(*) FROM app.recurring_reports WHERE id=%s", (primary_report,)).fetchone()[0]
+        secondary_sources = connection.execute("SELECT count(*) FROM app.source_connections").fetchone()[0]
 
         assert primary_companies == 1
         assert secondary_companies == 1
@@ -66,6 +71,8 @@ def main() -> None:
         assert denied_write
         assert denied_report_write
         assert leaked_primary_report == 0
+        assert primary_sources == 1
+        assert secondary_sources == 1
         print({
             "status": "passed",
             "apiBoundary": "covered_by_pytest",
@@ -74,6 +81,7 @@ def main() -> None:
             "crossTenantReads": "denied",
             "crossTenantWrites": "denied",
             "phase5ControlPlaneIsolation": "denied",
+            "externalSourceIsolation": "denied",
             "temporaryDataPersisted": False,
         })
     finally:

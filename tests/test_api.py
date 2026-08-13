@@ -51,6 +51,8 @@ class StubDatabase:
         context.require_role(frozenset({"agency_owner","agency_admin"}))
         if confirmation != website_id: raise PermissionError("offboarding_confirmation_mismatch")
         return {"websiteId":website_id,"status":"scheduled","executeAfter":"2026-09-12T00:00:00+00:00"}
+    def external_source_status(self,context,website_id): return [{"source":"google_ads","status":"not_configured"},{"source":"search_console","status":"not_configured"},{"source":"call_tracking","status":"not_configured"},{"source":"crm_booking","status":"not_configured"}]
+    def business_outcomes(self,context,website_id,start_date,end_date): return {"websiteId":website_id,"outcomes":{},"costPerQualifiedLead":None,"caveats":["Null means unavailable"]}
 
 
 def settings(): return Settings("live",True,True,"549721844","15427015396","x"*32,"127.0.0.1",3000,database_url="postgresql://configured",operator_email="operator@example.com")
@@ -154,3 +156,12 @@ def test_offboarding_requires_agency_role_and_exact_confirmation():
     with TestClient(create_app(settings(),StubReporter(),StubDatabase(role="client_admin"))) as client:
         assert client.get("/api/websites/website_house_of_dental/offboarding-preview",headers=headers()).status_code == 200
         assert client.post("/api/websites/website_house_of_dental/offboarding",headers=headers(),json={"confirmationWebsiteId":"website_house_of_dental"}).status_code == 403
+
+
+def test_external_sources_and_business_outcomes_do_not_invent_missing_data():
+    with TestClient(create_app(settings(),StubReporter(),StubDatabase())) as client:
+        sources=client.get("/api/websites/website_house_of_dental/external-sources",headers=headers()).json()
+        assert [item["status"] for item in sources["sources"]] == ["not_configured"]*4
+        outcomes=client.get("/api/websites/website_house_of_dental/business-outcomes?startDate=2026-08-01&endDate=2026-08-31",headers=headers())
+        assert outcomes.status_code == 200 and outcomes.json()["costPerQualifiedLead"] is None
+        assert client.get("/api/websites/website_house_of_dental/business-outcomes?startDate=2026-08-31&endDate=2026-08-01",headers=headers()).status_code == 422

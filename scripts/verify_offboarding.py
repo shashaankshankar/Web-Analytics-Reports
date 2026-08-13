@@ -27,8 +27,7 @@ def main() -> None:
 
     settings=Settings("demo",False,False,"","","","127.0.0.1",3000,database_url=database_url)
     database=Database(settings)
-    try: results=database.execute_due_deletions(5)
-    finally: database.close()
+    results=database.execute_due_deletions(5)
     match=next((item for item in results if item["deletionRequestId"]==str(ids["request"])),None)
     if not match: raise RuntimeError("deletion_request_not_executed")
 
@@ -43,6 +42,7 @@ def main() -> None:
         connection.execute("DELETE FROM app.users WHERE id=%s",(ids["user"],))
         connection.execute("DELETE FROM app.organizations WHERE id=%s",(ids["organization"],))
     print({"status":"passed","gracePeriod":"represented_by_due_fixture","websiteDeleted":True,"requestTombstoneRecorded":True,"temporaryDataPersisted":False})
+    if database._pool is not None: database._pool.close(timeout=1)
 
 
 if __name__=="__main__": main()
