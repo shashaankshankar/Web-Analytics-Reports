@@ -1,0 +1,50 @@
+# Google Cloud production controls
+
+Project: `web-analytics-agency-prod`  
+Region: `us-central1`
+
+This directory contains non-secret, reviewable configuration for the deployed measurement platform. It intentionally excludes OAuth client secrets, database credentials, trigger tokens, source credentials, and recipient addresses.
+
+## Runtime and identities
+
+- Cloud Run service: `measurement-reporting-platform`
+- Runtime/data identity: `analytics-reporting-reader@web-analytics-agency-prod.iam.gserviceaccount.com`
+- Scheduler and Cloud Tasks invoker: `measurement-scheduler@web-analytics-agency-prod.iam.gserviceaccount.com`
+- Build identity: `measurement-builder@web-analytics-agency-prod.iam.gserviceaccount.com`
+- Cloud Tasks queue: `measurement-sync`, one concurrent dispatch, five attempts, exponential backoff
+- Report dispatcher: deliberately paused; do not resume without explicit operator direction
+
+The runtime image is multi-stage, digest-pinned, and distroless. Production images must pass an authenticated `/ready` check, reject unauthenticated requests, and undergo On-Demand Scanning before the release is recorded as hardened.
+
+## Database
+
+Cloud SQL instance `measurement-db` is regional HA, deletion-protected, encrypted-only, backed up, and has point-in-time recovery. Query Insights is enabled without recording client addresses.
+
+## Monitoring
+
+The deployed dashboard is defined by `monitoring-dashboard.json`. Active alert policies cover:
+
+- Cloud Run HTTP 5xx responses
+- Cloud Run error-severity runtime logs
+- Cloud Run p95 latency above five seconds
+- Cloud Tasks non-OK attempts
+- Cloud Scheduler error-severity attempts
+- Cloud SQL availability
+- Cloud SQL disk utilization above 80 percent
+- Cloud SQL CPU utilization above 80 percent
+
+Alerts notify the project-owned operator channel. Log-based metrics `measurement_scheduler_failures` and `measurement_runtime_errors` back the two control-plane policies. The default log bucket retains 180 days.
+
+## Secrets and encryption
+
+- Internal trigger secret versions are pinned; disabled versions must never be re-enabled.
+- The OAuth refresh-token KMS key rotates every 90 days.
+- Secret values must not be printed by configuration audits; inspect only secret names, pinned versions, and state.
+
+## Artifact lifecycle
+
+Apply `artifact-cleanup-policy.json` to the `cloud-run-source-deploy` repository. It preserves the ten newest versions and deletes untagged versions older than 30 days.
+
+## OAuth boundary
+
+Google Auth Platform branding, audience, data-access declaration, verification, and web-client creation are console-managed. Configure only the `analytics.readonly` scope and the exact callback documented in `EXTERNAL-SOURCE-ONBOARDING.md`. Do not set `GOOGLE_OAUTH_PRODUCTION_APPROVED=true` until the consent configuration and production client have been verified end to end.
