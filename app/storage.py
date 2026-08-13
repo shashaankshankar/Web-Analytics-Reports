@@ -102,7 +102,8 @@ class Database:
         }
         contract = json.loads((ROOT / "measurement/contracts/local_service_v1/contract.json").read_text())
         events = json.loads((ROOT / "measurement/contracts/local_service_v1/events.json").read_text())["events"]
-        mappings = json.loads((ROOT / "measurement/contracts/local_service_v1/mappings.json").read_text())["mappings"]
+        mappings_document = json.loads((ROOT / "measurement/contracts/local_service_v1/mappings.json").read_text())
+        mappings = mappings_document["mappings"]
         reports = json.loads((ROOT / "measurement/reports/v1.json").read_text())
         metric_aggregation = {
             "generated_leads": "SUM", "appointment_requests": "SUM", "form_intent": "SUM",
@@ -128,8 +129,9 @@ class Database:
             """, (ids["assignment"], ids["website"], ids["connection"], ids["property"], ids["stream"], json.dumps({"propertyId":site.property_id,"streamId":site.stream_id,"onePropertyPerWebsite":True}), date(2026,8,12))).fetchone()
             ids["assignment"] = assignment["id"]
             connection.execute("INSERT INTO app.measurement_contracts(id,slug,industry) VALUES(%s,'local_service_v1','healthcare') ON CONFLICT(id) DO NOTHING", (ids["contract"],))
-            connection.execute("INSERT INTO app.measurement_contract_versions(id,contract_id,version,definition_json,approval_status) VALUES(%s,%s,1,%s,'pending_approval') ON CONFLICT(id) DO UPDATE SET definition_json=excluded.definition_json", (ids["contract_version"], ids["contract"], json.dumps(contract)))
-            connection.execute("INSERT INTO app.website_measurement_contract_assignments(website_id,measurement_contract_version_id,effective_from,approval_status) VALUES(%s,%s,%s,'pending_approval') ON CONFLICT(website_id,effective_from) DO UPDATE SET measurement_contract_version_id=excluded.measurement_contract_version_id", (ids["website"], ids["contract_version"], date(2026,8,12)))
+            contract_approval = "approved" if contract.get("status") == "approved" else "pending_approval"
+            connection.execute("INSERT INTO app.measurement_contract_versions(id,contract_id,version,definition_json,approval_status) VALUES(%s,%s,1,%s,%s) ON CONFLICT(id) DO UPDATE SET definition_json=excluded.definition_json,approval_status=excluded.approval_status", (ids["contract_version"], ids["contract"], json.dumps(contract),contract_approval))
+            connection.execute("INSERT INTO app.website_measurement_contract_assignments(website_id,measurement_contract_version_id,effective_from,approval_status) VALUES(%s,%s,%s,%s) ON CONFLICT(website_id,effective_from) DO UPDATE SET measurement_contract_version_id=excluded.measurement_contract_version_id,approval_status=excluded.approval_status", (ids["website"], ids["contract_version"], date(2026,8,12),contract_approval))
             for event in events:
                 event_id = stable_id(f"event:local_service_v1:v1:{event['name']}")
                 connection.execute("INSERT INTO app.event_definitions(id,contract_version_id,event_name,definition_json) VALUES(%s,%s,%s,%s) ON CONFLICT(contract_version_id,event_name) DO UPDATE SET definition_json=excluded.definition_json", (event_id, ids["contract_version"], event["name"], json.dumps(event)))
@@ -139,13 +141,14 @@ class Database:
                 connection.execute("INSERT INTO app.metric_definitions(id,slug) VALUES(%s,%s) ON CONFLICT(slug) DO NOTHING", (metric_id, slug))
                 connection.execute("INSERT INTO app.metric_definition_versions(id,metric_definition_id,version,aggregation,definition_json,approval_status) VALUES(%s,%s,1,%s,%s,'approved') ON CONFLICT(metric_definition_id,version) DO UPDATE SET definition_json=excluded.definition_json,aggregation=excluded.aggregation", (version_id, metric_id, aggregation, json.dumps({"slug":slug,"aggregation":aggregation,"source":"ga4_reporting_api"})))
             metric_aliases = {"leads":"generated_leads"}
+            mapping_approval = "approved" if mappings_document.get("status") == "approved" else "pending_approval"
             for mapping in mappings:
                 slug = metric_aliases.get(mapping["metric"],mapping["metric"])
                 mapping_id = stable_id(f"mapping:{site.site_id}:{mapping['source_event']}:{slug}:v1")
                 connection.execute("""
                     INSERT INTO app.event_mappings(id,website_id,event_definition_id,metric_definition_version_id,effective_from,approval_status)
-                    VALUES(%s,%s,%s,%s,%s,'pending_approval') ON CONFLICT(id) DO NOTHING
-                """,(mapping_id,ids["website"],stable_id(f"event:local_service_v1:v1:{mapping['source_event']}"),stable_id(f"metric:{slug}:v1"),date(2026,8,12)))
+                    VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET approval_status=excluded.approval_status
+                """,(mapping_id,ids["website"],stable_id(f"event:local_service_v1:v1:{mapping['source_event']}"),stable_id(f"metric:{slug}:v1"),date(2026,8,12),mapping_approval))
             connection.execute("INSERT INTO app.report_definitions(id,slug) VALUES(%s,'website_reporting_bundle') ON CONFLICT(slug) DO NOTHING", (ids["report"],))
             connection.execute("INSERT INTO app.report_definition_versions(id,report_definition_id,version,definition_json,storage_mode,approval_status) VALUES(%s,%s,1,%s,'ALL_RETURNED_ROWS','approved') ON CONFLICT(report_definition_id,version) DO UPDATE SET definition_json=excluded.definition_json", (ids["report_version"], ids["report"], json.dumps(reports)))
             connection.execute("INSERT INTO app.platform_identifiers(key,value_uuid,value_text) VALUES('first_assignment',%s,%s),('first_website',%s,%s),('report_bundle_v1',%s,'website_reporting_bundle_v1') ON CONFLICT(key) DO UPDATE SET value_uuid=excluded.value_uuid,value_text=excluded.value_text", (ids["assignment"], site.site_id, ids["website"], site.site_id, ids["report_version"]))

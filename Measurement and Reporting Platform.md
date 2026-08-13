@@ -12,7 +12,7 @@ House of Dental is the first live website. The reporting service is deployed pri
 - Cloud Scheduler creates five fixed-period jobs through Cloud Tasks. Workers query GA4, preserve execution metadata and quota state, and persist versioned facts/snapshots in Cloud SQL Postgres.
 - The GA4 Admin API verifies the property, active web stream, Measurement ID, key-event inventory, and property timezone. Fixed periods are calculated in that property timezone.
 - Dashboard requests read stored snapshots. Correct period comparisons, retries, freshness, and data-quality states are active; exact job retries are idempotent.
-- The reporting infrastructure is live. The healthcare governance record remains unapproved, so the product visibly reports `attention_required` rather than claiming full measurement approval.
+- The reporting infrastructure is live. Shashaank Shankar approved the healthcare/privacy policy, consent configuration, explicit public routes, contract, mappings, and request semantics on August 12, 2026. Complete applicable-event receipt evidence remains tracked separately.
 - `REQUIREMENTS-AUDIT.md` records the live evidence and the hard-gated work that cannot proceed without authorized approvals and source-system configuration.
 
 Start locally with:

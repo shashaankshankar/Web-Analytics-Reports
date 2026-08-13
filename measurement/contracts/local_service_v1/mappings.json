@@ -1,15 +1,17 @@
 {
   "contract_id": "local_service_v1",
   "mapping_version": 1,
-  "status": "pending_pilot_approval",
+  "status": "approved",
+  "approved_by": "Shashaank Shankar",
+  "approved_at": "2026-08-13T02:20:44Z",
   "mappings": [
-    {"metric": "form_intent", "source_event": "form_start", "aggregation": "count", "effective_from": null},
-    {"metric": "technical_submissions", "source_event": "form_submit", "aggregation": "count", "effective_from": null},
-    {"metric": "leads", "source_event": "generate_lead", "aggregation": "count", "effective_from": null},
-    {"metric": "phone_intent", "source_event": "phone_click", "aggregation": "count", "effective_from": null},
-    {"metric": "email_intent", "source_event": "email_click", "aggregation": "count", "effective_from": null},
-    {"metric": "appointment_requests", "source_event": "appointment_request", "aggregation": "count", "effective_from": null},
-    {"metric": "cta_engagement", "source_event": "cta_click", "aggregation": "count", "effective_from": null}
+    {"metric": "form_intent", "source_event": "form_start", "aggregation": "count", "effective_from": "2026-08-12"},
+    {"metric": "technical_submissions", "source_event": "form_submit", "aggregation": "count", "effective_from": "2026-08-12"},
+    {"metric": "leads", "source_event": "generate_lead", "aggregation": "count", "effective_from": "2026-08-12"},
+    {"metric": "phone_intent", "source_event": "phone_click", "aggregation": "count", "effective_from": "2026-08-12"},
+    {"metric": "email_intent", "source_event": "email_click", "aggregation": "count", "effective_from": "2026-08-12"},
+    {"metric": "appointment_requests", "source_event": "appointment_request", "aggregation": "count", "effective_from": "2026-08-12"},
+    {"metric": "cta_engagement", "source_event": "cta_click", "aggregation": "count", "effective_from": "2026-08-12"}
   ],
   "not_derived_from": {
     "leads": ["form_submit", "phone_click", "email_click", "appointment_request"],

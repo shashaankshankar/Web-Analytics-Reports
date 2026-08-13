@@ -20,8 +20,11 @@
   "businessTimezone": "America/New_York",
   "governance": {
     "industry": "healthcare",
-    "status": "requires_confirmation",
+    "status": "approved",
+    "approvedBy": "Shashaank Shankar",
+    "approvedAt": "2026-08-13T02:20:44Z",
     "unknownRoutes": "prohibited",
-    "generateLead": "blocked_pending_downstream_confirmation"
+    "generateLead": "approved_validated_request_handoff",
+    "appointmentRequest": "approved_request_received_not_booked"
   }
 }

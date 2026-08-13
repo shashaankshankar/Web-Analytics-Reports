@@ -6,7 +6,7 @@ Updated August 12, 2026.
 
 | Area | State | Current evidence |
 | --- | --- | --- |
-| Reporting service | Live and private | Cloud Run revision `measurement-reporting-platform-00009-k7n` serves 100% of traffic; unauthenticated requests return 403. |
+| Reporting service | Live and private | Cloud Run revision `measurement-reporting-platform-00010-vd5` serves 100% of traffic; unauthenticated requests return 403. |
 | Runtime readiness | Ready | Authenticated `/health` and `/ready` return 200; `/ready` confirms the `measurement` database and production migration. |
 | GA4 connection | Active read-only | Managed ADC and the Admin API verify property `549721844`, stream `15427015396`, Measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`. |
 | Persistence | Active | Cloud SQL contains immutable report executions, period snapshots, daily facts, quality status, and stored dashboard snapshots. |
@@ -20,21 +20,22 @@ Updated August 12, 2026.
 
 ## Live data state
 
-The most recent production run completed all five fixed periods on revision `00009-k7n`. The period boundary is calculated in the verified GA4 property timezone, so the latest complete date is August 11, 2026. Those complete windows currently contain no rows. Three active users, four sessions, and two `cta_click` events were visible only when an earlier UTC-bound query incorrectly included August 12; the corrected production snapshots exclude that current local day. No thresholding, schema restrictions, or `(other)` data loss were reported.
+The most recent production run completed all five fixed periods on revision `00010-vd5`. The period boundary is calculated in the verified GA4 property timezone, so the latest complete date is August 11, 2026. Those complete windows currently contain no rows. Current-day Realtime validation separately observed one `form_start` and one `cta_click`; fixed-period snapshots correctly exclude that incomplete local day. No thresholding, schema restrictions, or `(other)` data loss were reported.
 
 These are small live counts, not a claim that every measurement event has been manually validated.
 
-## Open governance gate
+## Approved governance and remaining live evidence
 
-The platform is deployed, scheduled, connected, persistent, and operational. It is not valid to mark the entire measurement program fully approved because the repository still records:
+Shashaank Shankar approved the healthcare/privacy policy, consent configuration, eleven public routes, measurement contract, mappings, and downstream request semantics on August 12, 2026. The live site now fails closed before analytics initialization when URL data is unsafe. The GA4 Realtime API observed exactly one `form_start` and one `cta_click` during the approval run.
 
-- healthcare/privacy and legal review not signed by a named authorized reviewer;
-- route eligibility manifest `pending_privacy_review`;
-- measurement contract `draft` and pilot mapping approval pending;
-- `generate_lead` blocked pending approved downstream receipt semantics;
-- no current manual DebugView/Tag Assistant evidence for all seven contract events and duplicate absence.
+Remaining evidence is operational rather than governance approval:
 
-The dashboard intentionally reports `attention_required` for governance while leaving reporting infrastructure active. Do not change these records to approved without the authorized evidence.
+- no authorized production form submission was sent to the dental office, so the three post-success events, Resend acceptance, and inbox delivery were not observed;
+- browser security blocked the `tel:` activation used to generate `phone_click`;
+- the rendered site has no mailto CTA, so `email_click` is not currently applicable;
+- UI-level DebugView/Tag Assistant parameter inspection remains unobserved, while code and fixtures prove the allowlisted payload construction.
+
+The dashboard reports governance as approved. Complete Phase 1 evidence remains separate from governance approval.
 
 ## Operator access
 

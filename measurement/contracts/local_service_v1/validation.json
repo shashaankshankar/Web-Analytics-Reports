@@ -24,6 +24,6 @@
     ]
   },
   "validation_tools": ["schema_validator", "route_eligibility_check", "payload_inspector", "GA4_DebugView", "Tag_Assistant"],
-  "last_validated": null,
-  "approval": {"status": "pending", "approved_by": null, "approved_at": null}
+  "last_validated": "2026-08-13T02:19:56Z",
+  "approval": {"status": "approved_governance_pending_debugview_evidence", "approved_by": "Shashaank Shankar", "approved_at": "2026-08-13T02:20:44Z"}
 }

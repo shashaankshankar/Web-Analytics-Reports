@@ -1,7 +1,9 @@
 {
   "contract_id": "local_service_v1",
   "version": 1,
-  "status": "draft",
+  "status": "approved",
+  "approved_by": "Shashaank Shankar",
+  "approved_at": "2026-08-13T02:20:44Z",
   "industry": "healthcare",
   "owner": {
     "type": "agency",
@@ -47,6 +49,6 @@
     "ga4_property_and_web_stream_verified",
     "appointment_backend_success_condition_verified"
   ],
-  "effective_from": null,
+  "effective_from": "2026-08-12",
   "effective_to": null
 }
