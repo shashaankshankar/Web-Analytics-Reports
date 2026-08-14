@@ -6,7 +6,7 @@ Updated August 13, 2026.
 
 | Area | State | Current evidence |
 | --- | --- | --- |
-| Reporting service | Live, private, and hardened | Cloud Run revision `measurement-reporting-platform-00038-zjd` serves 100% of traffic; authenticated readiness returns 200 and unauthenticated requests return 403. The distroless Debian 13 image is digest-pinned; an on-demand scan reports zero critical/high findings and no fixable remaining findings. |
+| Reporting service | Live, private, and hardened | Cloud Run revision `measurement-reporting-platform-00039-tl7` serves 100% of traffic; authenticated readiness returns 200 and unauthenticated requests return 403. The distroless Debian 13 image is digest-pinned; the preceding production image scan reports zero critical/high findings and no fixable remaining findings. |
 | Runtime readiness | Ready | Authenticated `/health` and `/ready` return 200; `/ready` confirms the `measurement` database and production migration. |
 | GA4 connection | Active read-only | Managed ADC and the Admin API verify property `549721844`, stream `15427015396`, Measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`. |
 | Persistence | Active | Cloud SQL contains immutable report executions, period snapshots, daily facts, quality status, and stored dashboard snapshots. |
@@ -19,7 +19,7 @@ Updated August 13, 2026.
 | Per-property isolation | Passed | Scheduling enumerates each approved assignment. A synthetic inaccessible property dead-lettered without changing the healthy production assignment, then was removed. |
 | End-user identity | Active | Google-signed Cloud Run identities resolve to organization memberships per request; ambiguous dual authentication headers are rejected. Membership changes are role-restricted and audited. |
 | Recurring reporting | Deployed, deliberately paused | PDF generation, delivery ledger, idempotency, error handling, a bearer-protected recipient-locked relay, and the dispatcher are deployed. Per operator direction, the only synthetic schedule is disabled, the scheduler is paused, and the prior test attempt failed before provider acceptance with no message ID; no report was sent. |
-| OAuth | Deployed, inactive | KMS, PKCE, signed state, `analytics.readonly`, refresh-token encryption, revocation, re-consent, and offboarding are implemented. Google production approval/client secrets are absent. |
+| OAuth | Live in Google Testing mode | The external Google Auth Platform app, one approved operator test user, a web client, version-pinned Secret Manager credentials, KMS, PKCE, signed state, `analytics.readonly`, refresh-token encryption, revocation, re-consent, and offboarding are active. The live status reports `configured: true`, `enabled: true`, and `productionApproved: false`; public publishing remains gated on approved platform legal pages, an owned authorized domain, Google verification, and an explicit production decision. No user grant has been completed yet. |
 | Retention/deletion | Active | 760-day aggregate, 180-day operations, seven-year audit, and 30-day deletion-grace defaults are active and configurable. A temporary production tenant passed full deletion and cleanup. |
 | External sources | Search Console active with partial coverage | Version-pinned secret resolution, approval/audit, daily Ads/Search scheduling, idempotent provenance, privacy-validated call/CRM ingestion, and truthful paid/search/business APIs are live. The House of Dental URL-prefix property is verified, the runtime ADC connection is approved, and a signed production sync returned 200. The property is new and has no approved historical rows, so the API correctly reports unavailable totals and `partial_data`; Ads, call tracking, and CRM remain unconfigured. |
 | Database resilience | Regional HA | Cloud SQL is regional, deletion-protected, encrypted-only, connector-only, retains 30 automated backups, and has seven-day point-in-time recovery. Query Insights is enabled without client-address capture. Maintenance uses the stable production channel on Sunday at 06:00 UTC. |
@@ -31,7 +31,7 @@ Updated August 13, 2026.
 
 The most recent production run completed all five fixed periods. The period boundary is calculated in the verified GA4 property timezone, and the latest complete date is August 12, 2026. The stored trailing-28-day view contains 2 generated leads, 2 appointment requests, 3 form starts, 2 technical submissions, 5 active users, and 10 sessions. These are small production counts, not inferred business outcomes. No thresholding, schema restrictions, or `(other)` data loss were reported.
 
-The local suite passes 46 tests. The authenticated production dashboard was rendered after the earlier external-source release with no browser-console errors; revision `00038-zjd` preserves those APIs and passes authenticated readiness after the regional database upgrade.
+The local suite passes 48 tests. The authenticated production dashboard was rendered after the earlier external-source release with no browser-console errors; revision `00039-tl7` preserves those APIs and returns authenticated readiness with live reporting and database status `ok`.
 
 ## Approved governance and live evidence
 

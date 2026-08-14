@@ -43,7 +43,7 @@ The billing account contains only this production project and has a $25 monthly 
 
 - Internal trigger secret versions are pinned; disabled versions must never be re-enabled.
 - The OAuth refresh-token KMS key rotates every 90 days.
-- OAuth uses dedicated Secret Manager resources `measurement-google-oauth-client-id`, `measurement-google-oauth-client-secret`, and `measurement-google-oauth-state-secret`. The state-signing secret has an enabled generated version; client credential resources remain versionless until Google Auth Platform creates the production web client.
+- OAuth uses dedicated Secret Manager resources `measurement-google-oauth-client-id`, `measurement-google-oauth-client-secret`, and `measurement-google-oauth-state-secret`. Each has an enabled version pinned into Cloud Run revision `measurement-reporting-platform-00039-tl7`; values are never stored in source or printed during configuration audits.
 - Scheduler and task invocation use `measurement-scheduler`, the only direct Cloud Run service-account invoker; runtime data access and task enqueueing use `analytics-reporting-reader`.
 - Secret values must not be printed by configuration audits; inspect only secret names, pinned versions, and state.
 
@@ -53,4 +53,4 @@ Apply `artifact-cleanup-policy.json` to the `cloud-run-source-deploy` repository
 
 ## OAuth boundary
 
-Google Auth Platform branding, audience, data-access declaration, verification, and web-client creation are console-managed. Configure only the `analytics.readonly` scope and the exact callback documented in `EXTERNAL-SOURCE-ONBOARDING.md`. Do not set `GOOGLE_OAUTH_PRODUCTION_APPROVED=true` until the consent configuration and production client have been verified end to end.
+Google Auth Platform branding, audience, data-access declaration, verification, and web-client creation are console-managed. The app is External/Testing, has one approved operator test user, declares only `analytics.readonly`, and uses the exact callback documented in `EXTERNAL-SOURCE-ONBOARDING.md`. `GOOGLE_OAUTH_ENABLED=true` is separate from `GOOGLE_OAUTH_PRODUCTION_APPROVED=false`; do not set the latter true until approved public legal pages, an owned authorized domain, Google verification, an end-to-end grant/property-discovery test, and an explicit production decision all exist.

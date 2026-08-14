@@ -15,11 +15,11 @@ Production variables are `REPORT_EMAIL_API_KEY`, `REPORT_EMAIL_FROM`, and `REPOR
 
 ## Google Analytics self-service OAuth
 
-Create a production Google web OAuth client with this exact redirect URI:
+The Google web OAuth client is active in restricted Testing mode with this exact redirect URI:
 
 `https://measurement-reporting-platform-ptlwmdunva-uc.a.run.app/oauth/google/callback`
 
-Supply the client ID and secret through Secret Manager, complete the Google consent-screen/verification requirements, then set `GOOGLE_OAUTH_PRODUCTION_APPROVED=true`. The app requests only `https://www.googleapis.com/auth/analytics.readonly`, uses offline access and PKCE, and stores refresh tokens under Cloud KMS. The official requirements are documented in [Google's web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server), [production-readiness policy](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance), and [OAuth security practices](https://developers.google.com/identity/protocols/oauth2/resources/best-practices).
+The client ID, client secret, and state-signing secret are supplied to Cloud Run through pinned Secret Manager versions. `GOOGLE_OAUTH_ENABLED=true` permits only the approved Testing-mode user, while `GOOGLE_OAUTH_PRODUCTION_APPROVED=false` truthfully records that the app is not publicly published or verified. The app requests only `https://www.googleapis.com/auth/analytics.readonly`, uses offline access and PKCE, and stores verifiers and refresh tokens under Cloud KMS. Before setting the production-approval flag, publish approved platform homepage/privacy/terms pages on an owned authorized domain, complete Google verification, verify the grant and property-discovery flow, and record the explicit production decision. The official requirements are documented in [Google's web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server), [production-readiness policy](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance), and [OAuth security practices](https://developers.google.com/identity/protocols/oauth2/resources/best-practices).
 
 ## Marketing and business sources
 
