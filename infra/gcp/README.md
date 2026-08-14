@@ -12,6 +12,7 @@ This directory contains non-secret, reviewable configuration for the deployed me
 - Scheduler and Cloud Tasks invoker: `measurement-scheduler@web-analytics-agency-prod.iam.gserviceaccount.com`
 - Build identity: `measurement-builder@web-analytics-agency-prod.iam.gserviceaccount.com`
 - Cloud Tasks queue: `measurement-sync`, one concurrent dispatch, five attempts, exponential backoff
+- Public callback scale: minimum one warm instance, maximum two service instances
 - Report dispatcher: deliberately paused; do not resume without explicit operator direction
 
 The runtime image is multi-stage, digest-pinned, and distroless. Production images must pass an authenticated `/ready` check, reject unauthenticated requests, and undergo On-Demand Scanning before the release is recorded as hardened. Source builds use the dedicated builder identity and a regional user-owned staging bucket; the default compute identity is not granted build access.
