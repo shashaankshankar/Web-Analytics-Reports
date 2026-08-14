@@ -54,7 +54,7 @@ The billing account contains only this production project and has a $25 monthly 
 
 ## Artifact lifecycle
 
-Apply `artifact-cleanup-policy.json` to the `cloud-run-source-deploy` repository. It preserves the ten newest versions and deletes untagged versions older than 30 days.
+Apply `artifact-cleanup-policy.json` to the `cloud-run-source-deploy` repository. It preserves the ten newest versions and deletes older versions, whether tagged or untagged, after 30 days.
 
 ## OAuth boundary
 
