@@ -20,6 +20,8 @@ The runtime image is multi-stage, digest-pinned, and distroless. Production imag
 
 Cloud SQL instance `measurement-db` is regional HA, deletion-protected, encrypted-only, and requires the Cloud SQL Auth Proxy or a supported Cloud SQL connector. It retains 30 automated backups and seven days of point-in-time recovery. Query Insights is enabled without recording client addresses. Maintenance uses the stable production channel on Sunday at 06:00 UTC.
 
+`RESTORE-RUNBOOK.md` defines the isolated recovery drill. The latest automated backup was restored to a temporary connector-only instance, validated against migrations, RLS policies, database roles, counts, and deterministic report-data hashes, then deleted after all three managed operations completed without errors.
+
 ## Monitoring
 
 The deployed five-panel dashboard is defined by `monitoring-dashboard.json`. The callback's three-region HTTPS/JSON probe is defined by `oauth-callback-uptime.json`, and its multi-region outage policy is defined by `oauth-callback-unavailable-alert.json`. Active alert policies cover:
