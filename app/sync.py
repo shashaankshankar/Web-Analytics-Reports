@@ -11,6 +11,49 @@ from .storage import Database, canonical_hash, stable_id
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def bundle_alert_states(bundle: dict) -> dict[str, dict]:
+    """Return deterministic, target-free alert decisions for the monitoring periods."""
+    period = bundle["period"]
+    metrics = {item["metric"]: item for item in bundle["views"]["overview"]["metrics"]}
+    decisions: dict[str, dict] = {}
+    if period == "7d":
+        sessions = metrics.get("sessions", {})
+        current = int(sessions.get("value") or 0)
+        previous = int(sessions.get("previousValue") or 0)
+        decisions["tracking_stopped"] = {
+            "active": previous >= 3 and current == 0,
+            "severity": "critical",
+            "detail": {"period": period, "currentSessions": current, "previousSessions": previous},
+        }
+    if period == "28d":
+        leads = metrics.get("generated_leads", {})
+        current = int(leads.get("value") or 0)
+        previous = int(leads.get("previousValue") or 0)
+        active = (previous >= 3 and current == 0) or (previous >= 5 and current * 2 <= previous)
+        decisions["lead_count_unexpected_drop"] = {
+            "active": active,
+            "severity": "high",
+            "detail": {
+                "period": period,
+                "currentGeneratedLeads": current,
+                "previousGeneratedLeads": previous,
+                "rule": "zero_after_at_least_three_or_half_after_at_least_five",
+            },
+        }
+    return decisions
+
+
+def access_revocation_error(error: Exception) -> bool:
+    error_type = type(error).__name__.lower()
+    if error_type in {"permissiondenied", "forbidden", "unauthorized", "unauthenticated"}:
+        return True
+    reason = str(error).lower()
+    return any(value in reason for value in (
+        "permission_denied", "insufficient authentication scopes", "invalid_grant",
+        "request had invalid authentication credentials", "analytics_connection_disabled",
+    ))
+
+
 class SyncEngine:
     def __init__(self, database: Database, reporter: GA4Reporter, admin: GA4Admin | None = None, site=None):
         self.database = database
@@ -46,6 +89,10 @@ class SyncEngine:
         try:
             compatibility = self._validate_compatibility()
             if not compatibility["compatible"]:
+                self.database.set_alert(assignment_id,"measurement_incompatibility","critical",{
+                    "period":period,
+                    "reports":[item["report"] for item in compatibility["checks"] if not item["compatible"]],
+                },True)
                 raise RuntimeError("ga4_report_definition_incompatible")
             if self.admin and self.site and period == "7d":
                 health = self.admin.configuration_health(self.site)
@@ -56,13 +103,21 @@ class SyncEngine:
             bundle["compatibility"] = compatibility
             result = self._persist(job["id"], sync_run_id, assignment_id, report_version_id, execution_key, scheduled_for, bundle)
             self.database.set_alert(assignment_id,"sync_failed","high",{"period":period,"state":"healthy"},False)
-            self.database.set_alert(assignment_id,"tracking_stale","medium",{"period":period,"empty":bundle["quality"]["empty"]},bundle["quality"]["empty"])
+            self.database.set_alert(assignment_id,"measurement_incompatibility","critical",{"period":period,"state":"compatible"},False)
+            self.database.set_alert(assignment_id,"ga4_access_revoked","critical",{"period":period,"state":"authorized"},False)
+            self.database.set_alert(assignment_id,"tracking_stale","medium",{"period":period,"state":"superseded"},False)
+            for alert_key, decision in bundle_alert_states(bundle).items():
+                self.database.set_alert(assignment_id,alert_key,decision["severity"],decision["detail"],decision["active"])
             return result
         except Exception as error:
             with self.database.connection() as connection:
                 connection.execute("UPDATE analytics.sync_jobs SET status='failed',completed_at=now(),error_code=%s,error_detail=%s,next_attempt_at=CASE WHEN %s THEN NULL ELSE now()+interval '15 minutes' END,dead_lettered_at=CASE WHEN %s THEN now() ELSE NULL END WHERE id=%s",(type(error).__name__,str(error)[:1000],final_attempt,final_attempt,job["id"]))
                 connection.execute("UPDATE analytics.sync_runs SET status='failed',completed_at=now(),error_code=%s,error_detail=%s WHERE id=%s",(type(error).__name__,str(error)[:1000],sync_run_id))
             self.database.set_alert(assignment_id,"sync_failed","critical" if final_attempt else "high",{"period":period,"errorCode":type(error).__name__,"deadLettered":final_attempt},True)
+            if access_revocation_error(error):
+                self.database.set_alert(assignment_id,"ga4_access_revoked","critical",{
+                    "period":period,"errorCode":type(error).__name__,"deadLettered":final_attempt,
+                },True)
             raise
 
     def _validate_compatibility(self):

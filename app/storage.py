@@ -5,7 +5,7 @@ import hmac
 import json
 import uuid
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from psycopg import sql
@@ -29,6 +29,26 @@ def stable_id(name: str) -> uuid.UUID:
 def canonical_hash(value) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def data_stale_alert(last_successful_sync: datetime | None, now: datetime | None = None, threshold_hours: int = 36) -> dict | None:
+    now = now or datetime.now(timezone.utc)
+    if last_successful_sync is not None and last_successful_sync >= now - timedelta(hours=threshold_hours):
+        return None
+    age_hours = None if last_successful_sync is None else round((now - last_successful_sync).total_seconds() / 3600, 1)
+    return {
+        "key":"data_stale","severity":"critical",
+        "detail":{"lastSuccessfulSync":last_successful_sync.isoformat() if last_successful_sync else None,"ageHours":age_hours,"thresholdHours":threshold_hours},
+        "openedAt":last_successful_sync.isoformat() if last_successful_sync else None,
+    }
+
+
+def contract_is_outdated(contract_key: str | None, assignment_status: str | None,
+                         assigned_version: int | None, latest_approved_version: int | None) -> bool:
+    return bool(
+        not contract_key or assignment_status != "approved" or
+        (latest_approved_version is not None and (assigned_version or 0) < latest_approved_version)
+    )
 
 
 class Database:
@@ -312,15 +332,20 @@ class Database:
             alerts = connection.execute("SELECT alert_key,severity,detail_json,opened_at FROM analytics.operator_alerts WHERE state='open' " + assignment_filter + " ORDER BY opened_at DESC", parameters).fetchall()
             current_job = connection.execute("SELECT id,status,period_key,attempt_count,scheduled_for FROM analytics.sync_jobs WHERE status IN ('queued','running') " + assignment_filter + " ORDER BY scheduled_for LIMIT 1", parameters).fetchone()
             execution = connection.execute("SELECT requested_end_date,property_quota_json,subject_to_thresholding,data_loss_from_other_row FROM analytics.report_executions WHERE status='succeeded' " + assignment_filter + " ORDER BY completed_at DESC LIMIT 1", parameters).fetchone()
+        visible_alerts = [{"key":row["alert_key"],"severity":row["severity"],"detail":row["detail_json"],"openedAt":row["opened_at"].isoformat()} for row in alerts]
+        last_successful_sync = summary["last_successful_sync"]
+        temporal_alert = data_stale_alert(last_successful_sync) if website_id else None
+        if temporal_alert and not any(item["key"] == "data_stale" for item in visible_alerts):
+            visible_alerts.append(temporal_alert)
         return {
             "status": quality["status"] if quality else "never_synced",
-            "lastSuccessfulSync": summary["last_successful_sync"].isoformat() if summary["last_successful_sync"] else None,
+            "lastSuccessfulSync": last_successful_sync.isoformat() if last_successful_sync else None,
             "queuedJobs": summary["queued_jobs"], "failedJobs": summary["failed_jobs"],
             "freshness": quality["freshness"] if quality else None,
             "quality": quality["details_json"] if quality else {},
             "checkedAt": quality["checked_at"].isoformat() if quality else None,
             "errorCodes":[{"code":row["error_code"],"count":row["count"]} for row in errors],
-            "alerts":[{"key":row["alert_key"],"severity":row["severity"],"detail":row["detail_json"],"openedAt":row["opened_at"].isoformat()} for row in alerts],
+            "alerts":visible_alerts,
             "lastCompleteDate":execution["requested_end_date"].isoformat() if execution else None,
             "currentJob":{"id":str(current_job["id"]),"status":current_job["status"],"period":current_job["period_key"],"attemptCount":current_job["attempt_count"],"scheduledFor":current_job["scheduled_for"].isoformat()} if current_job else None,
             "reconciliationState":quality["freshness"] if quality else None,
@@ -335,7 +360,8 @@ class Database:
             rows = connection.execute("""
                 SELECT p.public_id website_id,c.name company,w.canonical_domain,
                        w.healthcare_eligibility,a.id assignment_id,
-                       mc.slug contract_slug,mcv.version contract_version,mca.approval_status contract_status
+                       mc.slug contract_slug,mcv.version contract_version,mca.approval_status contract_status,
+                       latest_contract.latest_approved_version
                   FROM app.websites w
                   JOIN app.companies c ON c.id=w.company_id
                   JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=w.id
@@ -343,6 +369,11 @@ class Database:
                   LEFT JOIN app.website_measurement_contract_assignments mca ON mca.website_id=w.id AND mca.effective_to IS NULL
                   LEFT JOIN app.measurement_contract_versions mcv ON mcv.id=mca.measurement_contract_version_id
                   LEFT JOIN app.measurement_contracts mc ON mc.id=mcv.contract_id
+                  LEFT JOIN LATERAL (
+                    SELECT max(candidate.version) latest_approved_version
+                      FROM app.measurement_contract_versions candidate
+                     WHERE candidate.contract_id=mcv.contract_id AND candidate.approval_status='approved'
+                  ) latest_contract ON true
                  ORDER BY c.name,w.canonical_domain
             """).fetchall()
         websites = []
@@ -353,6 +384,13 @@ class Database:
             primary = next((metric for metric in overview.get("metrics", []) if metric.get("metric") == "generated_leads"), None)
             contract_key = f"{row['contract_slug']}@{row['contract_version']}" if row["contract_slug"] else None
             if contract_key: contract_versions.add(contract_key)
+            contract_outdated = contract_is_outdated(contract_key,row["contract_status"],row["contract_version"],row["latest_approved_version"])
+            if contract_outdated and not any(item["key"] == "contract_outdated" for item in sync["alerts"]):
+                sync["alerts"].append({
+                    "key":"contract_outdated","severity":"high",
+                    "detail":{"assignedContract":contract_key,"assignmentStatus":row["contract_status"],"latestApprovedVersion":row["latest_approved_version"]},
+                    "openedAt":None,
+                })
             action_required = bool(sync.get("failedJobs") or sync.get("alerts") or row["contract_status"] != "approved")
             websites.append({
                 "websiteId": row["website_id"], "company": row["company"], "canonicalDomain": row["canonical_domain"],
