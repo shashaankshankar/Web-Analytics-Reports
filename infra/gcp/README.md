@@ -24,7 +24,7 @@ Cloud SQL instance `measurement-db` is regional HA, deletion-protected, encrypte
 
 The deployed dashboard is defined by `monitoring-dashboard.json`. Active alert policies cover:
 
-- Cloud Run HTTP 5xx responses
+- Private Cloud Run and public OAuth callback HTTP 5xx responses
 - Cloud Run error-severity runtime logs
 - Cloud Run p95 latency above five seconds
 - Cloud Tasks non-OK attempts
@@ -43,7 +43,7 @@ The billing account contains only this production project and has a $25 monthly 
 
 - Internal trigger secret versions are pinned; disabled versions must never be re-enabled.
 - The OAuth refresh-token KMS key rotates every 90 days.
-- OAuth uses dedicated Secret Manager resources `measurement-google-oauth-client-id`, `measurement-google-oauth-client-secret`, and `measurement-google-oauth-state-secret`. Each has an enabled version pinned into private revision `measurement-reporting-platform-00041-n24` and callback-only revision `measurement-oauth-callback-00002-hqz`; values are never stored in source or printed during configuration audits.
+- OAuth uses dedicated Secret Manager resources `measurement-google-oauth-client-id`, `measurement-google-oauth-client-secret`, and `measurement-google-oauth-state-secret`. OAuth client-secret version 2 is pinned into private revision `measurement-reporting-platform-00042-7kk` and callback-only revision `measurement-oauth-callback-00003-q2d`; version 1 is disabled in Google Auth Platform and Secret Manager. Values are never stored in source or printed during configuration audits.
 - Scheduler and task invocation use `measurement-scheduler`, the only direct Cloud Run service-account invoker; runtime data access and task enqueueing use `analytics-reporting-reader`.
 - Secret values must not be printed by configuration audits; inspect only secret names, pinned versions, and state.
 
