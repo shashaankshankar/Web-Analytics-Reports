@@ -80,7 +80,7 @@ def test_docs_health_and_data_protection():
         assert client.get("/favicon.ico").status_code == 204
         assert client.get("/docs").status_code == 200
         assert client.get("/health").json()["runtime"] == "fastapi"
-        assert client.get("/healthz").json()["status"] == "ok"
+        assert client.get("/healthz").json()["status"] == "ready"
         assert client.get("/ready").json()["status"] == "ready"
         assert client.get("/api/portfolio/summary").status_code == 401
         assert client.get("/api/portfolio/summary",headers=headers()).status_code == 200
@@ -88,6 +88,17 @@ def test_docs_health_and_data_protection():
         assert agency.status_code == 200
         assert 'id="oauth-connect"' in agency.text
         assert "/api/oauth/google/authorize" in agency.text
+
+
+def test_readiness_fails_closed_when_database_is_unavailable():
+    database=StubDatabase()
+    database.health=lambda: {"status":"error","reason":"ConnectionTimeout"}
+    with TestClient(create_app(settings(),StubReporter(),database)) as client:
+        assert client.get("/health").status_code == 200
+        healthz=client.get("/healthz")
+        ready=client.get("/ready")
+        assert healthz.status_code == 503 and healthz.json()["status"] == "not_ready"
+        assert ready.status_code == 503 and ready.json()["status"] == "not_ready"
 
 
 def test_stored_reporting_contract_and_scope_are_preserved():

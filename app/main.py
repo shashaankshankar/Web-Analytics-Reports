@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -183,14 +184,19 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
     def agency(context:TenantContext=Depends(require_agency)): return agency_dashboard_html(site)
 
     @app.get("/health",tags=["Operations"])
-    @app.get("/healthz",tags=["Operations"],include_in_schema=False)
-    def healthz(): return {"status":"ok","runtime":"fastapi","liveReporting":settings.live_enabled}
+    def health(): return {"status":"ok","runtime":"fastapi","liveReporting":settings.live_enabled}
 
-    @app.get("/ready",tags=["Operations"])
-    async def ready():
+    async def readiness():
         db = await call(database.health)
         ready_state = settings.live_enabled and db.get("status") == "ok"
-        return {"status":"ready" if ready_state else "not_ready","liveReporting":settings.live_enabled,"database":db}
+        payload = {"status":"ready" if ready_state else "not_ready","liveReporting":settings.live_enabled,"database":db}
+        return JSONResponse(status_code=200 if ready_state else 503,content=jsonable_encoder(payload))
+
+    @app.get("/healthz",tags=["Operations"],include_in_schema=False)
+    async def healthz(): return await readiness()
+
+    @app.get("/ready",tags=["Operations"])
+    async def ready(): return await readiness()
 
     @app.get("/api/portfolio/summary",tags=["Reporting"])
     async def portfolio(period:Period="28d",context:TenantContext=Depends(require_agency)):
