@@ -84,7 +84,10 @@ def test_docs_health_and_data_protection():
         assert client.get("/ready").json()["status"] == "ready"
         assert client.get("/api/portfolio/summary").status_code == 401
         assert client.get("/api/portfolio/summary",headers=headers()).status_code == 200
-        assert client.get("/agency",headers=headers()).status_code == 200
+        agency=client.get("/agency",headers=headers())
+        assert agency.status_code == 200
+        assert 'id="oauth-connect"' in agency.text
+        assert "/api/oauth/google/authorize" in agency.text
 
 
 def test_stored_reporting_contract_and_scope_are_preserved():
@@ -190,6 +193,18 @@ def test_oauth_testing_mode_can_authorize_without_claiming_public_approval(monke
         assert authorization["authorizationUrl"].startswith("https://accounts.google.com/")
         assert authorization["scope"] == "https://www.googleapis.com/auth/analytics.readonly"
         assert database.oauth_states[0]["redirectUri"] == "https://service.example/oauth/google/callback"
+
+
+def test_public_oauth_callback_service_exposes_only_callback_and_health():
+    value=Settings(**{**settings().__dict__,"oauth_callback_only":True})
+    with TestClient(create_app(value,StubReporter(),StubDatabase())) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/oauth/google/callback").status_code == 400
+        assert client.get("/").status_code == 404
+        assert client.get("/docs").status_code == 404
+        assert client.get("/ready").status_code == 404
+        assert client.get("/agency",headers=headers()).status_code == 404
+        assert client.get("/api/oauth/google/status",headers=headers()).status_code == 404
 
 
 def test_offboarding_requires_agency_role_and_exact_confirmation():

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -121,7 +121,8 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
 
     @app.middleware("http")
     async def headers(request: Request, call_next):
-        response = await call_next(request)
+        callback_paths=frozenset({"/oauth/google/callback","/health","/healthz"})
+        response = JSONResponse(status_code=404,content={"detail":"not_found"}) if settings.oauth_callback_only and request.url.path not in callback_paths else await call_next(request)
         response.headers.update({"Cache-Control":"no-store","X-Content-Type-Options":"nosniff","Referrer-Policy":"no-referrer","X-Frame-Options":"DENY","Permissions-Policy":"camera=(), microphone=(), geolocation=()","Content-Security-Policy":"default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
         return response
 
@@ -352,7 +353,7 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
             connection=await call(database.save_oauth_connection,context,refresh_ciphertext,token.get("scope","").split(),None)
         except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
         except Exception as error: raise HTTPException(status_code=502,detail=f"google_oauth_connection_failed:{type(error).__name__}") from error
-        return f"<!doctype html><title>Google Analytics connected</title><main><h1>Connection received</h1><p>Connection {connection['connectionId']} is pending assignment review. You may close this window.</p></main>"
+        return f"<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><title>Google Analytics connected</title><main><h1>Connection received</h1><p>Connection {connection['connectionId']} is pending assignment review.</p><p><a href='/agency'>Return to the agency console</a></p></main>"
 
     @app.post("/api/oauth/google/connections/{connection_id}/revoke",tags=["Connections"])
     async def oauth_revoke(connection_id:str,request:OAuthRevokeRequest,context:TenantContext=Depends(require_context)):

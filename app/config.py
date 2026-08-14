@@ -65,6 +65,7 @@ class Settings:
     google_oauth_kms_key: str = ""
     google_oauth_enabled: bool = False
     google_oauth_production_approved: bool = False
+    oauth_callback_only: bool = False
     @property
     def live_enabled(self): return self.mode == "live" and self.data_api_enabled and self.live_approved
     @classmethod
@@ -103,6 +104,7 @@ class Settings:
             env.get("GOOGLE_OAUTH_KMS_KEY", ""),
             env.get("GOOGLE_OAUTH_ENABLED") == "true",
             env.get("GOOGLE_OAUTH_PRODUCTION_APPROVED") == "true",
+            env.get("OAUTH_CALLBACK_ONLY") == "true",
         )
 
     @property
