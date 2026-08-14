@@ -12,7 +12,7 @@ from opentelemetry import propagate, trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -67,8 +67,10 @@ def configure_tracing(settings: Settings) -> TracingRuntime | None:
         resource=resource,
         sampler=ParentBased(TraceIdRatioBased(settings.trace_sample_rate)),
     )
+    # Cloud Run may throttle CPU immediately after a request. Export synchronously
+    # while request CPU is available; this service has intentionally low traffic.
     provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_TRACE_ENDPOINT, credentials=channel_credentials))
+        SimpleSpanProcessor(OTLPSpanExporter(endpoint=OTLP_TRACE_ENDPOINT, credentials=channel_credentials))
     )
     trace.set_tracer_provider(provider)
     return TracingRuntime(provider)
