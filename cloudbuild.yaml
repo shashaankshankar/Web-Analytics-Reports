@@ -19,12 +19,11 @@ steps:
 
   - id: scan
     name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:144d47fa0304a95021a154107409422af38f302f3fca9fd1038ce487e76ac3ff
+    env: [COMPONENTS=google-cloud-cli-local-extract]
     entrypoint: bash
     args:
       - -ceu
       - |
-        apt-get update -qq
-        apt-get install -y --no-install-recommends google-cloud-cli-local-extract
         scan_name="$$(gcloud artifacts docker images scan '${_IMAGE}:$BUILD_ID' \
           --project='$PROJECT_ID' --location=us --remote --format='value(response.scan)')"
         gcloud artifacts docker images list-vulnerabilities "$${scan_name}" \
