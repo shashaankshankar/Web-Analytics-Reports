@@ -27,6 +27,7 @@ from .sync import SyncEngine
 from .tasks import PERIODS, TaskQueue
 from .external_sync import ExternalSyncEngine
 from .source_runtime import BufferedOutcomeConnector, PINNED_SECRET, SourceConnectorFactory, external_sync_window
+from .telemetry import PrivacySafeTracingMiddleware, configure_tracing
 
 Period = Literal["7d", "28d", "90d", "this_month", "last_month"]
 bearer = HTTPBearer(auto_error=False, description="Dashboard API token when token authentication is enabled")
@@ -105,6 +106,7 @@ class OAuthAssignmentRequest(BaseModel):
 
 def create_app(settings=None, reporter=None, database=None, task_queue=None, source_connector_factory=None):
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
+    tracing_runtime = configure_tracing(settings)
     database = database or Database(settings)
     report_sender = ReportEmailSender(settings.report_email_api_key,settings.report_email_from,settings.report_recipients,settings.report_email_endpoint)
     oauth_manager = OAuthManager(settings.google_oauth_client_id,settings.google_oauth_client_secret,settings.google_oauth_redirect_uri,settings.google_oauth_state_secret,KmsCipher(settings.google_oauth_kms_key),settings.google_oauth_enabled)
@@ -113,10 +115,14 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
     @asynccontextmanager
     async def lifespan(app):
         app.state.reporter = reporter
-        yield
-        database.close()
+        try:
+            yield
+        finally:
+            database.close()
+            if tracing_runtime: tracing_runtime.shutdown()
 
     app = FastAPI(title="Measurement & Reporting Platform",version="1.0.0",description="Stored, privacy-aware GA4 reporting for House of Dental.",lifespan=lifespan)
+    app.add_middleware(PrivacySafeTracingMiddleware)
     app.state.settings, app.state.site, app.state.database = settings, site, database
 
     @app.middleware("http")

@@ -66,6 +66,8 @@ class Settings:
     google_oauth_enabled: bool = False
     google_oauth_production_approved: bool = False
     oauth_callback_only: bool = False
+    trace_enabled: bool = False
+    trace_sample_rate: float = 0.0
     @property
     def live_enabled(self): return self.mode == "live" and self.data_api_enabled and self.live_approved
     @classmethod
@@ -105,6 +107,8 @@ class Settings:
             env.get("GOOGLE_OAUTH_ENABLED") == "true",
             env.get("GOOGLE_OAUTH_PRODUCTION_APPROVED") == "true",
             env.get("OAUTH_CALLBACK_ONLY") == "true",
+            env.get("TRACE_ENABLED") == "true",
+            float(env.get("TRACE_SAMPLE_RATE", "0")),
         )
 
     @property
@@ -124,6 +128,8 @@ class Settings:
             raise RuntimeError("invalid_report_recipients_json")
         return value
     def validate(self, site: Site):
+        if not 0 <= self.trace_sample_rate <= 1: raise RuntimeError("invalid_trace_sample_rate")
+        if self.trace_enabled and not self.google_cloud_project: raise RuntimeError("trace_project_required")
         if self.google_oauth_production_approved and not self.google_oauth_enabled: raise RuntimeError("oauth_production_approval_requires_enablement")
         if not self.live_enabled: return
         if self.auth_mode not in {"token", "cloud_run"}: raise RuntimeError("unsupported_auth_mode")
