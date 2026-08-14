@@ -23,6 +23,8 @@ steps:
     args:
       - -ceu
       - |
+        apt-get update -qq
+        apt-get install -y --no-install-recommends google-cloud-cli-local-extract
         scan_name="$$(gcloud artifacts docker images scan '${_IMAGE}:$BUILD_ID' \
           --project='$PROJECT_ID' --location=us --remote --format='value(response.scan)')"
         gcloud artifacts docker images list-vulnerabilities "$${scan_name}" \
