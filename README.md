@@ -35,8 +35,9 @@ The reporting APIs read stored snapshots, not live GA4 requests. Sync workers ar
 
 ## Production operations
 
-- `/health` is process liveness only.
-- `/ready` verifies live configuration and database migration state.
+- `/health` is process liveness only. Cloud Run uses it for startup and liveness probes.
+- `/healthz` is the private service's internal database-aware readiness probe; `/ready` exposes the same readiness state to authenticated operators.
+- `/oauth/google/ready` is the callback service's generic database-aware readiness endpoint and does not expose database details.
 - `/dashboard` is the single-client dashboard.
 - `/agency` is the role-restricted portfolio and annotation console.
 - `/api/websites/website_house_of_dental/goals` lists approved goal metrics and manages effective-dated targets for authorized writers.

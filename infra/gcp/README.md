@@ -15,7 +15,7 @@ This directory contains non-secret, reviewable configuration for the deployed me
 - Public callback scale: minimum one warm instance, maximum two service instances
 - Report dispatcher: deliberately paused; do not resume without explicit operator direction
 
-The runtime image is multi-stage, digest-pinned, and distroless. Production images must pass an authenticated `/ready` check, reject unauthenticated requests, and undergo On-Demand Scanning before the release is recorded as hardened. Source builds use the dedicated builder identity and a regional user-owned staging bucket; the default compute identity is not granted build access.
+The runtime image is multi-stage, digest-pinned, and distroless. `cloudbuild.yaml` is the guarded manual release pipeline: it runs tests, builds and pushes one immutable image, performs On-Demand Scanning, blocks high/critical findings, deploys both services with probes, collects live configuration, and verifies traffic/readiness while asserting report dispatch is paused. Source builds use the dedicated builder identity and a regional user-owned staging bucket; the default compute identity is not granted build access.
 
 ## Database
 
@@ -47,7 +47,7 @@ The billing account contains only this production project and has a $25 monthly 
 
 - Internal trigger secret versions are pinned; disabled versions must never be re-enabled.
 - The OAuth refresh-token KMS key rotates every 90 days.
-- OAuth uses dedicated Secret Manager resources `measurement-google-oauth-client-id`, `measurement-google-oauth-client-secret`, and `measurement-google-oauth-state-secret`. OAuth client-secret version 2 is pinned into private revision `measurement-reporting-platform-00047-ftn` and callback-only revision `measurement-oauth-callback-00006-kz9`; version 1 is disabled in Google Auth Platform and Secret Manager. Values are never stored in source or printed during configuration audits.
+- OAuth uses dedicated Secret Manager resources `measurement-google-oauth-client-id`, `measurement-google-oauth-client-secret`, and `measurement-google-oauth-state-secret`. OAuth client-secret version 2 is pinned into private revision `measurement-reporting-platform-00050-kw8` and callback-only revision `measurement-oauth-callback-00009-hpm`; version 1 is disabled in Google Auth Platform and Secret Manager. Values are never stored in source or printed during configuration audits.
 - Internal trigger versions 1 through 7 are disabled. The private service and all four Scheduler jobs use newline-free version 8; configuration verification compares values without printing them.
 - Scheduler and task invocation use `measurement-scheduler`, the only direct Cloud Run service-account invoker; runtime data access and task enqueueing use `analytics-reporting-reader`.
 - Secret values must not be printed by configuration audits; inspect only secret names, pinned versions, and state.
@@ -58,4 +58,4 @@ Apply `artifact-cleanup-policy.json` to the `cloud-run-source-deploy` repository
 
 ## OAuth boundary
 
-Google Auth Platform branding, audience, data-access declaration, verification, and web-client creation are console-managed. The app is External/Testing, has one approved operator test user, declares only `analytics.readonly`, and uses the exact callback documented in `EXTERNAL-SOURCE-ONBOARDING.md`. The `measurement-oauth-callback` service is public with `OAUTH_CALLBACK_ONLY=true` and a three-route application allowlist; every reporting and control-plane route remains private on `measurement-reporting-platform`. `GOOGLE_OAUTH_ENABLED=true` is separate from `GOOGLE_OAUTH_PRODUCTION_APPROVED=false`; do not set the latter true until approved public legal pages, an owned authorized domain, Google verification, access to the intended client property, and an explicit production decision all exist.
+Google Auth Platform branding, audience, data-access declaration, verification, and web-client creation are console-managed. The app is External/Testing, has one approved operator test user, declares only `analytics.readonly`, and uses the exact callback documented in `EXTERNAL-SOURCE-ONBOARDING.md`. The `measurement-oauth-callback` service is public with `OAUTH_CALLBACK_ONLY=true` and a restricted liveness/readiness/callback allowlist; every reporting and control-plane route remains private on `measurement-reporting-platform`. `GOOGLE_OAUTH_ENABLED=true` is separate from `GOOGLE_OAUTH_PRODUCTION_APPROVED=false`; do not set the latter true until approved public legal pages, an owned authorized domain, Google verification, access to the intended client property, and an explicit production decision all exist.
