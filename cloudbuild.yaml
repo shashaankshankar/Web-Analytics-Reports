@@ -24,7 +24,7 @@ steps:
       - -ceu
       - |
         apt-get update -qq
-        apt-get install -y --no-install-recommends ca-certificates curl gnupg
+        apt-get install -y --no-install-recommends ca-certificates curl gnupg python3-minimal
         curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
           | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
         echo 'deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main' \
@@ -74,7 +74,7 @@ steps:
       - --liveness-probe=httpGet.path=/health,initialDelaySeconds=10,timeoutSeconds=2,periodSeconds=30,failureThreshold=3
       - --quiet
 
-  - id: verify-release
+  - id: collect-release-evidence
     name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:144d47fa0304a95021a154107409422af38f302f3fca9fd1038ce487e76ac3ff
     entrypoint: bash
     args:
@@ -86,6 +86,13 @@ steps:
           --project='$PROJECT_ID' --region=us-central1 --format=json > /workspace/reporting-service.json
         gcloud run services describe measurement-oauth-callback \
           --project='$PROJECT_ID' --region=us-central1 --format=json > /workspace/callback-service.json
+
+  - id: verify-release
+    name: python:3.13-slim-trixie@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
         python3 - <<'PY'
         import json
         from urllib.request import urlopen
