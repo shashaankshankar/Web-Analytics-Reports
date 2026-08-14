@@ -116,6 +116,36 @@
             "yAxis": { "label": "up", "scale": "LINEAR" }
           }
         }
+      },
+      {
+        "xPos": 0,
+        "yPos": 32,
+        "width": 48,
+        "height": 16,
+        "widget": {
+          "title": "OAuth callback external availability",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" resource.type=\"uptime_url\" metric.label.\"check_id\"=\"measurement-platform-oauth-callback-health-OD-1fFa5o-0\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_FRACTION_TRUE",
+                      "crossSeriesReducer": "REDUCE_MEAN"
+                    }
+                  }
+                },
+                "plotType": "LINE"
+              }
+            ],
+            "thresholds": [
+              { "value": 1 }
+            ],
+            "yAxis": { "label": "passing fraction", "scale": "LINEAR" }
+          }
+        }
       }
     ]
   }

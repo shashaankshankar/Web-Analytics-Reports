@@ -1,0 +1,35 @@
+{
+  "displayName": "Measurement Platform OAuth Callback Unavailable",
+  "combiner": "OR",
+  "enabled": true,
+  "notificationChannels": [
+    "projects/web-analytics-agency-prod/notificationChannels/8961507717870797685"
+  ],
+  "documentation": {
+    "content": "The public OAuth callback health endpoint failed from at least two Google uptime-check regions. Inspect the callback Cloud Run revision, health endpoint, logs, and certificate before asking a user to retry authorization.",
+    "mimeType": "text/markdown"
+  },
+  "userLabels": {
+    "service": "measurement-oauth-callback",
+    "severity": "critical"
+  },
+  "conditions": [
+    {
+      "displayName": "OAuth callback health fails in multiple regions",
+      "conditionThreshold": {
+        "filter": "resource.type=\"uptime_url\" AND metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id=\"measurement-platform-oauth-callback-health-OD-1fFa5o-0\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 1,
+        "duration": "120s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "120s",
+            "perSeriesAligner": "ALIGN_NEXT_OLDER",
+            "crossSeriesReducer": "REDUCE_COUNT_FALSE"
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ]
+}

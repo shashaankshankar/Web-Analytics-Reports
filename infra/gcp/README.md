@@ -22,9 +22,10 @@ Cloud SQL instance `measurement-db` is regional HA, deletion-protected, encrypte
 
 ## Monitoring
 
-The deployed dashboard is defined by `monitoring-dashboard.json`. Active alert policies cover:
+The deployed five-panel dashboard is defined by `monitoring-dashboard.json`. The callback's three-region HTTPS/JSON probe is defined by `oauth-callback-uptime.json`, and its multi-region outage policy is defined by `oauth-callback-unavailable-alert.json`. Active alert policies cover:
 
 - Private Cloud Run and public OAuth callback HTTP 5xx responses
+- Public OAuth callback external availability from Iowa, Oregon, and Virginia
 - Cloud Run error-severity runtime logs
 - Cloud Run p95 latency above five seconds
 - Cloud Tasks non-OK attempts
