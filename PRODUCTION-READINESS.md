@@ -6,7 +6,7 @@ Updated August 13, 2026.
 
 | Area | State | Current evidence |
 | --- | --- | --- |
-| Reporting service | Live, private, and hardened | Cloud Run revision `measurement-reporting-platform-00039-tl7` serves 100% of traffic; authenticated readiness returns 200 and unauthenticated requests return 403. The distroless Debian 13 image is digest-pinned; the preceding production image scan reports zero critical/high findings and no fixable remaining findings. |
+| Reporting service | Live, private, and hardened | Cloud Run revision `measurement-reporting-platform-00039-tl7` serves 100% of traffic; authenticated readiness returns 200 and unauthenticated requests return 403. Its distroless Debian 13 image was scanned after deployment and reports zero critical/high findings and zero fixable critical/high findings. |
 | Runtime readiness | Ready | Authenticated `/health` and `/ready` return 200; `/ready` confirms the `measurement` database and production migration. |
 | GA4 connection | Active read-only | Managed ADC and the Admin API verify property `549721844`, stream `15427015396`, Measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`. |
 | Persistence | Active | Cloud SQL contains immutable report executions, period snapshots, daily facts, quality status, and stored dashboard snapshots. |
@@ -32,6 +32,8 @@ Updated August 13, 2026.
 The most recent production run completed all five fixed periods. The period boundary is calculated in the verified GA4 property timezone, and the latest complete date is August 12, 2026. The stored trailing-28-day view contains 2 generated leads, 2 appointment requests, 3 form starts, 2 technical submissions, 5 active users, and 10 sessions. These are small production counts, not inferred business outcomes. No thresholding, schema restrictions, or `(other)` data loss were reported.
 
 The local suite passes 48 tests. The authenticated production dashboard was rendered after the earlier external-source release with no browser-console errors; revision `00039-tl7` preserves those APIs and returns authenticated readiness with live reporting and database status `ok`.
+
+After the OAuth deployment, forced runs of `measurement-daily-sync`, `measurement-retention`, and `measurement-external-source-sync` each completed with HTTP 200 and the Cloud Tasks queue drained to zero. `measurement-report-dispatch` remained paused and was not invoked. On-Demand Scanning result `aa2234d7-72e1-4953-9e69-9209c9ec0cea` for image tag `da35e67` found no critical or high vulnerabilities.
 
 ## Approved governance and live evidence
 

@@ -27,7 +27,7 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 
 ## Live production evidence
 
-- Cloud Run revision `measurement-reporting-platform-00039-tl7` serves 100% of traffic, returns authenticated readiness 200, and rejects unauthenticated requests with HTTP 403. The preceding digest-pinned distroless Debian 13 production image has zero critical/high findings in the production on-demand scan.
+- Cloud Run revision `measurement-reporting-platform-00039-tl7` serves 100% of traffic, returns authenticated readiness 200, and rejects unauthenticated requests with HTTP 403. On-Demand Scanning result `aa2234d7-72e1-4953-9e69-9209c9ec0cea` for its distroless Debian 13 image found zero critical/high and zero fixable critical/high vulnerabilities.
 - `/ready` reports the `measurement` Cloud SQL database migrated and ready.
 - GA4 Admin API verifies property `549721844`, web stream `15427015396`, measurement ID `G-TC66MQQ0T7`, and timezone `America/New_York`.
 - Cloud Scheduler and Cloud Tasks completed all five fixed-period jobs on revision `00010-vd5` with HTTP 200; queue and failed-job counts returned to zero.
@@ -51,6 +51,7 @@ Updated August 13, 2026. This is the evidence ledger for `Measurement and Report
 - Production external-source status returns `partial_data` for the newly verified Search Console property and `not_configured` for Google Ads, call tracking, and CRM/booking. Search, paid, and business APIs return null/unavailable with caveats rather than fabricated zero outcomes when no approved rows exist. Search Console executions are always labeled partial top-row coverage because its API does not guarantee complete dimension rows.
 - The plain local test command passes 48 tests without depending on an untracked operator-email environment value. The authenticated production dashboard renders the external-source, confirmed-outcome, paid, and search panels with no browser-console errors.
 - After connector enforcement and invocation-IAM tightening, authenticated readiness returned 200, unauthenticated readiness returned 403, and forced non-report daily sync, retention, and Search Console schedule/worker requests all returned HTTP 200. Report dispatch was not invoked and remains paused.
+- After the OAuth-enabled revision reached 100% traffic, fresh forced runs of daily sync, retention, and external-source sync again returned HTTP 200; the task queue drained to zero. Report dispatch remained paused and was not invoked.
 
 ## Additional operational evidence
 
