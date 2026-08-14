@@ -128,7 +128,7 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
 
     @app.middleware("http")
     async def headers(request: Request, call_next):
-        callback_paths=frozenset({"/oauth/google/callback","/health","/healthz"})
+        callback_paths=frozenset({"/oauth/google/callback","/oauth/google/ready","/health","/healthz"})
         response = JSONResponse(status_code=404,content={"detail":"not_found"}) if settings.oauth_callback_only and request.url.path not in callback_paths else await call_next(request)
         response.headers.update({"Cache-Control":"no-store","X-Content-Type-Options":"nosniff","Referrer-Policy":"no-referrer","X-Frame-Options":"DENY","Permissions-Policy":"camera=(), microphone=(), geolocation=()","Content-Security-Policy":"default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
         return response
@@ -194,6 +194,12 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
 
     @app.get("/healthz",tags=["Operations"],include_in_schema=False)
     async def healthz(): return await readiness()
+
+    @app.get("/oauth/google/ready",tags=["Operations"],include_in_schema=False)
+    async def oauth_ready():
+        db = await call(database.health)
+        ready_state = settings.live_enabled and db.get("status") == "ok"
+        return JSONResponse(status_code=200 if ready_state else 503,content={"status":"ready" if ready_state else "not_ready"})
 
     @app.get("/ready",tags=["Operations"])
     async def ready(): return await readiness()

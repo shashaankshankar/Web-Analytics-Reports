@@ -210,6 +210,7 @@ def test_public_oauth_callback_service_exposes_only_callback_and_health():
     value=Settings(**{**settings().__dict__,"oauth_callback_only":True})
     with TestClient(create_app(value,StubReporter(),StubDatabase())) as client:
         assert client.get("/health").status_code == 200
+        assert client.get("/oauth/google/ready").status_code == 200
         assert client.get("/oauth/google/callback").status_code == 400
         assert client.get("/").status_code == 404
         assert client.get("/docs").status_code == 404

@@ -55,7 +55,7 @@ steps:
       - --region=us-central1
       - '--image=${_IMAGE}:$BUILD_ID'
       - --startup-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=5,failureThreshold=12
-      - --readiness-probe=httpGet.path=/healthz,timeoutSeconds=2,periodSeconds=5,failureThreshold=3
+      - --readiness-probe=httpGet.path=/oauth/google/ready,timeoutSeconds=2,periodSeconds=5,failureThreshold=3
       - --liveness-probe=httpGet.path=/health,initialDelaySeconds=10,timeoutSeconds=2,periodSeconds=30,failureThreshold=3
       - --quiet
 
@@ -98,22 +98,22 @@ steps:
         from urllib.request import urlopen
 
         expected_image = '${_IMAGE}:$BUILD_ID'
-        for filename, service in [
-            ('/workspace/reporting-service.json', 'measurement-reporting-platform'),
-            ('/workspace/callback-service.json', 'measurement-oauth-callback'),
+        for filename, readiness_path in [
+            ('/workspace/reporting-service.json', '/healthz'),
+            ('/workspace/callback-service.json', '/oauth/google/ready'),
         ]:
             value = json.load(open(filename))
             assert any(item.get('percent') == 100 for item in value['status']['traffic'])
             container = value['spec']['template']['spec']['containers'][0]
             assert container['image'] == expected_image
             assert container['startupProbe']['httpGet']['path'] == '/health'
-            assert container['readinessProbe']['httpGet']['path'] == '/healthz'
+            assert container['readinessProbe']['httpGet']['path'] == readiness_path
             assert container['livenessProbe']['httpGet']['path'] == '/health'
         callback = json.load(open('/workspace/callback-service.json'))
         annotations = callback['metadata']['annotations']
         assert annotations['run.googleapis.com/minScale'] == '1'
         assert annotations['run.googleapis.com/maxScale'] == '2'
-        with urlopen('https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/healthz', timeout=10) as response:
+        with urlopen('https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/ready', timeout=10) as response:
             payload = json.load(response)
             assert response.status == 200 and payload['status'] == 'ready'
         print(json.dumps({'releaseVerified': True, 'reportDispatch': 'PAUSED'}))
