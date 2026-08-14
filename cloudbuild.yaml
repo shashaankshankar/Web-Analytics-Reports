@@ -55,7 +55,7 @@ steps:
       - --region=us-central1
       - '--image=${_IMAGE}:$BUILD_ID'
       - --startup-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=5,failureThreshold=12
-      - --readiness-probe=httpGet.path=/oauth/google/ready,timeoutSeconds=2,periodSeconds=5,failureThreshold=3
+      - --readiness-probe=httpGet.path=/healthz,timeoutSeconds=2,periodSeconds=5,failureThreshold=3
       - --liveness-probe=httpGet.path=/health,initialDelaySeconds=10,timeoutSeconds=2,periodSeconds=30,failureThreshold=3
       - --quiet
 
@@ -70,7 +70,7 @@ steps:
       - --region=us-central1
       - '--image=${_IMAGE}:$BUILD_ID'
       - --startup-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=5,failureThreshold=12
-      - --readiness-probe=httpGet.path=/healthz,timeoutSeconds=2,periodSeconds=5,failureThreshold=3
+      - --readiness-probe=httpGet.path=/oauth/google/ready,timeoutSeconds=2,periodSeconds=5,failureThreshold=3
       - --liveness-probe=httpGet.path=/health,initialDelaySeconds=10,timeoutSeconds=2,periodSeconds=30,failureThreshold=3
       - --quiet
 
