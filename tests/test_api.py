@@ -12,7 +12,7 @@ class StubReporter:
 
 class StubDatabase:
     configured=True
-    def __init__(self,role="agency_owner"): self.role=role; self.annotations=[]; self.goals=[]
+    def __init__(self,role="agency_owner"): self.role=role; self.annotations=[]; self.goals=[]; self.oauth_states=[]
     def close(self): pass
     def health(self): return {"status":"ok","database":"measurement","migrated":True}
     def authorize_context(self,email,organization_id=None):
@@ -45,6 +45,8 @@ class StubDatabase:
     def list_recurring_reports(self,context,website_id): return []
     def due_recurring_reports(self,limit=20): return []
     def list_oauth_connections(self,context): return []
+    def create_oauth_state(self,context,state_hash,verifier_ciphertext,scopes,redirect_uri,expires_at):
+        self.oauth_states.append({"stateHash":state_hash,"verifierCiphertext":verifier_ciphertext,"scopes":scopes,"redirectUri":redirect_uri,"expiresAt":expires_at})
     def retention_policy(self,context): return {"aggregateDays":760,"operationsDays":180,"auditDays":2555,"deletionGraceDays":30,"updatedAt":"2026-08-13T00:00:00+00:00"}
     def deletion_preview(self,context,website_id):
         context.require_role(frozenset({"agency_owner","agency_admin","client_admin"})); return {"websiteId":website_id,"reportExecutions":5}
@@ -159,6 +161,35 @@ def test_oauth_stays_fail_closed_until_production_configuration_is_approved():
         assert client.post("/api/oauth/google/authorize",headers=headers()).status_code == 503
         invalid=client.post("/api/oauth/google/connections/connection-1/assign",headers=headers(),json={"websiteId":"website_house_of_dental","propertyId":"not-a-number","streamId":"1"})
         assert invalid.status_code == 422
+
+
+def test_oauth_testing_mode_can_authorize_without_claiming_public_approval(monkeypatch):
+    class StubCipher:
+        configured=True
+        def encrypt(self,plaintext,associated_data):
+            assert plaintext and associated_data.startswith("oauth-state:")
+            return b"encrypted-verifier"
+    monkeypatch.setattr("app.main.KmsCipher",lambda _key: StubCipher())
+    value=Settings(**{
+        **settings().__dict__,
+        "google_oauth_client_id":"client-id",
+        "google_oauth_client_secret":"client-secret",
+        "google_oauth_redirect_uri":"https://service.example/oauth/google/callback",
+        "google_oauth_state_secret":"s"*32,
+        "google_oauth_kms_key":"projects/p/locations/global/keyRings/r/cryptoKeys/k",
+        "google_oauth_enabled":True,
+        "google_oauth_production_approved":False,
+    })
+    database=StubDatabase()
+    with TestClient(create_app(value,StubReporter(),database)) as client:
+        status=client.get("/api/oauth/google/status",headers=headers()).json()
+        assert status["configured"] is True and status["enabled"] is True and status["productionApproved"] is False
+        response=client.post("/api/oauth/google/authorize",headers=headers())
+        assert response.status_code == 200
+        authorization=response.json()
+        assert authorization["authorizationUrl"].startswith("https://accounts.google.com/")
+        assert authorization["scope"] == "https://www.googleapis.com/auth/analytics.readonly"
+        assert database.oauth_states[0]["redirectUri"] == "https://service.example/oauth/google/callback"
 
 
 def test_offboarding_requires_agency_role_and_exact_confirmation():
