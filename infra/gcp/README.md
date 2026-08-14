@@ -46,7 +46,8 @@ The billing account contains only this production project and has a $25 monthly 
 
 - Internal trigger secret versions are pinned; disabled versions must never be re-enabled.
 - The OAuth refresh-token KMS key rotates every 90 days.
-- OAuth uses dedicated Secret Manager resources `measurement-google-oauth-client-id`, `measurement-google-oauth-client-secret`, and `measurement-google-oauth-state-secret`. OAuth client-secret version 2 is pinned into private revision `measurement-reporting-platform-00042-7kk` and callback-only revision `measurement-oauth-callback-00003-q2d`; version 1 is disabled in Google Auth Platform and Secret Manager. Values are never stored in source or printed during configuration audits.
+- OAuth uses dedicated Secret Manager resources `measurement-google-oauth-client-id`, `measurement-google-oauth-client-secret`, and `measurement-google-oauth-state-secret`. OAuth client-secret version 2 is pinned into private revision `measurement-reporting-platform-00045-ds9` and callback-only revision `measurement-oauth-callback-00004-cs8`; version 1 is disabled in Google Auth Platform and Secret Manager. Values are never stored in source or printed during configuration audits.
+- Internal trigger versions 1 through 7 are disabled. The private service and all four Scheduler jobs use newline-free version 8; configuration verification compares values without printing them.
 - Scheduler and task invocation use `measurement-scheduler`, the only direct Cloud Run service-account invoker; runtime data access and task enqueueing use `analytics-reporting-reader`.
 - Secret values must not be printed by configuration audits; inspect only secret names, pinned versions, and state.
 
