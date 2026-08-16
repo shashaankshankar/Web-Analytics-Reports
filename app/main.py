@@ -5,6 +5,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from typing import Literal
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import uvicorn
@@ -16,14 +17,21 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from .config import Settings, Site, load_dotenv, load_site
-from .auth import AGENCY_ROLES, TenantContext, cloud_identity_email
+from .auth import (
+    AGENCY_ROLES,
+    PortalIdentityError,
+    TenantContext,
+    cloud_identity_email,
+    resolve_portal_identity_email,
+)
 from .credentials import AdcCredential, GA4Admin, OAuthCredential
 from .dashboard import agency_dashboard_html, dashboard_html
-from .ga4 import GA4Reporter
+from .ga4 import GA4AccessVerifier, GA4Reporter, access_error_health, assignment_health, unverified_access_health
 from .reports import build_client_pdf
 from .report_delivery import ReportEmailSender, delivery_html
 from .oauth import ANALYTICS_READONLY_SCOPE, KmsCipher, OAuthManager
-from .storage import Database
+from .product_ui import agency_shell_html, client_onboarding_html, client_portal_html, login_html
+from .storage import Database, normalize_canonical_domain
 from .sync import SyncEngine
 from .tasks import PERIODS, TaskQueue
 from .external_sync import ExternalSyncEngine
@@ -105,6 +113,47 @@ class OAuthAssignmentRequest(BaseModel):
     streamId: str
 
 
+class OnboardingWorkflowRequest(BaseModel):
+    idempotencyKey: str = Field(min_length=8, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,119}$")
+    companyId: str = Field(min_length=1, max_length=120)
+    companyName: str = Field(min_length=1, max_length=200)
+    websiteId: str = Field(min_length=1, max_length=120)
+    canonicalDomain: str = Field(min_length=1, max_length=253)
+    contractSlug: Literal["local_service_v1"] = "local_service_v1"
+
+
+class OnboardingGovernanceRequest(BaseModel):
+    governanceStatus: Literal["pending_review", "requires_review", "approved", "prohibited"]
+    consentStatus: Literal["pending_client_consent", "approved", "rejected"]
+    governanceReference: str | None = Field(default=None, max_length=160)
+    consentReference: str | None = Field(default=None, max_length=160)
+
+
+class OnboardingConnectionRequest(BaseModel):
+    idempotencyKey: str = Field(min_length=8, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,119}$")
+    connectionKind: Literal["ga4", "google_ads", "search_console", "call_tracking", "crm_booking"] | None = None
+    sourceType: Literal["ga4", "google_ads", "search_console", "call_tracking", "crm_booking"] | None = None
+    mode: Literal["registered", "deferred"]
+    credentialType: Literal["service_account", "oauth"] | None = None
+    credentialReference: str | None = Field(default=None, max_length=300)
+    externalPropertyId: str | None = None
+    externalStreamId: str | None = None
+    externalAccountId: str | None = Field(default=None, max_length=200)
+    configuration: dict = Field(default_factory=dict)
+    deferReason: str | None = Field(default=None, max_length=500)
+
+
+class OnboardingFirstSyncRequest(BaseModel):
+    action: Literal["request", "check"] = "request"
+    idempotencyKey: str | None = Field(default=None, min_length=8, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,119}$")
+
+
+class OnboardingClientMembershipRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    role: Literal["client_admin", "client_viewer"]
+    authorizationReference: str = Field(min_length=3, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{2,159}$")
+
+
 def create_app(settings=None, reporter=None, database=None, task_queue=None, source_connector_factory=None):
     load_dotenv(); site = load_site(); settings = settings or Settings.from_environment(); settings.validate(site)
     tracing_runtime = configure_tracing(settings)
@@ -122,7 +171,7 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
             database.close()
             if tracing_runtime: tracing_runtime.shutdown()
 
-    app = FastAPI(title="Measurement & Reporting Platform",version="1.0.0",description="Stored, privacy-aware GA4 reporting for House of Dental.",lifespan=lifespan)
+    app = FastAPI(title="Measurement & Reporting Platform",version="1.0.0",description="Stored, privacy-aware measurement reporting for configured tenants.",lifespan=lifespan)
     app.add_middleware(PrivacySafeTracingMiddleware)
     app.state.settings, app.state.site, app.state.database = settings, site, database
 
@@ -133,7 +182,45 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
         response.headers.update({"Cache-Control":"no-store","X-Content-Type-Options":"nosniff","Referrer-Policy":"no-referrer","X-Frame-Options":"DENY","Permissions-Policy":"camera=(), microphone=(), geolocation=()","Content-Security-Policy":"default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
         return response
 
-    def require_context(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), x_organization_id: str = Header(default=""), x_serverless_authorization: str = Header(default="")) -> TenantContext:
+    def require_context(
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+        x_organization_id: str = Header(default=""),
+        x_serverless_authorization: str | None = Header(default=None, alias="X-Serverless-Authorization"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+        x_goog_iap_jwt_assertion: str | None = Header(default=None, alias="X-Goog-IAP-JWT-Assertion"),
+        x_goog_authenticated_user_email: str | None = Header(default=None, alias="X-Goog-Authenticated-User-Email"),
+    ) -> TenantContext:
+        # The browser portal has a separate, explicit mode. Its identity is
+        # established from a verified IAP/Google assertion and then resolved
+        # through the tenant membership database. No user-supplied tenant
+        # header is accepted on this path.
+        if settings.portal_iap_enabled:
+            try:
+                email = resolve_portal_identity_email(
+                    # These headers authenticate transport to Cloud Run. The
+                    # resolver intentionally ignores them for portal identity;
+                    # only the signed IAP assertion may identify a user.
+                    authorization=authorization,
+                    x_serverless_authorization=x_serverless_authorization,
+                    x_goog_iap_jwt_assertion=x_goog_iap_jwt_assertion,
+                    x_goog_authenticated_user_email=x_goog_authenticated_user_email,
+                    expected_audience=settings.portal_expected_audience,
+                    portal_iap_mode=settings.portal_iap_mode,
+                    live=settings.mode == "live",
+                )
+            except PortalIdentityError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=str(error),
+                    headers={"WWW-Authenticate": "Bearer"},
+                ) from error
+            try:
+                return database.authorize_context(email, None)
+            except PermissionError as error:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+            except Exception as error:
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="portal_authorization_unavailable") from error
+
         if settings.auth_mode != "cloud_run" and settings.live_enabled:
             supplied = credentials.credentials if credentials and credentials.scheme.lower() == "bearer" else ""
             if not hmac.compare_digest(supplied, settings.api_token):
@@ -145,8 +232,219 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
         except PermissionError as error:
             raise HTTPException(status_code=403,detail=str(error)) from error
 
+    def require_portal_mode() -> None:
+        if not settings.portal_iap_enabled:
+            raise HTTPException(status_code=404, detail="portal_not_enabled")
+
+    def require_portal_context(context: TenantContext = Depends(require_context)) -> TenantContext:
+        require_portal_mode()
+        return context
+
+    def require_portal_onboarding_role(context: TenantContext) -> TenantContext:
+        try:
+            context.require_role(frozenset({"agency_owner", "agency_admin"}))
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        return context
+
+    def portal_login_markup(next_path: str = "/portal") -> str:
+        # The current product UI login contract already publishes the
+        # dedicated /api/portal/identity route. It deliberately does not use
+        # Analytics connector OAuth for portal identity.
+        return login_html(
+            next_path=next_path,
+            auth_mode="portal_iap",
+            notice="Use the Google identity approved for this portal. Portal access is separate from Analytics connector authorization.",
+        )
+
+    def _portal_resource_query(context: TenantContext) -> list[dict]:
+        """Resolve portal resources through the tenant-scoped DB session.
+
+        ``Database`` implementations may expose a richer resolver in the
+        future. The SQL fallback keeps this integration usable with the
+        current storage class without making the configured boot site an
+        authorization source. RLS is established by ``tenant_connection``.
+        """
+
+        resolver = getattr(database, "portal_resources", None)
+        if callable(resolver):
+            return resolver(context)
+        with database.tenant_connection(context) as connection:
+            rows = connection.execute(
+                """
+                SELECT cp.public_id company_id,c.name company,
+                       wp.public_id website_id,w.canonical_domain
+                  FROM app.websites w
+                  JOIN app.companies c ON c.id=w.company_id
+                  JOIN app.resource_identifiers cp
+                    ON cp.resource_type='company' AND cp.resource_id=c.id
+                  JOIN app.resource_identifiers wp
+                    ON wp.resource_type='website' AND wp.resource_id=w.id
+                 ORDER BY c.name,w.canonical_domain
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def portal_authorized_resources(context: TenantContext) -> list[dict]:
+        resources = await call(_portal_resource_query, context)
+        authorized = []
+        for item in resources or []:
+            website_id = str(item.get("website_id", item.get("websiteId", ""))).strip()
+            company_id = str(item.get("company_id", item.get("companyId", ""))).strip()
+            if not website_id or not company_id:
+                continue
+            if not await call(database.website_authorized, context, website_id):
+                continue
+            if not await call(database.company_authorized, context, company_id):
+                continue
+            authorized.append(
+                {
+                    "companyId": company_id,
+                    "company": item.get("company") or "Client workspace",
+                    "websiteId": website_id,
+                    "canonicalDomain": item.get("canonical_domain", item.get("canonicalDomain", "")) or "",
+                }
+            )
+        return authorized
+
+    async def portal_site_selection(
+        context: TenantContext,
+        website_id: str = "",
+        company_id: str = "",
+    ) -> dict:
+        resources = await portal_authorized_resources(context)
+        requested_website = website_id.strip()
+        requested_company = company_id.strip()
+        matches = [
+            item
+            for item in resources
+            if (not requested_website or item["websiteId"] == requested_website)
+            and (not requested_company or item["companyId"] == requested_company)
+        ]
+        if not matches:
+            raise HTTPException(status_code=403, detail="portal_resource_not_authorized")
+        if len(matches) > 1:
+            raise HTTPException(status_code=422, detail="portal_resource_selection_required")
+        selected = matches[0]
+        # Keep the explicit resource checks at the request boundary even when
+        # the resource list came from a tenant-scoped resolver.
+        if not await call(database.website_authorized, context, selected["websiteId"]):
+            raise HTTPException(status_code=403, detail="forbidden_website")
+        if not await call(database.company_authorized, context, selected["companyId"]):
+            raise HTTPException(status_code=403, detail="forbidden_company")
+        return selected
+
+    async def portal_client_page(
+        context: TenantContext,
+        website_id: str = "",
+        company_id: str = "",
+        period: Period = "28d",
+    ) -> HTMLResponse:
+        resource = await portal_site_selection(context, website_id, company_id)
+        return HTMLResponse(
+            client_portal_html(
+                role=context.role,
+                user=context.email,
+                company=resource["company"],
+                company_id=resource["companyId"],
+                website_id=resource["websiteId"],
+                domain=resource["canonicalDomain"],
+                period=period,
+                access_state="approved",
+            )
+        )
+
+    async def portal_agency_page(context: TenantContext, active: str = "overview") -> HTMLResponse:
+        if context.role not in AGENCY_ROLES:
+            return HTMLResponse(
+                agency_shell_html(
+                    role=context.role,
+                    user=context.email,
+                    organization_name="Agency workspace",
+                    portal_path="/dashboard",
+                )
+            )
+        summary = await call(database.portfolio_summary, context, "28d")
+        clients = []
+        alerts = []
+        for item in summary.get("websites", []):
+            sync_health = item.get("syncHealth") or "pending"
+            state = "ok" if sync_health in {"ok", "ready", "succeeded", "success"} else "warning" if sync_health else "pending"
+            clients.append(
+                {
+                    "company": item.get("company") or "Client workspace",
+                    "website": item.get("canonicalDomain") or "Website pending",
+                    "health": sync_health,
+                    "healthState": state,
+                    "lastCompleteDate": item.get("lastCompleteDate"),
+                    "actionRequired": "Review stored alerts" if item.get("actionRequired") else "No action recorded",
+                }
+            )
+            for alert in item.get("alerts", []):
+                alerts.append(
+                    {
+                        "title": alert.get("key", "Client action required"),
+                        "detail": alert.get("detail", "Review the stored client health state."),
+                    }
+                )
+        return HTMLResponse(
+            agency_shell_html(
+                role=context.role,
+                user=context.email,
+                organization_name="Agency workspace",
+                clients=clients,
+                alerts=alerts,
+                active=active,
+                portal_path="/dashboard",
+            )
+        )
+
+    async def portal_onboarding_page(context: TenantContext, workflow_id: str = "") -> HTMLResponse:
+        require_portal_onboarding_role(context)
+        company = {}
+        website = {}
+        gates = {}
+        connection_id = ""
+        if workflow_id.strip():
+            try:
+                workflow = await onboarding_call(database.onboarding_workflow, context, workflow_id.strip())
+            except PermissionError as error:
+                raise HTTPException(status_code=403, detail=str(error)) from error
+            except ValueError as error:
+                raise onboarding_error(error) from error
+            company = workflow.get("company") or {}
+            website = workflow.get("website") or {}
+            connections = workflow.get("connections") or []
+            ga4_connection = next((item for item in connections if item.get("kind") == "ga4"), None)
+            connection_id = (ga4_connection or {}).get("connectionId", "")
+            contract = workflow.get("contract") or {}
+            governance = workflow.get("governance") or {}
+            gates = {
+                "governance": governance.get("status", "pending"),
+                "contract": contract.get("approvalStatus", "pending"),
+                "analytics": (ga4_connection or {}).get("status", "not_configured"),
+                "sync": (workflow.get("firstSync") or {}).get("status", "pending"),
+                "access": "approved" if workflow.get("clientMembers") else "pending",
+            }
+        return HTMLResponse(
+            client_onboarding_html(
+                role=context.role,
+                user=context.email,
+                company=company,
+                site=website,
+                gates=gates,
+                connection_id=connection_id,
+                client_portal_path="/dashboard",
+            )
+        )
+
     def require_agency(context: TenantContext = Depends(require_context)) -> TenantContext:
         try: context.require_role(AGENCY_ROLES)
+        except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
+        return context
+
+    def require_onboarding_admin(context: TenantContext = Depends(require_context)) -> TenantContext:
+        try: context.require_role(frozenset({"agency_owner", "agency_admin"}))
         except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
         return context
 
@@ -159,11 +457,40 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
         if app.state.reporter is None: app.state.reporter = GA4Reporter(site)
         return app.state.reporter
 
+    def ga4_access_health(refresh: bool = True):
+        assignment = assignment_health(site, settings.property_id, settings.stream_id)
+        if assignment["state"] != "configured":
+            return assignment, unverified_access_health("ga4_assignment_not_configured")
+        if not settings.live_enabled:
+            return assignment, unverified_access_health("live_reporting_disabled")
+        try:
+            reporter_instance = ga4()
+            verifier = getattr(app.state, "ga4_access_verifier", None)
+            if verifier is None or verifier.reporter is not reporter_instance:
+                verifier = GA4AccessVerifier(reporter_instance)
+                app.state.ga4_access_verifier = verifier
+            return assignment, verifier.check(refresh=refresh)
+        except Exception as error:
+            return assignment, access_error_health(error)
+
     async def call(method,*args):
         try: return await run_in_threadpool(method,*args)
         except HTTPException: raise
         except PermissionError: raise
         except Exception as error: raise HTTPException(status_code=502,detail=f"upstream_operation_failed:{type(error).__name__}") from error
+
+    async def onboarding_call(method, *args):
+        try: return await run_in_threadpool(method, *args)
+        except (HTTPException, PermissionError, ValueError): raise
+        except Exception as error: raise HTTPException(status_code=502, detail=f"onboarding_operation_failed:{type(error).__name__}") from error
+
+    def onboarding_error(error: Exception) -> HTTPException:
+        code = str(error)
+        if code.endswith("_not_found"):
+            return HTTPException(status_code=404, detail=code)
+        if "conflict" in code:
+            return HTTPException(status_code=409, detail=code)
+        return HTTPException(status_code=422, detail=code)
 
     def snapshot(context: TenantContext, website_id: str, view: str, period: str):
         if not database.configured: raise HTTPException(status_code=503,detail="production_database_not_configured")
@@ -172,16 +499,113 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
         return value
 
     @app.get("/",response_class=HTMLResponse,include_in_schema=False)
-    def home(): return f"<!doctype html><title>Measurement Platform</title><style>body{{font:16px system-ui;margin:3rem;max-width:55rem}}</style><h1>Measurement &amp; Reporting Platform</h1><p>{site.company} stored GA4 reporting service.</p><p><a href='/agency'>Open agency console</a> · <a href='/dashboard'>Open client reporting view</a> · <a href='/docs'>Open API documentation</a></p>"
+    def home():
+        if settings.portal_iap_enabled:
+            return HTMLResponse(portal_login_markup("/portal"))
+        return f"<!doctype html><title>Measurement Platform</title><style>body{{font:16px system-ui;margin:3rem;max-width:55rem}}</style><h1>Measurement &amp; Reporting Platform</h1><p>Stored reporting for the configured tenant.</p><p><a href='/agency'>Open agency console</a> · <a href='/dashboard'>Open client reporting view</a> · <a href='/docs'>Open API documentation</a></p>"
 
     @app.get("/favicon.ico",include_in_schema=False)
     def favicon(): return Response(status_code=204)
 
-    @app.get("/dashboard",response_class=HTMLResponse,include_in_schema=False,dependencies=[Depends(require_context)])
-    def dashboard(): return dashboard_html(site)
+    @app.get("/dashboard",response_class=HTMLResponse,include_in_schema=False)
+    async def dashboard(
+        website_id: str = "",
+        company_id: str = "",
+        period: Period = "28d",
+        context: TenantContext = Depends(require_context),
+    ):
+        if settings.portal_iap_enabled:
+            if context.role in AGENCY_ROLES:
+                return RedirectResponse("/agency", status_code=303)
+            return await portal_client_page(context, website_id, company_id, period)
+        return dashboard_html(site)
 
     @app.get("/agency",response_class=HTMLResponse,include_in_schema=False)
-    def agency(context:TenantContext=Depends(require_agency)): return agency_dashboard_html(site)
+    async def agency(context: TenantContext = Depends(require_context)):
+        if settings.portal_iap_enabled:
+            return await portal_agency_page(context)
+        try:
+            context.require_role(AGENCY_ROLES)
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        return agency_dashboard_html(site)
+
+    @app.get("/portal/login", response_class=HTMLResponse, include_in_schema=False, dependencies=[Depends(require_portal_mode)])
+    @app.get("/login", response_class=HTMLResponse, include_in_schema=False, dependencies=[Depends(require_portal_mode)])
+    def portal_login(next_path: str = "/portal"):
+        return HTMLResponse(portal_login_markup(next_path))
+
+    @app.get("/portal/access/status", tags=["Portal Access"], include_in_schema=False)
+    async def portal_access_status(context: TenantContext = Depends(require_portal_context)):
+        destination = "/agency" if context.role in AGENCY_ROLES else "/dashboard"
+        return {
+            "status": "authenticated",
+            "identityMode": "iap",
+            "role": context.role,
+            "redirect": destination,
+        }
+
+    @app.get("/api/portal/identity", tags=["Portal Access"], include_in_schema=False)
+    async def portal_identity(context: TenantContext = Depends(require_portal_context)):
+        return {
+            "approved": True,
+            "identityMode": "iap",
+            "identity": {"email": context.email, "role": context.role},
+        }
+
+    @app.post("/portal/access/continue", tags=["Portal Access"], include_in_schema=False)
+    async def portal_access_continue(
+        website_id: str = "",
+        company_id: str = "",
+        context: TenantContext = Depends(require_portal_context),
+    ):
+        if context.role in AGENCY_ROLES:
+            destination = "/agency"
+        else:
+            resource = await portal_site_selection(context, website_id, company_id)
+            destination = f"/dashboard?website_id={quote(resource['websiteId'], safe='')}&company_id={quote(resource['companyId'], safe='')}"
+        return {"status": "authenticated", "identityMode": "iap", "role": context.role, "redirect": destination}
+
+    @app.get("/portal/access/resources", tags=["Portal Access"], include_in_schema=False)
+    async def portal_access_resources(context: TenantContext = Depends(require_portal_context)):
+        return {"resources": await portal_authorized_resources(context)}
+
+    @app.get("/portal", include_in_schema=False)
+    async def portal_home(context: TenantContext = Depends(require_portal_context)):
+        if context.role in AGENCY_ROLES:
+            return RedirectResponse("/agency", status_code=303)
+        resource = await portal_site_selection(context)
+        return RedirectResponse(
+            f"/dashboard?website_id={quote(resource['websiteId'], safe='')}&company_id={quote(resource['companyId'], safe='')}",
+            status_code=303,
+        )
+
+    @app.get("/portal/agency", response_class=HTMLResponse, include_in_schema=False)
+    async def portal_agency(context: TenantContext = Depends(require_portal_context)):
+        return await portal_agency_page(context)
+
+    @app.get("/portal/client/{website_id}", response_class=HTMLResponse, include_in_schema=False)
+    async def portal_client(
+        website_id: str,
+        company_id: str = "",
+        period: Period = "28d",
+        context: TenantContext = Depends(require_portal_context),
+    ):
+        return await portal_client_page(context, website_id, company_id, period)
+
+    @app.get("/portal/onboarding", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/agency/onboarding", response_class=HTMLResponse, include_in_schema=False)
+    async def portal_onboarding(workflow_id: str = "", context: TenantContext = Depends(require_portal_context)):
+        return await portal_onboarding_page(context, workflow_id)
+
+    @app.get("/agency/reports", response_class=HTMLResponse, include_in_schema=False)
+    async def portal_reports(context: TenantContext = Depends(require_portal_context)):
+        return await portal_agency_page(context, active="reports")
+
+    @app.get("/agency/access", response_class=HTMLResponse, include_in_schema=False)
+    async def portal_access(context: TenantContext = Depends(require_portal_context)):
+        require_portal_onboarding_role(context)
+        return await portal_agency_page(context, active="access")
 
     @app.get("/health",tags=["Operations"])
     def health(): return {"status":"ok","runtime":"fastapi","liveReporting":settings.live_enabled}
@@ -211,6 +635,9 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
     @app.get("/api/companies/{company_id}/overview",tags=["Reporting"])
     async def overview(company_id:str,period:Period="28d",context:TenantContext=Depends(require_context)):
         if not await call(database.company_authorized,context,company_id): raise HTTPException(status_code=403,detail="forbidden_company")
+        if settings.portal_iap_enabled:
+            resource = await portal_site_selection(context, company_id=company_id)
+            return await call(snapshot, context, resource["websiteId"], "overview", period)
         return await call(snapshot,context,site.site_id,"overview",period)
 
     @app.get("/api/websites/{website_id}/acquisition",tags=["Reporting"])
@@ -234,21 +661,23 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
         return await call(snapshot,context,website_id,"events",period)
 
     @app.get("/api/websites/{website_id}/measurement-health",tags=["Operations"])
-    async def measurement_health(website_id:str,period:Period="28d",context:TenantContext=Depends(require_context)):
+    async def measurement_health(website_id:str,period:Period="28d",refresh:bool=True,context:TenantContext=Depends(require_context)):
         if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
         sync = await call(database.sync_status,context,website_id) if database.configured else {"status":"disabled","quality":{}}
         admin_health = await call(database.latest_measurement_health,context,website_id) if database.configured and hasattr(database,"latest_measurement_health") else None
         event_health = await call(snapshot,context,website_id,"events",period) if database.configured else {"expectedEvents":[],"otherObservedEvents":[],"prohibitedEvents":[]}
+        assignment, access_health = await call(ga4_access_health, refresh)
+        access_check_state = {"verified":"ok","stale":"warning","unverified":"blocked","error":"error"}.get(access_health["state"],"error")
         checks=[
-          {"key":"ga4_data_api","state":"ok" if settings.live_enabled else "blocked","detail":"read-only ADC connection enabled" if settings.live_enabled else "live reporting disabled"},
-          {"key":"assignment","state":"ok","detail":f"properties/{site.property_id}/dataStreams/{site.stream_id}"},
+          {"key":"ga4_data_api","state":access_check_state,"accessState":access_health["state"],"detail":access_health["reason"]},
+          {"key":"assignment","state":"ok" if assignment["state"] == "configured" else "error","assignmentState":assignment["state"],"detail":assignment["detail"]},
           {"key":"persistence","state":"ok" if sync.get("lastSuccessfulSync") else "blocked","detail":"stored report execution available" if sync.get("lastSuccessfulSync") else "first sync has not succeeded"},
           {"key":"governance","state":"ok" if site.governance_status == "approved" else "warning","detail":site.governance_status},
           {"key":"collection","state":"warning" if sync.get("quality",{}).get("empty") else "ok","detail":"successful GA4 reports returned no rows" if sync.get("quality",{}).get("empty") else site.collection_status},
         ]
         if admin_health: checks.extend(admin_health["details"].get("checks",[]))
         state="ready" if all(c["state"]=="ok" for c in checks) else "attention_required"
-        return {"websiteId":site.site_id,"deploymentStatus":site.deployment_status,"publicCollectionStatus":site.collection_status,"governanceStatus":site.governance_status,"state":state,"contract":{"slug":"local_service_v1","version":1,"approvalStatus":"approved" if site.governance_status == "approved" else "pending_approval"},"lastValidation":admin_health["checkedAt"] if admin_health else None,"requiredEventHealth":event_health.get("expectedEvents",[]),"unexpectedEvents":event_health.get("otherObservedEvents",[]),"prohibitedEventDetection":event_health.get("prohibitedEvents",[]),"leadEventActivity":next((item for item in event_health.get("expectedEvents",[]) if item["event"]=="generate_lead"),None),"consentConfiguration":{"required":True,"approvalStatus":"approved" if site.governance_status == "approved" else "pending_authorized_review"},"adminHealth":admin_health,"checks":checks,"sync":sync}
+        return {"websiteId":site.site_id,"deploymentStatus":site.deployment_status,"publicCollectionStatus":site.collection_status,"governanceStatus":site.governance_status,"state":state,"contract":{"slug":"local_service_v1","version":1,"approvalStatus":"approved" if site.governance_status == "approved" else "pending_approval"},"lastValidation":admin_health["checkedAt"] if admin_health else None,"lastAccessVerification":access_health["lastVerifiedAt"],"assignment":assignment,"ga4AccessHealth":access_health,"requiredEventHealth":event_health.get("expectedEvents",[]),"unexpectedEvents":event_health.get("otherObservedEvents",[]),"prohibitedEventDetection":event_health.get("prohibitedEvents",[]),"leadEventActivity":next((item for item in event_health.get("expectedEvents",[]) if item["event"]=="generate_lead"),None),"consentConfiguration":{"required":True,"approvalStatus":"approved" if site.governance_status == "approved" else "pending_authorized_review"},"adminHealth":admin_health,"checks":checks,"sync":sync}
 
     @app.get("/api/websites/{website_id}/sync-status",tags=["Operations"])
     async def status_(website_id:str,context:TenantContext=Depends(require_context)):
@@ -337,9 +766,13 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
                 results.append({"reportId":report["id"],"status":"sent","deliveryId":delivery_id})
             except Exception as error:
                 code=str(error) if isinstance(error,RuntimeError) else type(error).__name__
-                await call(database.finish_report_delivery,report,delivery_id,report_hash,None,code[:120])
-                results.append({"reportId":report["id"],"status":"failed","errorCode":code[:120]})
-        return {"status":"ok","processed":len(results),"deliveries":results}
+                bounded_code=code[:120]
+                await call(database.finish_report_delivery,report,delivery_id,report_hash,None,bounded_code)
+                results.append({"reportId":report["id"],"status":"failed","errorCode":bounded_code})
+        summary={"processed":len(results),"deliveries":results}
+        if any(result["status"] == "failed" for result in results):
+            raise HTTPException(status_code=502,detail={"code":"report_dispatch_failed",**summary})
+        return {"status":"ok",**summary}
 
     @app.get("/api/oauth/google/status",tags=["Connections"])
     async def oauth_status(context:TenantContext=Depends(require_context)):
@@ -538,6 +971,76 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
         except PermissionError as error: raise HTTPException(status_code=403,detail=str(error)) from error
         if not removed: raise HTTPException(status_code=404,detail="membership_not_found")
         return Response(status_code=204)
+
+    @app.post("/api/onboarding/workflows", tags=["Onboarding"])
+    async def create_onboarding_workflow(request: OnboardingWorkflowRequest, context: TenantContext = Depends(require_onboarding_admin)):
+        try:
+            domain = normalize_canonical_domain(request.canonicalDomain)
+            value = await onboarding_call(database.create_onboarding_workflow, context, request.idempotencyKey, request.companyId, request.companyName, request.websiteId, domain, request.contractSlug)
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error:
+            raise onboarding_error(error) from error
+        return JSONResponse(status_code=200 if value.get("idempotentReplay") else 201, content=jsonable_encoder(value))
+
+    @app.get("/api/onboarding/workflows/{workflow_id}", tags=["Onboarding"])
+    async def get_onboarding_workflow(workflow_id: str, context: TenantContext = Depends(require_onboarding_admin)):
+        try: return await onboarding_call(database.onboarding_workflow, context, workflow_id)
+        except PermissionError as error: raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error: raise onboarding_error(error) from error
+
+    @app.post("/api/onboarding/workflows/{workflow_id}/governance", tags=["Onboarding"])
+    async def record_onboarding_governance(workflow_id: str, request: OnboardingGovernanceRequest, context: TenantContext = Depends(require_onboarding_admin)):
+        try:
+            value = await onboarding_call(database.record_onboarding_governance, context, workflow_id, request.governanceStatus, request.consentStatus, request.governanceReference, request.consentReference)
+        except PermissionError as error: raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error: raise onboarding_error(error) from error
+        return value
+
+    @app.post("/api/onboarding/workflows/{workflow_id}/connections", tags=["Onboarding"])
+    async def record_onboarding_connection(workflow_id: str, request: OnboardingConnectionRequest, context: TenantContext = Depends(require_onboarding_admin)):
+        connection_kind = request.connectionKind or request.sourceType
+        if not connection_kind:
+            raise HTTPException(status_code=422, detail="connection_kind_required")
+        try:
+            value = await onboarding_call(database.register_onboarding_connection, context, workflow_id, connection_kind, request.mode, request.idempotencyKey, request.credentialType, request.credentialReference, request.externalPropertyId, request.externalStreamId, request.externalAccountId, request.configuration, request.deferReason)
+        except PermissionError as error: raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error: raise onboarding_error(error) from error
+        return value
+
+    @app.post("/api/onboarding/workflows/{workflow_id}/first-sync", tags=["Onboarding"])
+    async def onboarding_first_sync(workflow_id: str, request: OnboardingFirstSyncRequest, context: TenantContext = Depends(require_onboarding_admin)):
+        try: return await onboarding_call(database.onboarding_first_sync, context, workflow_id, request.action, request.idempotencyKey)
+        except PermissionError as error: raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error: raise onboarding_error(error) from error
+
+    @app.get("/api/onboarding/workflows/{workflow_id}/first-sync", tags=["Onboarding"])
+    async def get_onboarding_first_sync(workflow_id: str, context: TenantContext = Depends(require_onboarding_admin)):
+        try:
+            value = await onboarding_call(database.onboarding_first_sync, context, workflow_id, "check", None)
+            return {"workflowId": value["workflowId"], "firstSync": value["firstSync"]}
+        except PermissionError as error: raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error: raise onboarding_error(error) from error
+
+    @app.post("/api/onboarding/workflows/{workflow_id}/memberships", status_code=201, tags=["Onboarding"])
+    async def add_onboarding_client_membership(workflow_id: str, request: OnboardingClientMembershipRequest, context: TenantContext = Depends(require_onboarding_admin)):
+        try: return await onboarding_call(database.add_onboarding_client_membership, context, workflow_id, request.email, request.role, request.authorizationReference)
+        except PermissionError as error: raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error: raise onboarding_error(error) from error
+
+    @app.get("/api/onboarding/workflows/{workflow_id}/checklist", tags=["Onboarding"])
+    async def onboarding_checklist(workflow_id: str, context: TenantContext = Depends(require_onboarding_admin)):
+        try: return await onboarding_call(database.onboarding_checklist, context, workflow_id)
+        except PermissionError as error: raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error: raise onboarding_error(error) from error
+
+    @app.get("/api/onboarding/workflows/{workflow_id}/handoff", tags=["Onboarding"])
+    async def onboarding_handoff(workflow_id: str, context: TenantContext = Depends(require_onboarding_admin)):
+        try:
+            value = await onboarding_call(database.onboarding_checklist, context, workflow_id)
+            return {"workflowId": value["workflowId"], "status": value["status"], "handoff": value["handoff"], "externalGates": value["externalGates"]}
+        except PermissionError as error: raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error: raise onboarding_error(error) from error
 
     @app.post("/internal/schedule",dependencies=[Depends(require_internal)],include_in_schema=False)
     async def schedule(x_cloudscheduler_scheduletime: str | None = Header(default=None)):

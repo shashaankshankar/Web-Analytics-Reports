@@ -11,13 +11,18 @@
     "collection_owner": "website_adapter"
   },
   "scope": {
-    "first_website": "The House of Dental",
-    "domain": "https://thehouseofdentalwp.com",
-    "ga4_property": "549721844",
-    "ga4_web_stream": "15427015396",
-    "ga4_measurement_id": "G-TC66MQQ0T7",
-    "public_collection_status": "live",
-    "reporting_connection_status": "active_readonly_adc"
+    "site_config_required": true,
+    "site_config_env": "MEASUREMENT_SITE_CONFIG",
+    "site_config_fields": [
+      "siteId",
+      "companyId",
+      "canonicalDomain",
+      "ga4.propertyId",
+      "ga4.webStreamId",
+      "ga4.measurementId"
+    ],
+    "public_collection_status": "from_site_config",
+    "reporting_connection_status": "from_runtime_assignment"
   },
   "privacy": {
     "default_analytics_eligibility": "prohibited",

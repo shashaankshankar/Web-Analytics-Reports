@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 ROOT=Path(__file__).resolve().parents[1]
 ROUTES=json.loads((ROOT/"measurement/eligibility/routes.json").read_text()); RULES=json.loads((ROOT/"measurement/privacy/prohibited-data.json").read_text())
+VALIDATION=json.loads((ROOT/"measurement/contracts/local_service_v1/validation.json").read_text())
 EVENTS={"form_start","form_submit","generate_lead","phone_click","email_click","appointment_request","cta_click"}; NAMES={x.lower() for x in RULES["prohibited_parameter_names"]}; ALLOWED=set(RULES["url_rules"]["allowed_campaign_parameters"]); PATTERNS=[re.compile(x.removeprefix("(?i)"),re.I) for x in RULES["prohibited_value_patterns"]]
 def prohibited(value): return value is not None and any(p.search(str(value)) for p in PATTERNS)
 def route_status(path):
@@ -28,3 +29,30 @@ def validate_event(route,event,parameters=None,consent_granted=False):
         if key.lower() in NAMES: violations.append(f"prohibited_parameter:{key}")
         elif prohibited(value): violations.append(f"prohibited_value:{key}")
     return {"allowed":not violations,"violations":violations}
+
+
+def validate_contract_fixtures() -> dict:
+    """Execute the versioned contract fixtures with the production validator."""
+    failures=[]
+    for expected_allowed, bucket in ((True, "pass"), (False, "fail")):
+        for index, fixture in enumerate(VALIDATION["fixtures"][bucket]):
+            result=validate_event(
+                fixture["route"], fixture.get("event", ""), fixture.get("parameters"),
+                consent_granted=True,
+            )
+            if result["allowed"] is not expected_allowed:
+                failures.append({
+                    "bucket": bucket,
+                    "index": index,
+                    "route": fixture["route"],
+                    "event": fixture.get("event"),
+                    "expectedAllowed": expected_allowed,
+                    "actualAllowed": result["allowed"],
+                    "violations": result["violations"],
+                })
+    return {
+        "ok": not failures,
+        "validationVersion": VALIDATION["validation_version"],
+        "fixtureCount": sum(len(VALIDATION["fixtures"][bucket]) for bucket in ("pass", "fail")),
+        "failures": failures,
+    }

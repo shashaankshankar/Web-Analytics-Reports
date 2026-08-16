@@ -8,6 +8,14 @@ from typing import Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# The runtime always prefers an explicit site-config path. The single-file
+# discovery fallback exists only to keep a checkout with one example site
+# usable locally; it deliberately becomes an error as soon as the checkout
+# contains more than one site config.
+SITE_CONFIG_ENV = "MEASUREMENT_SITE_CONFIG"
+DEFAULT_SITE_CONFIG_ENV = "MEASUREMENT_DEFAULT_SITE_CONFIG"
+SITE_CONFIG_DIRECTORY = ROOT / "measurement" / "sites"
+
 def load_dotenv(env: dict[str, str] | None = None) -> dict[str, str]:
     env = env if env is not None else os.environ
     path = ROOT / ".env"
@@ -27,8 +35,29 @@ class Site:
     business_timezone: str; property_id: str; stream_id: str; measurement_id: str
     property_timezone: str | None; collection_status: str; governance_status: str
 
-def load_site() -> Site:
-    value = json.loads((ROOT / "measurement/sites/house-of-dental.json").read_text()); ga4 = value["ga4"]
+def _resolve_site_config_path(env: Mapping[str, str]) -> Path:
+    configured = env.get(SITE_CONFIG_ENV, "").strip()
+    if not configured:
+        configured = env.get(DEFAULT_SITE_CONFIG_ENV, "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = ROOT / path
+        if not path.is_file():
+            raise RuntimeError(f"site_config_not_found:{configured}")
+        return path
+
+    candidates = sorted(SITE_CONFIG_DIRECTORY.glob("*.json"))
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise RuntimeError("site_config_required")
+    raise RuntimeError("site_config_selection_required")
+
+
+def load_site(env: Mapping[str, str] | None = None) -> Site:
+    environment = os.environ if env is None else env
+    value = json.loads(_resolve_site_config_path(environment).read_text()); ga4 = value["ga4"]
     return Site(value["siteId"], value["companyId"], value["company"], value["canonicalDomain"], value["deployment"]["status"], value["businessTimezone"], str(ga4["propertyId"]), str(ga4["webStreamId"]), ga4["measurementId"], ga4.get("propertyTimezone"), ga4["collectionStatus"], value["governance"]["status"])
 
 @dataclass(frozen=True)
@@ -68,11 +97,40 @@ class Settings:
     oauth_callback_only: bool = False
     trace_enabled: bool = False
     trace_sample_rate: float = 0.0
+    # These settings belong to a separate browser-facing portal service. The
+    # existing reporting service remains on its current token/IAM contract
+    # unless this mode is explicitly enabled.
+    portal_iap_mode: str | bool = "disabled"
+    portal_iap_audience: str = ""
+    portal_iap_expected_audience: str = ""
+
+    @property
+    def portal_iap_enabled(self) -> bool:
+        if isinstance(self.portal_iap_mode, bool):
+            return self.portal_iap_mode
+        return str(self.portal_iap_mode).strip().casefold() in {"1", "true", "on", "yes", "direct", "iap", "enabled"}
+
+    @property
+    def portal_expected_audience(self) -> str:
+        audience = self.portal_iap_audience.strip()
+        expected = self.portal_iap_expected_audience.strip()
+        if audience and expected and audience != expected:
+            raise RuntimeError("portal_iap_audience_mismatch")
+        return expected or audience
+
     @property
     def live_enabled(self): return self.mode == "live" and self.data_api_enabled and self.live_approved
     @classmethod
     def from_environment(cls, env: Mapping[str, str] | None = None):
         env = os.environ if env is None else env
+        portal_iap_mode = env.get("PORTAL_IAP_MODE", env.get("PORTAL_IAP_ENABLED", "disabled"))
+        portal_iap_mode = portal_iap_mode.strip().casefold()
+        if portal_iap_mode in {"1", "true", "on", "yes"}:
+            portal_iap_mode = "direct"
+        elif portal_iap_mode in {"0", "false", "off", "no", ""}:
+            portal_iap_mode = "disabled"
+        audience = env.get("PORTAL_IAP_AUDIENCE", "")
+        expected_audience = env.get("PORTAL_IAP_EXPECTED_AUDIENCE", "")
         return cls(
             env.get("PLATFORM_MODE", "demo"),
             env.get("GA4_DATA_API_ENABLED") == "true",
@@ -109,6 +167,9 @@ class Settings:
             env.get("OAUTH_CALLBACK_ONLY") == "true",
             env.get("TRACE_ENABLED") == "true",
             float(env.get("TRACE_SAMPLE_RATE", "0")),
+            portal_iap_mode,
+            audience,
+            expected_audience,
         )
 
     @property
@@ -131,6 +192,11 @@ class Settings:
         if not 0 <= self.trace_sample_rate <= 1: raise RuntimeError("invalid_trace_sample_rate")
         if self.trace_enabled and not self.google_cloud_project: raise RuntimeError("trace_project_required")
         if self.google_oauth_production_approved and not self.google_oauth_enabled: raise RuntimeError("oauth_production_approval_requires_enablement")
+        if not isinstance(self.portal_iap_mode, bool) and str(self.portal_iap_mode).strip().casefold() not in {"disabled", "off", "false", "0", "direct", "iap", "enabled", "true", "1", "on", "yes"}:
+            raise RuntimeError("unsupported_portal_iap_mode")
+        audience = self.portal_expected_audience
+        if self.mode == "live" and self.portal_iap_enabled and not audience:
+            raise RuntimeError("portal_iap_audience_required")
         if not self.live_enabled: return
         if self.auth_mode not in {"token", "cloud_run"}: raise RuntimeError("unsupported_auth_mode")
         if self.auth_mode == "token" and len(self.api_token) < 32: raise RuntimeError("platform_api_token_required")

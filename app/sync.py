@@ -9,6 +9,84 @@ from .ga4 import EVENT_FIELDS, GA4Reporter
 from .storage import Database, canonical_hash, stable_id
 
 ROOT = Path(__file__).resolve().parents[1]
+SOURCE_SYSTEM = "ga4_reporting_api"
+MAX_INT64 = 9223372036854775807
+
+
+def _sampling_entries(value):
+    """Return the raw GA4 sampling entries without manufacturing metadata."""
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, dict):
+        return []
+    for key in ("sampling_metadatas", "samplingMetadatas", "sampling_metadata", "samplingMetadata"):
+        entries = value.get(key)
+        if isinstance(entries, list):
+            return entries
+        if isinstance(entries, dict):
+            return [entries]
+    if any(key in value for key in ("samples_read_count", "samplesReadCount", "sampling_space_size", "samplingSpaceSize")):
+        return [value]
+    return []
+
+
+def _sampling_count(entry, *keys):
+    value = next((entry.get(key) for key in keys if key in entry), None)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 0 <= value <= MAX_INT64 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+        return parsed if parsed <= MAX_INT64 else None
+    return None
+
+
+def authoritative_sampling_counts(provenance) -> tuple[int | None, int | None]:
+    """Return singular GA4 sample counts only when every raw entry agrees."""
+    observed = []
+    for item in provenance or []:
+        raw = item.get("sampling_metadata") if isinstance(item, dict) else None
+        if raw in (None, {}, []):
+            continue
+        entries = _sampling_entries(raw)
+        if not entries:
+            return None, None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return None, None
+            samples_read = _sampling_count(entry, "samples_read_count", "samplesReadCount")
+            sampling_space = _sampling_count(entry, "sampling_space_size", "samplingSpaceSize")
+            if samples_read is None or sampling_space is None:
+                return None, None
+            observed.append((samples_read, sampling_space))
+    if not observed or len(set(observed)) != 1:
+        return None, None
+    return observed[0]
+
+
+def measurement_contract_version(connection, assignment_id):
+    """Read the effective assigned contract version, or leave it unknown."""
+    row = connection.execute("""
+        SELECT mc.slug AS contract_slug, mcv.version AS contract_version
+          FROM app.website_analytics_assignments AS assignment
+          JOIN app.website_measurement_contract_assignments AS contract_assignment
+            ON contract_assignment.website_id = assignment.website_id
+          JOIN app.measurement_contract_versions AS mcv
+            ON mcv.id = contract_assignment.measurement_contract_version_id
+          JOIN app.measurement_contracts AS mc ON mc.id = mcv.contract_id
+         WHERE assignment.id = %s
+           AND contract_assignment.approval_status = 'approved'
+           AND contract_assignment.effective_from <= current_date
+           AND (contract_assignment.effective_to IS NULL OR contract_assignment.effective_to >= current_date)
+         ORDER BY contract_assignment.effective_from DESC
+         LIMIT 1
+    """, (assignment_id,)).fetchone()
+    if not row:
+        return None
+    slug = row.get("contract_slug")
+    version = row.get("contract_version")
+    return f"{slug}@{version}" if slug and version is not None else None
 
 
 def bundle_alert_states(bundle: dict) -> dict[str, dict]:
@@ -141,20 +219,30 @@ class SyncEngine:
         restrictions = [item["schema_restriction"] for item in provenance if item.get("schema_restriction")]
         sampling = [item["sampling_metadata"] for item in provenance if item.get("sampling_metadata")]
         source_requests = [item["request"] for item in provenance]
-        source_metadata = [{key:item.get(key) for key in ("row_count","property_timezone","currency_code","data_loss_from_other_row","empty_reason","schema_restriction","subject_to_thresholding","sampling_metadata","property_quota","date_range")} for item in provenance]
+        source_metadata = [{**{key:item.get(key) for key in ("row_count","property_timezone","currency_code","data_loss_from_other_row","empty_reason","schema_restriction","subject_to_thresholding","sampling_metadata","property_quota","date_range")},"source_system":SOURCE_SYSTEM} for item in provenance]
+        measurement_version = None
+        samples_read_count, sampling_space_size = authoritative_sampling_counts(provenance)
         with self.database.connection() as connection:
+            measurement_version = measurement_contract_version(connection, assignment_id)
             connection.execute("""
                 INSERT INTO analytics.report_executions(
                   id,assignment_id,report_definition_version_id,sync_job_id,requested_start_date,
                   requested_end_date,request_hash,response_hash,property_time_zone,currency_code,
                   empty_reason,subject_to_thresholding,data_loss_from_other_row,sampling_metadata_json,
                   schema_restrictions_json,property_quota_json,source_requests_json,source_metadata_json,
-                  status,completed_at,execution_key
-                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'succeeded',now(),%s)
+                  source_system,measurement_contract_version,data_status,last_synced_at,
+                  samples_read_count,sampling_space_size,status,completed_at,execution_key
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s,'succeeded',now(),%s)
                 ON CONFLICT(execution_key) DO UPDATE SET response_hash=excluded.response_hash,
                   completed_at=excluded.completed_at,status='succeeded',empty_reason=excluded.empty_reason,
-                  property_quota_json=excluded.property_quota_json
-            """, (execution_id,assignment_id,report_version_id,job_id,start,end,request_hash,response_hash,timezone_name,currency,";".join(empty_reasons) or None,any(item["subject_to_thresholding"] for item in provenance),any(item["data_loss_from_other_row"] for item in provenance),json.dumps(sampling),json.dumps(restrictions),json.dumps(quotas),json.dumps(source_requests),json.dumps(source_metadata),execution_key))
+                  property_quota_json=excluded.property_quota_json,
+                  source_system=COALESCE(excluded.source_system,report_executions.source_system),
+                  measurement_contract_version=COALESCE(excluded.measurement_contract_version,report_executions.measurement_contract_version),
+                  data_status=COALESCE(excluded.data_status,report_executions.data_status),
+                  last_synced_at=excluded.last_synced_at,
+                  samples_read_count=COALESCE(excluded.samples_read_count,report_executions.samples_read_count),
+                  sampling_space_size=COALESCE(excluded.sampling_space_size,report_executions.sampling_space_size)
+            """, (execution_id,assignment_id,report_version_id,job_id,start,end,request_hash,response_hash,timezone_name,currency,";".join(empty_reasons) or None,any(item["subject_to_thresholding"] for item in provenance),any(item["data_loss_from_other_row"] for item in provenance),json.dumps(sampling),json.dumps(restrictions),json.dumps(quotas),json.dumps(source_requests),json.dumps(source_metadata),SOURCE_SYSTEM,measurement_version,bundle["quality"].get("freshness"),samples_read_count,sampling_space_size,execution_key))
             for view_slug, payload in bundle["views"].items():
                 clean_payload = json.loads(json.dumps(payload))
                 connection.execute("""
@@ -165,7 +253,10 @@ class SyncEngine:
                       freshness=excluded.freshness,quality_status=excluded.quality_status,payload=excluded.payload,created_at=now()
                 """,(execution_id,assignment_id,view_slug,bundle["period"],bundle["quality"]["freshness"],bundle["quality"]["status"],json.dumps(clean_payload)))
             self._persist_period_metrics(connection,execution_id,assignment_id,bundle)
-            self._persist_daily_facts(connection,execution_id,assignment_id,bundle)
+            self._persist_daily_facts(
+                connection, execution_id, assignment_id, bundle, report_version_id,
+                measurement_version, samples_read_count, sampling_space_size,
+            )
             connection.execute("""
                 INSERT INTO analytics.data_quality_status(assignment_id,freshness,status,details_json,checked_at,last_successful_sync_at)
                 VALUES(%s,%s,%s,%s,now(),now())
@@ -196,38 +287,87 @@ class SyncEngine:
             """,(execution_id,assignment_id,metric_version_id,bundle["period"],bundle["dateRange"]["start"],bundle["dateRange"]["end"],value,numerator,denominator,bundle["quality"]["freshness"]))
 
     @staticmethod
-    def _persist_daily_facts(connection, execution_id, assignment_id, bundle):
+    def _persist_daily_facts(
+        connection, execution_id, assignment_id, bundle, report_version_id=None,
+        measurement_version=None, samples_read_count=None, sampling_space_size=None,
+    ):
+        if samples_read_count is None and sampling_space_size is None:
+            samples_read_count, sampling_space_size = authoritative_sampling_counts(bundle.get("provenance", []))
+        data_status = bundle.get("quality", {}).get("freshness")
         for row in bundle["daily"]["property"]["rows"]:
             metric_date = datetime.strptime(row["dimensions"][0],"%Y%m%d").date()
             for slug,index in (("active_users",0),("sessions",1)):
                 connection.execute("""
                     INSERT INTO analytics.daily_property_metrics(
-                      report_execution_id,assignment_id,metric_definition_version_id,metric_date,value_numeric
-                    ) VALUES(%s,%s,%s,%s,%s)
-                    ON CONFLICT(report_execution_id,metric_definition_version_id,metric_date) DO UPDATE SET value_numeric=excluded.value_numeric
-                """,(execution_id,assignment_id,stable_id(f"metric:{slug}:v1"),metric_date,int(row["metrics"][index] or 0)))
+                      report_execution_id,assignment_id,metric_definition_version_id,metric_date,value_numeric,
+                      report_definition_version_id,source_system,measurement_contract_version,data_status,
+                      last_synced_at,samples_read_count,sampling_space_size
+                    ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s)
+                    ON CONFLICT(report_execution_id,metric_definition_version_id,metric_date) DO UPDATE SET
+                      value_numeric=excluded.value_numeric,
+                      report_definition_version_id=excluded.report_definition_version_id,
+                      source_system=excluded.source_system,
+                      measurement_contract_version=excluded.measurement_contract_version,
+                      data_status=excluded.data_status,
+                      last_synced_at=excluded.last_synced_at,
+                      samples_read_count=COALESCE(excluded.samples_read_count,daily_property_metrics.samples_read_count),
+                      sampling_space_size=COALESCE(excluded.sampling_space_size,daily_property_metrics.sampling_space_size)
+                """,(execution_id,assignment_id,stable_id(f"metric:{slug}:v1"),metric_date,int(row["metrics"][index] or 0),report_version_id,SOURCE_SYSTEM,measurement_version,data_status,samples_read_count,sampling_space_size))
         for row in bundle["daily"]["events"]["rows"]:
             metric_date = datetime.strptime(row["dimensions"][0],"%Y%m%d").date()
             connection.execute("""
-                INSERT INTO analytics.daily_event_metrics(report_execution_id,assignment_id,event_name,metric_date,event_count)
-                VALUES(%s,%s,%s,%s,%s)
-                ON CONFLICT(report_execution_id,event_name,metric_date) DO UPDATE SET event_count=excluded.event_count
-            """,(execution_id,assignment_id,row["dimensions"][1],metric_date,int(row["metrics"][0] or 0)))
+                INSERT INTO analytics.daily_event_metrics(
+                  report_execution_id,assignment_id,event_name,metric_date,event_count,
+                  report_definition_version_id,source_system,measurement_contract_version,data_status,
+                  last_synced_at,samples_read_count,sampling_space_size
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s)
+                ON CONFLICT(report_execution_id,event_name,metric_date) DO UPDATE SET
+                  event_count=excluded.event_count,
+                  report_definition_version_id=excluded.report_definition_version_id,
+                  source_system=excluded.source_system,
+                  measurement_contract_version=excluded.measurement_contract_version,
+                  data_status=excluded.data_status,
+                  last_synced_at=excluded.last_synced_at,
+                  samples_read_count=COALESCE(excluded.samples_read_count,daily_event_metrics.samples_read_count),
+                  sampling_space_size=COALESCE(excluded.sampling_space_size,daily_event_metrics.sampling_space_size)
+            """,(execution_id,assignment_id,row["dimensions"][1],metric_date,int(row["metrics"][0] or 0),report_version_id,SOURCE_SYSTEM,measurement_version,data_status,samples_read_count,sampling_space_size))
         for row in bundle["daily"]["channels"]["rows"]:
             metric_date = datetime.strptime(row["dimensions"][0],"%Y%m%d").date()
             connection.execute("""
-                INSERT INTO analytics.daily_channel_metrics(report_execution_id,assignment_id,channel,metric_date,metrics_json)
-                VALUES(%s,%s,%s,%s,%s)
-                ON CONFLICT(report_execution_id,channel,metric_date) DO UPDATE SET metrics_json=excluded.metrics_json
-            """,(execution_id,assignment_id,row["dimensions"][1] or "(not set)",metric_date,json.dumps({"sessions":int(row["metrics"][0] or 0),"activeUsers":int(row["metrics"][1] or 0)})))
+                INSERT INTO analytics.daily_channel_metrics(
+                  report_execution_id,assignment_id,channel,metric_date,metrics_json,
+                  report_definition_version_id,source_system,measurement_contract_version,data_status,
+                  last_synced_at,samples_read_count,sampling_space_size
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s)
+                ON CONFLICT(report_execution_id,channel,metric_date) DO UPDATE SET
+                  metrics_json=excluded.metrics_json,
+                  report_definition_version_id=excluded.report_definition_version_id,
+                  source_system=excluded.source_system,
+                  measurement_contract_version=excluded.measurement_contract_version,
+                  data_status=excluded.data_status,
+                  last_synced_at=excluded.last_synced_at,
+                  samples_read_count=COALESCE(excluded.samples_read_count,daily_channel_metrics.samples_read_count),
+                  sampling_space_size=COALESCE(excluded.sampling_space_size,daily_channel_metrics.sampling_space_size)
+            """,(execution_id,assignment_id,row["dimensions"][1] or "(not set)",metric_date,json.dumps({"sessions":int(row["metrics"][0] or 0),"activeUsers":int(row["metrics"][1] or 0)}),report_version_id,SOURCE_SYSTEM,measurement_version,data_status,samples_read_count,sampling_space_size))
         for row in bundle["daily"]["pages"]["rows"]:
             metric_date = datetime.strptime(row["dimensions"][0],"%Y%m%d").date()
             from .ga4 import safe_landing_page
             connection.execute("""
-                INSERT INTO analytics.daily_page_metrics(report_execution_id,assignment_id,landing_page,metric_date,metrics_json)
-                VALUES(%s,%s,%s,%s,%s)
-                ON CONFLICT(report_execution_id,landing_page,metric_date) DO UPDATE SET metrics_json=excluded.metrics_json
-            """,(execution_id,assignment_id,safe_landing_page(row["dimensions"][1]),metric_date,json.dumps({"sessions":int(row["metrics"][0] or 0),"activeUsers":int(row["metrics"][1] or 0),"eventCount":int(row["metrics"][2] or 0)})))
+                INSERT INTO analytics.daily_page_metrics(
+                  report_execution_id,assignment_id,landing_page,metric_date,metrics_json,
+                  report_definition_version_id,source_system,measurement_contract_version,data_status,
+                  last_synced_at,samples_read_count,sampling_space_size
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s)
+                ON CONFLICT(report_execution_id,landing_page,metric_date) DO UPDATE SET
+                  metrics_json=excluded.metrics_json,
+                  report_definition_version_id=excluded.report_definition_version_id,
+                  source_system=excluded.source_system,
+                  measurement_contract_version=excluded.measurement_contract_version,
+                  data_status=excluded.data_status,
+                  last_synced_at=excluded.last_synced_at,
+                  samples_read_count=COALESCE(excluded.samples_read_count,daily_page_metrics.samples_read_count),
+                  sampling_space_size=COALESCE(excluded.sampling_space_size,daily_page_metrics.sampling_space_size)
+            """,(execution_id,assignment_id,safe_landing_page(row["dimensions"][1]),metric_date,json.dumps({"sessions":int(row["metrics"][0] or 0),"activeUsers":int(row["metrics"][1] or 0),"eventCount":int(row["metrics"][2] or 0)}),report_version_id,SOURCE_SYSTEM,measurement_version,data_status,samples_read_count,sampling_space_size))
         approved=connection.execute("""
             SELECT em.id mapping_id,ed.event_name,em.metric_definition_version_id,
                    concat('mapping:',em.id::text,':',em.effective_from::text) semantic_version_id
@@ -240,7 +380,18 @@ class SyncEngine:
             for (metric_date,event_name),value in event_values.items():
                 if event_name == mapping["event_name"]:
                     connection.execute("""
-                        INSERT INTO analytics.daily_canonical_metrics(report_execution_id,assignment_id,event_mapping_version_id,metric_definition_version_id,semantic_version_id,metric_date,value_numeric)
-                        VALUES(%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT(report_execution_id,event_mapping_version_id,metric_definition_version_id,metric_date) DO UPDATE SET value_numeric=excluded.value_numeric
-                    """,(execution_id,assignment_id,mapping["mapping_id"],mapping["metric_definition_version_id"],mapping["semantic_version_id"],metric_date,value))
+                        INSERT INTO analytics.daily_canonical_metrics(
+                          report_execution_id,assignment_id,event_mapping_version_id,metric_definition_version_id,
+                          semantic_version_id,metric_date,value_numeric,report_definition_version_id,source_system,
+                          measurement_contract_version,data_status,last_synced_at,samples_read_count,sampling_space_size
+                        ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s)
+                        ON CONFLICT(report_execution_id,event_mapping_version_id,metric_definition_version_id,metric_date) DO UPDATE SET
+                          value_numeric=excluded.value_numeric,
+                          report_definition_version_id=excluded.report_definition_version_id,
+                          source_system=excluded.source_system,
+                          measurement_contract_version=excluded.measurement_contract_version,
+                          data_status=excluded.data_status,
+                          last_synced_at=excluded.last_synced_at,
+                          samples_read_count=COALESCE(excluded.samples_read_count,daily_canonical_metrics.samples_read_count),
+                          sampling_space_size=COALESCE(excluded.sampling_space_size,daily_canonical_metrics.sampling_space_size)
+                    """,(execution_id,assignment_id,mapping["mapping_id"],mapping["metric_definition_version_id"],mapping["semantic_version_id"],metric_date,value,report_version_id,SOURCE_SYSTEM,measurement_version,data_status,samples_read_count,sampling_space_size))

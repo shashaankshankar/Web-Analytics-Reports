@@ -24,8 +24,8 @@
   "patterns": [
     {"pattern": "/patient/*", "status": "prohibited"},
     {"pattern": "/portal/*", "status": "prohibited"},
-    {"pattern": "/appointment/*", "status": "prohibited"},
-    {"pattern": "/booking/*", "status": "prohibited"},
+    {"pattern": "/appointment/*", "status": "requires_review"},
+    {"pattern": "/booking/*", "status": "requires_review"},
     {"pattern": "/contact/*", "status": "prohibited"}
   ],
   "legacy_redirects": {
@@ -33,11 +33,12 @@
     "/about-us": "prohibited",
     "/dental-services": "prohibited",
     "/new-patient": "prohibited",
-    "/contact-us": "prohibited"
+    "/contact-us": "prohibited",
+    "/services.html": "prohibited"
   },
   "approval": {
     "approved_by": "Shashaank Shankar",
     "approved_at": "2026-08-13T02:20:44Z",
-    "notes": "The eleven declared public routes are approved. Unknown routes, 404s, legacy aliases, and unimplemented patient/appointment/booking/contact subpaths remain prohibited by default."
+    "notes": "The eleven declared clean public routes are approved. The canonical services path is /services; /services.html and other legacy aliases remain non-approved. Unknown routes and 404s remain prohibited by default. Appointment and booking subpaths require explicit review and therefore remain fail closed."
   }
 }

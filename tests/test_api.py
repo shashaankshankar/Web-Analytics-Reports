@@ -1,9 +1,12 @@
 from fastapi.testclient import TestClient
+from contextlib import contextmanager
+from datetime import date, datetime, timezone
 
 from app.config import Settings
 from app.auth import TenantContext
 from app.external_sources import FirstPartyOutcomeConnector
 from app.main import create_app
+from app.storage import Database
 
 
 class StubReporter:
@@ -68,6 +71,35 @@ class StubDatabase:
     def list_memberships(self,context): return [{"userId":"user-1","email":"operator@example.com","role":self.role}]
     def upsert_membership(self,context,email,role):
         context.require_role(frozenset({"agency_owner","agency_admin"})); return {"userId":"user-2","email":email,"role":role}
+
+
+class DispatchDatabase(StubDatabase):
+    def __init__(self,reports,delivery_ids):
+        super().__init__()
+        self.reports=reports
+        self.delivery_ids=delivery_ids
+        self.finished=[]
+
+    def due_recurring_reports(self,limit=20): return self.reports[:limit]
+    def begin_report_delivery(self,report): return self.delivery_ids[report["id"]]
+    def finish_report_delivery(self,report,delivery_id,report_hash,provider_message_id,error_code):
+        self.finished.append({"reportId":report["id"],"deliveryId":delivery_id,"reportHash":report_hash,"providerMessageId":provider_message_id,"errorCode":error_code})
+
+
+class DispatchSender:
+    configured=True
+
+    def __init__(self,outcomes): self.outcomes=outcomes
+    def send_pdf(self,recipient_reference,*_):
+        outcome=self.outcomes[recipient_reference]
+        if isinstance(outcome,BaseException): raise outcome
+        return outcome
+
+
+def dispatch_settings(): return Settings(**{**settings().__dict__,"internal_trigger_token":"i"*32})
+def internal_headers(): return {"X-Internal-Trigger-Token":"i"*32}
+def dispatch_report(report_id,recipient_reference):
+    return {"id":report_id,"organization_id":"org-1","created_by":"user-1","website_id":"website_house_of_dental","period_key":"28d","recipient_secret_reference":recipient_reference,"company":"House of Dental","next_run_at":"2026-08-14T13:00:00+00:00","cadence":"monthly"}
 
 
 def settings(): return Settings("live",True,True,"549721844","15427015396","x"*32,"127.0.0.1",3000,database_url="postgresql://configured",operator_email="operator@example.com")
@@ -166,6 +198,55 @@ def test_recurring_email_stays_fail_closed_without_owned_configuration():
         assert listed.status_code == 200 and listed.json()["emailDeliveryConfigured"] is False
         created=client.post("/api/websites/website_house_of_dental/recurring-reports",headers=headers(),json={"name":"Monthly report","period":"last_month","cadence":"monthly","timezone":"America/New_York","recipientReference":"office","nextRunAt":"2026-09-01T13:00:00-04:00"})
         assert created.status_code == 503 and created.json()["detail"] == "report_email_not_configured"
+
+
+def test_report_dispatch_preserves_success_and_already_sent_results(monkeypatch):
+    database=DispatchDatabase(
+        [dispatch_report("report-sent","recipient-sent"),dispatch_report("report-already","recipient-already")],
+        {"report-sent":"delivery-sent","report-already":None},
+    )
+    sender=DispatchSender({"recipient-sent":"provider-message-id"})
+    monkeypatch.setattr("app.main.ReportEmailSender",lambda *_: sender)
+    monkeypatch.setattr("app.main.build_client_pdf",lambda *_: b"pdf")
+    with TestClient(create_app(dispatch_settings(),StubReporter(),database)) as client:
+        response=client.post("/internal/reports/dispatch",headers=internal_headers())
+    assert response.status_code == 200
+    assert response.json() == {"status":"ok","processed":2,"deliveries":[
+        {"reportId":"report-sent","status":"sent","deliveryId":"delivery-sent"},
+        {"reportId":"report-already","status":"already_sent"},
+    ]}
+    assert len(database.finished) == 1
+    assert database.finished[0]["providerMessageId"] == "provider-message-id" and database.finished[0]["errorCode"] is None
+
+
+def test_report_dispatch_returns_non_2xx_for_mixed_failures_and_preserves_ledger(monkeypatch):
+    database=DispatchDatabase(
+        [dispatch_report("report-sent","recipient-sent"),dispatch_report("report-failed","recipient-failed"),dispatch_report("report-blocked","recipient-blocked")],
+        {"report-sent":"delivery-sent","report-failed":"delivery-failed","report-blocked":"delivery-blocked"},
+    )
+    sender=DispatchSender({
+        "recipient-sent":"provider-message-id",
+        "recipient-failed":RuntimeError("provider_unavailable:"+"secret-provider-payload"),
+        "recipient-blocked":RuntimeError("report_email_not_configured"),
+    })
+    monkeypatch.setattr("app.main.ReportEmailSender",lambda *_: sender)
+    monkeypatch.setattr("app.main.build_client_pdf",lambda *_: b"pdf")
+    with TestClient(create_app(dispatch_settings(),StubReporter(),database)) as client:
+        response=client.post("/internal/reports/dispatch",headers=internal_headers())
+    body=response.json()
+    assert response.status_code == 502
+    assert body["detail"]["code"] == "report_dispatch_failed" and body["detail"]["processed"] == 3
+    assert body["detail"]["deliveries"] == [
+        {"reportId":"report-sent","status":"sent","deliveryId":"delivery-sent"},
+        {"reportId":"report-failed","status":"failed","errorCode":"HTTPException"},
+        {"reportId":"report-blocked","status":"failed","errorCode":"HTTPException"},
+    ]
+    assert "recipient-failed" not in response.text and "secret-provider-payload" not in response.text
+    assert [(item["deliveryId"],item["providerMessageId"],item["errorCode"]) for item in database.finished] == [
+        ("delivery-sent","provider-message-id",None),
+        ("delivery-failed",None,"HTTPException"),
+        ("delivery-blocked",None,"HTTPException"),
+    ]
 
 
 def test_oauth_stays_fail_closed_until_production_configuration_is_approved():
@@ -282,3 +363,81 @@ def test_source_approval_and_first_party_ingestion_are_operable_and_audited():
         assert batch.status_code==200 and batch.json()["rowCount"]==1
         rejected=client.post("/api/websites/website_house_of_dental/external-sources/crm_booking/outcomes",headers=headers(),json={"requestId":"batch-2026-08-13-2","records":[{"sourceRecordId":"crm-124","outcomeType":"customer","outcomeDate":"2026-08-13","email":"patient@example.com"}]})
         assert rejected.status_code==502 and not hasattr(database,"external_failure")
+
+
+class ReportingResult:
+    def __init__(self,one=None,many=None): self.one=one; self.many=many
+    def fetchone(self): return self.one
+    def fetchall(self): return self.many or []
+
+
+class ReportingConnection:
+    def __init__(self,outcomes_available=False,ads_available=False):
+        self.outcomes_available=outcomes_available
+        self.ads_available=ads_available
+        self.calls=[]
+        self.outcomes=[]
+        self.revenue=[]
+        self.website_id="website_house_of_dental"
+        self.start_date=date(2026,8,1)
+        self.end_date=date(2026,8,31)
+        self.business_ads={"data_available":ads_available,"row_count":0,"cost_micros":None,"clicks":None,"currency_code":None}
+        self.google_ads={"data_available":ads_available,"row_count":0,"cost_micros":None,"clicks":None,"impressions":None,"currency_code":None,"last_execution_at":datetime(2026,8,31,tzinfo=timezone.utc) if ads_available else None}
+
+    def execute(self,query,params=()):
+        normalized=" ".join(query.split())
+        self.calls.append(normalized)
+        coverage_params=(self.website_id,self.start_date,self.end_date)
+        period_params=coverage_params+(self.start_date,self.end_date)
+        if normalized.startswith("SELECT DISTINCT c.source_type"):
+            assert tuple(params)==coverage_params
+            sources=[{"source_type":"call_tracking"},{"source_type":"crm_booking"}] if self.outcomes_available else []
+            return ReportingResult(many=sources)
+        if "FROM analytics.first_party_outcomes" in normalized:
+            assert tuple(params)==period_params
+            return ReportingResult(many=self.revenue if "outcome_type='revenue'" in normalized else self.outcomes)
+        if "campaign_id" in normalized:
+            assert tuple(params)==period_params
+            return ReportingResult(many=[])
+        if "sum(a.impressions)" in normalized:
+            assert tuple(params)==period_params
+            return ReportingResult(one=self.google_ads)
+        if "SELECT EXISTS(SELECT 1 FROM complete_execution)" in normalized:
+            assert tuple(params)==period_params
+            return ReportingResult(one=self.business_ads)
+        raise AssertionError(f"unexpected reporting query: {normalized}")
+
+
+def reporting_database(connection):
+    database=Database.__new__(Database)
+    @contextmanager
+    def tenant_connection(_context):
+        yield connection
+    database.tenant_connection=tenant_connection
+    return database
+
+
+def test_business_and_paid_reporting_distinguish_unavailable_from_complete_zero():
+    context=TenantContext("org-1","user-1","operator@example.com","agency_owner")
+    unavailable_connection=ReportingConnection()
+    unavailable_database=reporting_database(unavailable_connection)
+    unavailable=unavailable_database.business_outcomes(context,"website_house_of_dental",date(2026,8,1),date(2026,8,31))
+    assert unavailable["outcomeDataStatus"]=="unavailable" and unavailable["paidDataStatus"]=="unavailable"
+    assert unavailable["outcomes"]["qualified_lead"] is None and unavailable["outcomes"]["booked_appointment"] is None
+    assert unavailable["outcomes"]["customer"] is None and unavailable["outcomes"]["revenue"] is None
+    assert unavailable["cost"] is None and unavailable["clicks"] is None and unavailable["revenueMinorUnits"] is None
+    assert unavailable["revenueByChannel"] is None and any("unavailable" in caveat for caveat in unavailable["caveats"])
+    paid_unavailable=unavailable_database.google_ads_performance(context,"website_house_of_dental",date(2026,8,1),date(2026,8,31))
+    assert paid_unavailable["dataStatus"]=="unavailable" and paid_unavailable["totals"] is None
+
+    zero_connection=ReportingConnection(outcomes_available=True,ads_available=True)
+    zero_database=reporting_database(zero_connection)
+    zero=zero_database.business_outcomes(context,"website_house_of_dental",date(2026,8,1),date(2026,8,31))
+    assert zero["outcomeDataStatus"]=="available" and zero["paidDataStatus"]=="available"
+    assert zero["outcomes"]["qualified_lead"]==0 and zero["outcomes"]["booked_appointment"]==0
+    assert zero["outcomes"]["customer"]==0 and zero["outcomes"]["revenue"]==0
+    assert zero["cost"]==0 and zero["clicks"]==0 and zero["revenueMinorUnits"]==0
+    assert zero["revenueByChannel"]==[] and any("zero" in caveat for caveat in zero["caveats"])
+    paid_zero=zero_database.google_ads_performance(context,"website_house_of_dental",date(2026,8,1),date(2026,8,31))
+    assert paid_zero["dataStatus"]=="available" and paid_zero["totals"]=={"costMicros":0,"clicks":0,"impressions":0,"currency":None}
+    assert paid_zero["rows"]==[] and paid_zero["lastSyncAt"]=="2026-08-31T00:00:00+00:00"

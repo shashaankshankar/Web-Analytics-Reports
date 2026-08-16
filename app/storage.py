@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
@@ -20,6 +23,95 @@ from .external_sources import SOURCES, ExternalSourceState
 
 ROOT = Path(__file__).resolve().parents[1]
 NAMESPACE = uuid.UUID("e43717fb-78e8-4b90-bf04-472c24f885fb")
+CONFIRMED_OUTCOME_TYPES = (
+    "generated_lead",
+    "qualified_lead",
+    "booked_appointment",
+    "customer",
+    "call_answered",
+    "call_qualified",
+    "revenue",
+)
+OUTCOME_SOURCE_TYPES = {
+    "generated_lead": frozenset({"call_tracking", "crm_booking"}),
+    "qualified_lead": frozenset({"crm_booking"}),
+    "booked_appointment": frozenset({"crm_booking"}),
+    "customer": frozenset({"crm_booking"}),
+    "call_answered": frozenset({"call_tracking"}),
+    "call_qualified": frozenset({"call_tracking"}),
+    "revenue": frozenset({"crm_booking"}),
+}
+ONBOARDING_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,119}$")
+PUBLIC_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
+PINNED_SECRET_REFERENCE = re.compile(r"^projects/[A-Za-z0-9._:-]+/secrets/[A-Za-z0-9_-]+/versions/[1-9][0-9]*$")
+GA4_OAUTH_REFERENCE = re.compile(r"^oauth_connection:[0-9a-fA-F-]{36}$")
+SOURCE_TYPES = frozenset({"google_ads", "search_console", "call_tracking", "crm_booking"})
+ONBOARDING_CONNECTION_KINDS = frozenset({"ga4", *SOURCE_TYPES})
+AGENCY_ADMIN_ROLES = frozenset({"agency_owner", "agency_admin"})
+CLIENT_MEMBERSHIP_ROLES = frozenset({"client_admin", "client_viewer"})
+MIGRATION_ORDER = (
+    "002_production",
+    "003_phase4_tenant_isolation",
+    "004_phase5_reporting_oauth",
+    "005_retention_offboarding",
+    "006_external_sources",
+    "007_external_sync_provenance",
+    "008_source_connection_management",
+    "009_oauth_assignment_management",
+    "010_onboarding_workflows",
+    "011_fact_provenance",
+)
+
+
+def validate_onboarding_identifier(value: str, *, key: str = "identifier") -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"invalid_{key}")
+    normalized = value.strip()
+    if not PUBLIC_IDENTIFIER.fullmatch(normalized):
+        raise ValueError(f"invalid_{key}")
+    return normalized
+
+
+def validate_onboarding_idempotency_key(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("invalid_onboarding_idempotency_key")
+    normalized = value.strip()
+    if not ONBOARDING_IDENTIFIER.fullmatch(normalized):
+        raise ValueError("invalid_onboarding_idempotency_key")
+    return normalized
+
+
+def normalize_canonical_domain(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("invalid_canonical_domain")
+    raw = value.strip().lower()
+    if not raw or len(raw) > 253 or any(character.isspace() for character in raw):
+        raise ValueError("invalid_canonical_domain")
+    if raw.endswith("."):
+        raw = raw[:-1]
+    if not raw or "://" in raw or "/" in raw or "?" in raw or "#" in raw or "@" in raw:
+        raise ValueError("invalid_canonical_domain")
+    try:
+        parsed = urlsplit(f"//{raw}")
+        hostname = parsed.hostname
+    except ValueError as error:
+        raise ValueError("invalid_canonical_domain") from error
+    if hostname != raw or parsed.port is not None or not hostname or "." not in hostname:
+        raise ValueError("invalid_canonical_domain")
+    labels = hostname.split(".")
+    if len(labels[-1]) < 2 or any(
+        not label or len(label) > 63 or label[0] == "-" or label[-1] == "-" or not re.fullmatch(r"[a-z0-9-]+", label)
+        for label in labels
+    ):
+        raise ValueError("invalid_canonical_domain")
+    return hostname
+
+
+def validate_workflow_uuid(value: str) -> str:
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError) as error:
+        raise ValueError("invalid_onboarding_workflow_id") from error
 
 
 def stable_id(name: str) -> uuid.UUID:
@@ -101,6 +193,10 @@ class Database:
 
     def migrate(self):
         with self.connection() as connection:
+            # Serialize migration attempts within this database and fail closed
+            # when an existing schema has lost its ledger. Reconstructing an
+            # unknown migration state by replaying old DDL is not safe.
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('measurement_platform_schema_migrations', 0))")
             exists = connection.execute(
                 "SELECT to_regclass('app.organizations') IS NOT NULL AS exists"
             ).fetchone()["exists"]
@@ -110,23 +206,21 @@ class Database:
             applied = set()
             if migrations_exist:
                 applied = {row["version"] for row in connection.execute("SELECT version FROM app.schema_migrations").fetchall()}
-            if "002_production" not in applied:
-                connection.execute((ROOT / "infra/postgres/002_production.sql").read_text())
-            if "003_phase4_tenant_isolation" not in applied:
-                connection.execute((ROOT / "infra/postgres/003_phase4_tenant_isolation.sql").read_text())
-            if "004_phase5_reporting_oauth" not in applied:
-                connection.execute((ROOT / "infra/postgres/004_phase5_reporting_oauth.sql").read_text())
-            if "005_retention_offboarding" not in applied:
-                connection.execute((ROOT / "infra/postgres/005_retention_offboarding.sql").read_text())
-            if "006_external_sources" not in applied:
-                connection.execute((ROOT / "infra/postgres/006_external_sources.sql").read_text())
-            if "007_external_sync_provenance" not in applied:
-                connection.execute((ROOT / "infra/postgres/007_external_sync_provenance.sql").read_text())
-            if "008_source_connection_management" not in applied:
-                connection.execute((ROOT / "infra/postgres/008_source_connection_management.sql").read_text())
-            if "009_oauth_assignment_management" not in applied:
-                connection.execute((ROOT / "infra/postgres/009_oauth_assignment_management.sql").read_text())
-        return {"status": "ok", "migration": "009_oauth_assignment_management"}
+            if exists and not migrations_exist:
+                raise RuntimeError("migration_ledger_missing")
+            if exists and migrations_exist and not applied:
+                raise RuntimeError("migration_ledger_empty")
+
+            gap_seen = False
+            for version in MIGRATION_ORDER:
+                if version in applied:
+                    if gap_seen:
+                        raise RuntimeError("migration_ledger_out_of_order")
+                    continue
+                gap_seen = True
+                connection.execute((ROOT / "infra/postgres" / f"{version}.sql").read_text())
+                applied.add(version)
+        return {"status": "ok", "migration": MIGRATION_ORDER[-1]}
 
     def seed_first_site(self, site: Site) -> dict:
         ids = {
@@ -928,59 +1022,163 @@ class Database:
 
     def business_outcomes(self, context: TenantContext, website_id: str, start_date: date, end_date: date) -> dict:
         with self.tenant_connection(context) as connection:
+            outcome_coverage=connection.execute("""
+                SELECT DISTINCT c.source_type
+                  FROM app.source_connections c
+                  JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=c.website_id
+                  JOIN analytics.source_sync_executions e ON e.source_connection_id=c.id AND e.website_id=c.website_id
+                 WHERE p.public_id=%s AND c.source_type IN ('call_tracking','crm_booking')
+                   AND c.approval_status='approved' AND c.disabled_at IS NULL
+                   AND e.status='succeeded'
+                   AND COALESCE(e.reconciliation_json->>'complete','true')='true'
+                   AND e.requested_start_date<=%s AND e.requested_end_date>=%s
+            """,(website_id,start_date,end_date)).fetchall()
+            complete_outcome_sources={row["source_type"] for row in outcome_coverage}
+            available_outcome_types={outcome_type for outcome_type,source_types in OUTCOME_SOURCE_TYPES.items() if complete_outcome_sources.intersection(source_types)}
+            outcomes_available=bool(available_outcome_types)
             outcomes=connection.execute("""
-                SELECT outcome_type,count(*) count,coalesce(sum(revenue_minor_units),0) revenue_minor_units,
-                       min(currency_code) FILTER(WHERE currency_code IS NOT NULL) currency_code
-                  FROM analytics.first_party_outcomes o JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=o.website_id
-                 WHERE p.public_id=%s AND outcome_date BETWEEN %s AND %s GROUP BY outcome_type
-            """,(website_id,start_date,end_date)).fetchall()
+                SELECT o.outcome_type,count(*) count,sum(o.revenue_minor_units) revenue_minor_units,
+                       min(o.currency_code) FILTER(WHERE o.currency_code IS NOT NULL) currency_code
+                  FROM analytics.first_party_outcomes o
+                  JOIN app.source_connections c ON c.id=o.source_connection_id
+                  JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=o.website_id
+                 WHERE p.public_id=%s AND o.outcome_date BETWEEN %s AND %s
+                   AND c.source_type IN ('call_tracking','crm_booking')
+                   AND c.approval_status='approved' AND c.disabled_at IS NULL
+                   AND (
+                       (o.outcome_type IN ('generated_lead','qualified_lead') AND c.source_type IN ('call_tracking','crm_booking'))
+                       OR (o.outcome_type IN ('booked_appointment','customer','revenue') AND c.source_type='crm_booking')
+                       OR (o.outcome_type IN ('call_answered','call_qualified') AND c.source_type='call_tracking')
+                   )
+                   AND EXISTS(
+                       SELECT 1 FROM analytics.source_sync_executions e
+                        WHERE e.source_connection_id=o.source_connection_id AND e.website_id=o.website_id
+                          AND e.status='succeeded'
+                          AND COALESCE(e.reconciliation_json->>'complete','true')='true'
+                          AND e.requested_start_date<=%s AND e.requested_end_date>=%s
+                   )
+                 GROUP BY o.outcome_type
+            """,(website_id,start_date,end_date,start_date,end_date)).fetchall() if outcomes_available else []
             ads=connection.execute("""
-                SELECT coalesce(sum(cost_micros),0) cost_micros,coalesce(sum(clicks),0) clicks,min(currency_code) currency_code
-                  FROM analytics.google_ads_daily a JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=a.website_id
-                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
-            """,(website_id,start_date,end_date)).fetchone()
+                WITH complete_execution AS (
+                    SELECT e.source_connection_id
+                      FROM app.source_connections c
+                      JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=c.website_id
+                      JOIN analytics.source_sync_executions e ON e.source_connection_id=c.id AND e.website_id=c.website_id
+                     WHERE p.public_id=%s AND c.source_type='google_ads'
+                       AND c.approval_status='approved' AND c.disabled_at IS NULL
+                       AND e.status='succeeded'
+                       AND COALESCE(e.reconciliation_json->>'complete','true')='true'
+                       AND e.requested_start_date<=%s AND e.requested_end_date>=%s
+                     ORDER BY e.completed_at DESC NULLS LAST LIMIT 1
+                )
+                SELECT EXISTS(SELECT 1 FROM complete_execution) data_available,
+                       count(a.source_connection_id) row_count,sum(a.cost_micros) cost_micros,
+                       sum(a.clicks) clicks,min(a.currency_code) currency_code
+                  FROM complete_execution e
+                  LEFT JOIN analytics.google_ads_daily a
+                    ON a.source_connection_id=e.source_connection_id
+                   AND a.metric_date BETWEEN %s AND %s
+            """,(website_id,start_date,end_date,start_date,end_date)).fetchone()
             revenue_channels=connection.execute("""
-                SELECT coalesce(attribution_json->>'channel','Unattributed') channel,sum(revenue_minor_units) revenue_minor_units
-                  FROM analytics.first_party_outcomes o JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=o.website_id
-                 WHERE p.public_id=%s AND outcome_type='revenue' AND outcome_date BETWEEN %s AND %s GROUP BY 1 ORDER BY 2 DESC
-            """,(website_id,start_date,end_date)).fetchall()
-        counts={row["outcome_type"]:row["count"] for row in outcomes}
-        qualified=counts.get("qualified_lead",0); appointments=counts.get("booked_appointment",0); customers=counts.get("customer",0)
-        cost=float(ads["cost_micros"])/1_000_000
+                SELECT COALESCE(o.attribution_json->>'channel','Unattributed') channel,
+                       sum(o.revenue_minor_units) revenue_minor_units
+                  FROM analytics.first_party_outcomes o
+                  JOIN app.source_connections c ON c.id=o.source_connection_id
+                  JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=o.website_id
+                 WHERE p.public_id=%s AND o.outcome_type='revenue'
+                   AND o.outcome_date BETWEEN %s AND %s
+                   AND c.source_type='crm_booking'
+                   AND c.approval_status='approved' AND c.disabled_at IS NULL
+                   AND EXISTS(
+                       SELECT 1 FROM analytics.source_sync_executions e
+                        WHERE e.source_connection_id=o.source_connection_id AND e.website_id=o.website_id
+                          AND e.status='succeeded'
+                          AND COALESCE(e.reconciliation_json->>'complete','true')='true'
+                          AND e.requested_start_date<=%s AND e.requested_end_date>=%s
+                   )
+                 GROUP BY 1 ORDER BY 2 DESC
+            """,(website_id,start_date,end_date,start_date,end_date)).fetchall() if "revenue" in available_outcome_types else None
+        ads_available=bool(ads["data_available"])
+        counts={outcome_type:(0 if outcome_type in available_outcome_types else None) for outcome_type in CONFIRMED_OUTCOME_TYPES}
+        counts.update({row["outcome_type"]:row["count"] for row in outcomes if row["outcome_type"] in available_outcome_types})
+        qualified=counts["qualified_lead"]; appointments=counts["booked_appointment"]; customers=counts["customer"]
+        cost=(float(ads["cost_micros"] or 0)/1_000_000) if ads_available else None
+        clicks=(ads["clicks"] or 0) if ads_available else None
+        revenue_available="revenue" in available_outcome_types
+        revenue_minor_units=(sum(row["revenue_minor_units"] or 0 for row in outcomes if row["outcome_type"]=="revenue") if revenue_available else None)
+        outcome_data_status="available" if len(available_outcome_types)==len(CONFIRMED_OUTCOME_TYPES) else ("partial" if outcomes_available else "unavailable")
+        caveats=["GA4 intent events are not treated as confirmed business outcomes.","Identity matching occurs only in approved first-party systems; prohibited identifiers are not sent to GA4.","Null KPIs mean the required approved source data is unavailable, not zero."]
+        if not ads_available: caveats.append("Google Ads cost, clicks, and impressions are unavailable because no approved complete execution covers this period; unavailable does not mean zero.")
+        elif ads["row_count"]==0: caveats.append("Google Ads returned a complete approved execution with zero rows; the zero cost and click totals are measured for this period.")
+        if not outcomes_available: caveats.append("Confirmed outcomes, appointments, customers, and revenue are unavailable because no approved complete first-party execution covers this period; unavailable does not mean zero.")
+        elif outcome_data_status=="partial": caveats.append("Some confirmed outcome types remain unavailable because their owning approved complete first-party source does not cover this period; unavailable does not mean zero.")
+        elif not outcomes: caveats.append("The approved first-party execution completed with zero outcome rows; zero counts and revenue are measured for this period.")
         return {"websiteId":website_id,"startDate":start_date.isoformat(),"endDate":end_date.isoformat(),
-                "outcomes":counts,"cost":cost,"clicks":ads["clicks"],"currency":ads["currency_code"],
-                "costPerQualifiedLead":cost/qualified if qualified else None,
+                "outcomeDataStatus":outcome_data_status,
+                "paidDataStatus":"available" if ads_available else "unavailable",
+                "outcomes":counts,"cost":cost,"clicks":clicks,"currency":ads["currency_code"] if ads_available else None,
+                "costPerQualifiedLead":cost/qualified if cost is not None and qualified else None,
                 "leadToAppointmentRate":appointments/qualified if qualified else None,
                 "appointmentToCustomerRate":customers/appointments if appointments else None,
-                "revenueMinorUnits":sum(row["revenue_minor_units"] for row in outcomes if row["outcome_type"]=="revenue"),
-                "revenueByChannel":[{"channel":row["channel"],"revenueMinorUnits":row["revenue_minor_units"]} for row in revenue_channels],
-                "sourceFamilies":["google_ads","approved_first_party"],
-                "caveats":["GA4 intent events are not treated as confirmed business outcomes.","Identity matching occurs only in approved first-party systems; prohibited identifiers are not sent to GA4.","Null KPIs mean the required approved source data is unavailable, not zero."]}
+                "revenueMinorUnits":revenue_minor_units,
+                "revenueByChannel":[{"channel":row["channel"],"revenueMinorUnits":row["revenue_minor_units"]} for row in revenue_channels] if revenue_channels is not None else None,
+                "sourceFamilies":[source for source,available in (("google_ads",ads_available),("approved_first_party",outcomes_available)) if available],
+                "caveats":caveats}
 
     def google_ads_performance(self, context: TenantContext, website_id: str, start_date: date, end_date: date) -> dict:
         with self.tenant_connection(context) as connection:
             total=connection.execute("""
-                SELECT count(*) row_count,sum(cost_micros) cost_micros,sum(clicks) clicks,
-                       sum(impressions) impressions,min(currency_code) currency_code,max(source_sync_at) last_sync_at
-                  FROM analytics.google_ads_daily a JOIN app.resource_identifiers p
-                    ON p.resource_type='website' AND p.resource_id=a.website_id
-                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
-            """,(website_id,start_date,end_date)).fetchone()
+                WITH complete_execution AS (
+                    SELECT e.source_connection_id,e.completed_at
+                      FROM app.source_connections c
+                      JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=c.website_id
+                      JOIN analytics.source_sync_executions e ON e.source_connection_id=c.id AND e.website_id=c.website_id
+                     WHERE p.public_id=%s AND c.source_type='google_ads'
+                       AND c.approval_status='approved' AND c.disabled_at IS NULL
+                       AND e.status='succeeded'
+                       AND COALESCE(e.reconciliation_json->>'complete','true')='true'
+                       AND e.requested_start_date<=%s AND e.requested_end_date>=%s
+                     ORDER BY e.completed_at DESC NULLS LAST LIMIT 1
+                )
+                SELECT EXISTS(SELECT 1 FROM complete_execution) data_available,
+                       count(a.source_connection_id) row_count,sum(a.cost_micros) cost_micros,
+                       sum(a.clicks) clicks,sum(a.impressions) impressions,
+                       min(a.currency_code) currency_code,max(e.completed_at) last_execution_at
+                  FROM complete_execution e
+                  LEFT JOIN analytics.google_ads_daily a
+                    ON a.source_connection_id=e.source_connection_id
+                   AND a.metric_date BETWEEN %s AND %s
+            """,(website_id,start_date,end_date,start_date,end_date)).fetchone()
             rows=connection.execute("""
-                SELECT campaign_id,campaign_name,ad_group_id,sum(cost_micros) cost_micros,
-                       sum(clicks) clicks,sum(impressions) impressions,min(currency_code) currency_code
-                  FROM analytics.google_ads_daily a JOIN app.resource_identifiers p
-                    ON p.resource_type='website' AND p.resource_id=a.website_id
-                 WHERE p.public_id=%s AND metric_date BETWEEN %s AND %s
+                WITH complete_execution AS (
+                    SELECT e.source_connection_id
+                      FROM app.source_connections c
+                      JOIN app.resource_identifiers p ON p.resource_type='website' AND p.resource_id=c.website_id
+                      JOIN analytics.source_sync_executions e ON e.source_connection_id=c.id AND e.website_id=c.website_id
+                     WHERE p.public_id=%s AND c.source_type='google_ads'
+                       AND c.approval_status='approved' AND c.disabled_at IS NULL
+                       AND e.status='succeeded'
+                       AND COALESCE(e.reconciliation_json->>'complete','true')='true'
+                       AND e.requested_start_date<=%s AND e.requested_end_date>=%s
+                     ORDER BY e.completed_at DESC NULLS LAST LIMIT 1
+                )
+                SELECT campaign_id,campaign_name,ad_group_id,sum(a.cost_micros) cost_micros,
+                       sum(a.clicks) clicks,sum(a.impressions) impressions,min(a.currency_code) currency_code
+                  FROM analytics.google_ads_daily a JOIN complete_execution e
+                    ON e.source_connection_id=a.source_connection_id
+                 WHERE a.metric_date BETWEEN %s AND %s
                  GROUP BY campaign_id,campaign_name,ad_group_id ORDER BY cost_micros DESC,campaign_id,ad_group_id
-            """,(website_id,start_date,end_date)).fetchall()
-        available=total["row_count"]>0
+            """,(website_id,start_date,end_date,start_date,end_date)).fetchall()
+        available=bool(total["data_available"])
+        caveats=[] if available else ["Google Ads is not configured, not approved, incomplete, or has no complete execution covering this period; unavailable does not mean zero."]
+        if available and total["row_count"]==0: caveats=["A complete approved Google Ads execution returned no rows; zero totals are measured for this period."]
         return {"websiteId":website_id,"startDate":start_date.isoformat(),"endDate":end_date.isoformat(),
                 "dataStatus":"available" if available else "unavailable","source":"google_ads",
-                "totals":{"costMicros":total["cost_micros"],"clicks":total["clicks"],"impressions":total["impressions"],"currency":total["currency_code"]} if available else None,
+                "totals":{"costMicros":total["cost_micros"] or 0,"clicks":total["clicks"] or 0,"impressions":total["impressions"] or 0,"currency":total["currency_code"]} if available else None,
                 "rows":[{"campaignId":row["campaign_id"],"campaign":row["campaign_name"],"adGroupId":row["ad_group_id"],"costMicros":row["cost_micros"],"clicks":row["clicks"],"impressions":row["impressions"],"currency":row["currency_code"]} for row in rows],
-                "lastSyncAt":total["last_sync_at"].isoformat() if total["last_sync_at"] else None,
-                "caveats":[] if available else ["Google Ads is not configured or has no approved rows for this period; unavailable does not mean zero."]}
+                "lastSyncAt":total["last_execution_at"].isoformat() if total["last_execution_at"] else None,
+                "caveats":caveats}
 
     def search_console_performance(self, context: TenantContext, website_id: str, start_date: date, end_date: date) -> dict:
         with self.tenant_connection(context) as connection:
@@ -1020,6 +1218,460 @@ class Database:
                 "queries":[{"queryKey":row["query_hash"],"query":row["query_text"],**metric(row)} for row in queries],
                 "lastSyncAt":total["last_sync_at"].isoformat() if total["last_sync_at"] else None,
                 "caveats":["Search Console Search Analytics returns top rows and does not guarantee complete dimension coverage."] if available else ["Search Console is not configured or has no approved rows for this period; unavailable does not mean zero."]}
+
+    def _onboarding_admin(self, context: TenantContext) -> None:
+        context.require_role(AGENCY_ADMIN_ROLES)
+
+    @staticmethod
+    def _onboarding_reference(value: str | None, error_code: str) -> str:
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{2,159}", value.strip()):
+            raise ValueError(error_code)
+        return value.strip()
+
+    @staticmethod
+    def _onboarding_step(connection, workflow_id, organization_id, step_key, state, detail, actor_user_id):
+        connection.execute(
+            """INSERT INTO app.onboarding_workflow_steps(workflow_id,organization_id,step_key,status,detail_json,updated_by)
+               VALUES(%s::uuid,%s::uuid,%s,%s,%s,%s::uuid)
+               ON CONFLICT(workflow_id,step_key) DO UPDATE SET status=excluded.status,detail_json=excluded.detail_json,
+                 updated_by=excluded.updated_by,updated_at=now()""",
+            (workflow_id, organization_id, step_key, state, json.dumps(detail), actor_user_id),
+        )
+
+    def _onboarding_refresh(self, connection, workflow_id: str, actor_user_id: str) -> dict:
+        workflow = connection.execute(
+            """SELECT id,organization_id,company_id,website_id,contract_version_id,governance_status,consent_status
+                 FROM app.onboarding_workflows WHERE id=%s::uuid FOR UPDATE""",
+            (workflow_id,),
+        ).fetchone()
+        if not workflow:
+            raise ValueError("onboarding_workflow_not_found")
+
+        connections = connection.execute(
+            """SELECT connection_kind,mode,status,analytics_connection_id,source_connection_id
+                 FROM app.onboarding_connection_requests WHERE workflow_id=%s::uuid ORDER BY connection_kind""",
+            (workflow_id,),
+        ).fetchall()
+        for item in connections:
+            if item["mode"] != "registered":
+                continue
+            approved = False
+            if item["connection_kind"] == "ga4" and item["analytics_connection_id"]:
+                approved = bool(connection.execute(
+                    """SELECT EXISTS(
+                              SELECT 1 FROM app.analytics_connections c
+                              JOIN app.website_analytics_assignments a ON a.analytics_connection_id=c.id
+                             WHERE c.id=%s::uuid AND c.status='approved' AND c.disabled_at IS NULL
+                               AND a.website_id=%s::uuid AND a.status='approved' AND a.effective_to IS NULL
+                          ) approved""",
+                    (item["analytics_connection_id"], workflow["website_id"]),
+                ).fetchone()["approved"])
+            elif item["source_connection_id"]:
+                approved = bool(connection.execute(
+                    "SELECT EXISTS(SELECT 1 FROM app.source_connections WHERE id=%s::uuid AND approval_status='approved' AND disabled_at IS NULL) approved",
+                    (item["source_connection_id"],),
+                ).fetchone()["approved"])
+            next_status = "approved" if approved else "pending_approval"
+            if item["status"] != "blocked" and item["status"] != next_status:
+                connection.execute(
+                    "UPDATE app.onboarding_connection_requests SET status=%s,updated_by=%s::uuid,updated_at=now() WHERE workflow_id=%s::uuid AND connection_kind=%s",
+                    (next_status, actor_user_id, workflow_id, item["connection_kind"]),
+                )
+
+        assignment_status = None
+        if workflow["website_id"] and workflow["contract_version_id"]:
+            assignment_status = connection.execute(
+                """SELECT approval_status FROM app.website_measurement_contract_assignments
+                    WHERE website_id=%s::uuid AND measurement_contract_version_id=%s::uuid
+                    ORDER BY effective_from DESC LIMIT 1""",
+                (workflow["website_id"], workflow["contract_version_id"]),
+            ).fetchone()
+            assignment_status = assignment_status["approval_status"] if assignment_status else None
+
+        readiness = connection.execute(
+            "SELECT status,assignment_id,detail_json FROM app.onboarding_sync_readiness WHERE workflow_id=%s::uuid",
+            (workflow_id,),
+        ).fetchone()
+        successful_sync = False
+        if workflow["website_id"]:
+            successful_sync = bool(connection.execute(
+                """SELECT EXISTS(
+                          SELECT 1 FROM analytics.sync_runs r
+                          JOIN app.website_analytics_assignments a ON a.id=r.assignment_id
+                         WHERE a.website_id=%s::uuid AND r.status='succeeded'
+                      ) succeeded""",
+                (workflow["website_id"],),
+            ).fetchone()["succeeded"])
+        if successful_sync and readiness and readiness["status"] != "ready":
+            connection.execute(
+                """UPDATE app.onboarding_sync_readiness SET status='ready',detail_json=%s,checked_at=now(),updated_at=now()
+                    WHERE workflow_id=%s::uuid""",
+                (json.dumps({"reason": "successful_sync_observed"}), workflow_id),
+            )
+            readiness = {"status": "ready", "assignment_id": readiness["assignment_id"], "detail_json": {"reason": "successful_sync_observed"}}
+        elif readiness:
+            readiness = dict(readiness)
+
+        client_count = connection.execute(
+            "SELECT count(*) count FROM app.client_membership_scopes WHERE workflow_id=%s::uuid",
+            (workflow_id,),
+        ).fetchone()["count"]
+        ga4 = next((item for item in connections if item["connection_kind"] == "ga4"), None)
+        source_requests = [item for item in connections if item["connection_kind"] != "ga4"]
+        ga4_approved = bool(ga4 and ga4["mode"] == "registered" and ga4["status"] == "approved" and assignment_status == "approved")
+        governance_ok = workflow["governance_status"] == "approved"
+        consent_ok = workflow["consent_status"] == "approved"
+        first_sync_ready = bool(readiness and readiness["status"] == "ready")
+        handoff_ready = bool(workflow["contract_version_id"] and assignment_status == "approved" and governance_ok and consent_ok and ga4_approved and first_sync_ready and client_count)
+        blocked = workflow["governance_status"] == "prohibited" or workflow["consent_status"] == "rejected" or bool(readiness and readiness["status"] == "blocked")
+        workflow_status = "ready" if handoff_ready else "blocked" if blocked else "in_progress"
+        connection_state = "completed" if ga4_approved else "deferred" if ga4 and ga4["mode"] == "deferred" else "in_progress"
+        source_state = "deferred" if not source_requests or all(item["mode"] == "deferred" for item in source_requests) else "completed" if all(item["status"] == "approved" for item in source_requests if item["mode"] == "registered") else "in_progress"
+        sync_state = "completed" if first_sync_ready else "blocked" if readiness and readiness["status"] == "blocked" else "in_progress"
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "organization", "completed", {"organizationId": str(workflow["organization_id"])}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "company", "completed" if workflow["company_id"] else "pending", {}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "website", "completed" if workflow["website_id"] else "pending", {}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "measurement_contract", "completed" if workflow["contract_version_id"] else "pending", {"assignmentStatus": assignment_status}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "governance", "completed" if governance_ok else "blocked" if workflow["governance_status"] == "prohibited" else "in_progress", {"status": workflow["governance_status"]}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "consent", "completed" if consent_ok else "blocked" if workflow["consent_status"] == "rejected" else "in_progress", {"status": workflow["consent_status"]}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "ga4_connection", connection_state, {"status": ga4["status"] if ga4 else "not_registered"}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "source_connections", source_state, {"registered": len(source_requests)}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "first_sync", sync_state, {"status": readiness["status"] if readiness else "not_requested"}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "client_access", "completed" if client_count else "in_progress", {"authorizedMembers": client_count}, actor_user_id)
+        self._onboarding_step(connection, workflow_id, workflow["organization_id"], "handoff", "completed" if handoff_ready else "blocked" if blocked else "in_progress", {"ready": handoff_ready, "reportDispatch": "not_requested"}, actor_user_id)
+        connection.execute(
+            "UPDATE app.onboarding_workflows SET status=%s,updated_by=%s::uuid,updated_at=now() WHERE id=%s::uuid",
+            (workflow_status, actor_user_id, workflow_id),
+        )
+        return {"status": workflow_status, "handoffReady": handoff_ready}
+
+    def _onboarding_payload(self, context: TenantContext, workflow_id: str) -> dict:
+        workflow_id = validate_workflow_uuid(workflow_id)
+        with self.tenant_connection(context) as connection:
+            summary = self._onboarding_refresh(connection, workflow_id, context.user_id)
+            row = connection.execute(
+                """SELECT w.id,w.organization_id,w.status,w.idempotency_key,w.company_id,w.website_id,w.contract_version_id,
+                          w.governance_status,w.consent_status,w.governance_reference,w.consent_reference,w.created_at,w.updated_at,
+                          o.name organization_name,c.name company_name,cp.public_id company_public_id,wpublic.public_id website_public_id,
+                          ws.canonical_domain,mc.slug contract_slug,mcv.version contract_version,mcv.approval_status contract_approval_status
+                     FROM app.onboarding_workflows w
+                     JOIN app.organizations o ON o.id=w.organization_id
+                     LEFT JOIN app.companies c ON c.id=w.company_id
+                     LEFT JOIN app.resource_identifiers cp ON cp.resource_type='company' AND cp.resource_id=w.company_id AND cp.organization_id=w.organization_id
+                     LEFT JOIN app.websites ws ON ws.id=w.website_id
+                     LEFT JOIN app.resource_identifiers wpublic ON wpublic.resource_type='website' AND wpublic.resource_id=w.website_id AND wpublic.organization_id=w.organization_id
+                     LEFT JOIN app.measurement_contract_versions mcv ON mcv.id=w.contract_version_id
+                     LEFT JOIN app.measurement_contracts mc ON mc.id=mcv.contract_id
+                    WHERE w.id=%s::uuid""",
+                (workflow_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("onboarding_workflow_not_found")
+            steps = connection.execute(
+                "SELECT step_key,status,detail_json,updated_at FROM app.onboarding_workflow_steps WHERE workflow_id=%s::uuid ORDER BY id",
+                (workflow_id,),
+            ).fetchall()
+            connections = connection.execute(
+                """SELECT connection_kind,mode,status,idempotency_key,external_property_id,external_stream_id,external_account_id,
+                          configuration_json,defer_reason,approval_reference,created_at,updated_at
+                     FROM app.onboarding_connection_requests WHERE workflow_id=%s::uuid ORDER BY connection_kind""",
+                (workflow_id,),
+            ).fetchall()
+            readiness = connection.execute(
+                "SELECT status,assignment_id,request_idempotency_key,detail_json,requested_at,checked_at,updated_at FROM app.onboarding_sync_readiness WHERE workflow_id=%s::uuid",
+                (workflow_id,),
+            ).fetchone()
+            members = connection.execute(
+                """SELECT u.id user_id,u.email,s.role,s.website_id,s.authorization_reference,s.created_at
+                     FROM app.client_membership_scopes s JOIN app.users u ON u.id=s.user_id
+                    WHERE s.workflow_id=%s::uuid ORDER BY u.email""",
+                (workflow_id,),
+            ).fetchall()
+        checklist = [{"key": item["step_key"], "state": item["status"], "complete": item["status"] in {"completed", "deferred"}, "detail": item["detail_json"]} for item in steps]
+        blocking = [item["key"] for item in checklist if item["state"] == "blocked"]
+        return {
+            "workflowId": str(row["id"]), "organization": {"id": str(row["organization_id"]), "name": row["organization_name"]},
+            "status": row["status"], "idempotencyKey": row["idempotency_key"],
+            "company": {"id": row["company_public_id"], "name": row["company_name"]},
+            "website": {"id": row["website_public_id"], "canonicalDomain": row["canonical_domain"]},
+            "contract": {"slug": row["contract_slug"], "version": row["contract_version"], "approvalStatus": row["contract_approval_status"]} if row["contract_version_id"] else None,
+            "governance": {"status": row["governance_status"], "reference": row["governance_reference"]},
+            "consent": {"status": row["consent_status"], "reference": row["consent_reference"]},
+            "connections": [{"kind": item["connection_kind"], "mode": item["mode"], "status": item["status"], "idempotencyKey": item["idempotency_key"], "externalPropertyId": item["external_property_id"], "externalStreamId": item["external_stream_id"], "externalAccountId": item["external_account_id"], "configuration": item["configuration_json"], "deferReason": item["defer_reason"], "approvalReference": item["approval_reference"]} for item in connections],
+            "firstSync": {"status": readiness["status"], "assignmentId": str(readiness["assignment_id"]) if readiness["assignment_id"] else None, "requestIdempotencyKey": readiness["request_idempotency_key"], "detail": readiness["detail_json"]} if readiness else {"status": "not_requested"},
+            "clientMembers": [{"userId": str(item["user_id"]), "email": item["email"], "role": item["role"], "websiteId": row["website_public_id"], "authorizationReference": item["authorization_reference"]} for item in members],
+            "checklist": checklist,
+            "handoff": {"ready": summary["handoffReady"], "status": "ready" if summary["handoffReady"] else "blocked" if blocking else "pending", "blockingGates": blocking, "reportDispatch": {"enabled": False, "state": "not_requested", "realClientReportSent": False}},
+            "createdAt": row["created_at"].isoformat(), "updatedAt": row["updated_at"].isoformat(),
+        }
+
+    def create_onboarding_workflow(self, context: TenantContext, idempotency_key: str, company_id: str,
+                                   company_name: str, website_id: str, canonical_domain: str,
+                                   contract_slug: str = "local_service_v1") -> dict:
+        self._onboarding_admin(context)
+        key = validate_onboarding_idempotency_key(idempotency_key)
+        company_public_id = validate_onboarding_identifier(company_id, key="company_id")
+        website_public_id = validate_onboarding_identifier(website_id, key="website_id")
+        company_name = company_name.strip() if isinstance(company_name, str) else ""
+        if not company_name or len(company_name) > 200:
+            raise ValueError("invalid_company_name")
+        domain = normalize_canonical_domain(canonical_domain)
+        if contract_slug != "local_service_v1":
+            raise ValueError("unsupported_measurement_contract")
+        request_hash = canonical_hash({"companyId": company_public_id, "companyName": company_name, "websiteId": website_public_id, "canonicalDomain": domain, "contractSlug": contract_slug})
+        workflow_id = str(stable_id(f"onboarding:{context.organization_id}:{key}"))
+        replay = False
+        with self.tenant_connection(context) as connection:
+            existing = connection.execute("SELECT id,request_hash FROM app.onboarding_workflows WHERE organization_id=%s::uuid AND idempotency_key=%s FOR UPDATE", (context.organization_id, key)).fetchone()
+            if existing:
+                if existing["request_hash"] != request_hash:
+                    raise ValueError("onboarding_idempotency_conflict")
+                workflow_id = str(existing["id"]); replay = True
+            else:
+                contract = connection.execute(
+                    """SELECT v.id FROM app.measurement_contracts c JOIN app.measurement_contract_versions v ON v.contract_id=c.id
+                        WHERE c.slug=%s AND v.approval_status='approved' ORDER BY v.version DESC LIMIT 1""",
+                    (contract_slug,),
+                ).fetchone()
+                if not contract:
+                    raise ValueError("measurement_contract_not_available")
+                company = connection.execute(
+                    """SELECT c.id,c.name FROM app.resource_identifiers p JOIN app.companies c ON c.id=p.resource_id
+                        WHERE p.organization_id=%s::uuid AND p.resource_type='company' AND p.public_id=%s""",
+                    (context.organization_id, company_public_id),
+                ).fetchone()
+                if company and company["name"].casefold() != company_name.casefold():
+                    raise ValueError("company_identifier_conflict")
+                company_uuid = company["id"] if company else stable_id(f"onboarding:{context.organization_id}:company:{company_public_id}")
+                if not company:
+                    connection.execute("INSERT INTO app.companies(id,organization_id,name) VALUES(%s,%s::uuid,%s)", (company_uuid, context.organization_id, company_name))
+                    connection.execute("INSERT INTO app.resource_identifiers(organization_id,resource_type,resource_id,public_id) VALUES(%s::uuid,'company',%s,%s)", (context.organization_id, company_uuid, company_public_id))
+                website = connection.execute(
+                    """SELECT w.id,w.company_id,w.canonical_domain FROM app.resource_identifiers p JOIN app.websites w ON w.id=p.resource_id
+                        WHERE p.organization_id=%s::uuid AND p.resource_type='website' AND p.public_id=%s""",
+                    (context.organization_id, website_public_id),
+                ).fetchone()
+                if website and (website["company_id"] != company_uuid or website["canonical_domain"] != domain):
+                    raise ValueError("website_identifier_conflict")
+                website_uuid = website["id"] if website else stable_id(f"onboarding:{context.organization_id}:website:{website_public_id}")
+                if not website:
+                    connection.execute("INSERT INTO app.websites(id,company_id,canonical_domain,healthcare_eligibility) VALUES(%s,%s,%s,'requires_review')", (website_uuid, company_uuid, domain))
+                    connection.execute("INSERT INTO app.resource_identifiers(organization_id,resource_type,resource_id,public_id) VALUES(%s::uuid,'website',%s,%s)", (context.organization_id, website_uuid, website_public_id))
+                assignment = connection.execute("SELECT measurement_contract_version_id FROM app.website_measurement_contract_assignments WHERE website_id=%s AND effective_from=current_date", (website_uuid,)).fetchone()
+                if assignment and assignment["measurement_contract_version_id"] != contract["id"]:
+                    raise ValueError("website_contract_assignment_conflict")
+                if not assignment:
+                    connection.execute("INSERT INTO app.website_measurement_contract_assignments(website_id,measurement_contract_version_id,effective_from,approval_status) VALUES(%s,%s,current_date,'pending_approval')", (website_uuid, contract["id"]))
+                connection.execute(
+                    """INSERT INTO app.onboarding_workflows(id,organization_id,idempotency_key,request_hash,company_id,website_id,contract_version_id,created_by,updated_by)
+                       VALUES(%s,%s::uuid,%s,%s,%s,%s,%s,%s::uuid,%s::uuid)""",
+                    (workflow_id, context.organization_id, key, request_hash, company_uuid, website_uuid, contract["id"], context.user_id, context.user_id),
+                )
+                for step in ("organization", "company", "website", "measurement_contract", "governance", "consent", "ga4_connection", "source_connections", "first_sync", "client_access", "handoff"):
+                    self._onboarding_step(connection, workflow_id, context.organization_id, step, "pending", {}, context.user_id)
+                connection.execute("INSERT INTO app.onboarding_sync_readiness(workflow_id,organization_id,website_id) VALUES(%s,%s::uuid,%s)", (workflow_id, context.organization_id, website_uuid))
+                connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'onboarding.workflow_created','onboarding_workflow',%s::uuid,%s)", (context.organization_id, context.user_id, workflow_id, json.dumps({"companyId": company_public_id, "websiteId": website_public_id, "contractSlug": contract_slug})))
+        result = self._onboarding_payload(context, workflow_id)
+        result["idempotentReplay"] = replay
+        return result
+
+    def onboarding_workflow(self, context: TenantContext, workflow_id: str) -> dict:
+        self._onboarding_admin(context)
+        return self._onboarding_payload(context, workflow_id)
+
+    def record_onboarding_governance(self, context: TenantContext, workflow_id: str, governance_status: str,
+                                     consent_status: str, governance_reference: str | None, consent_reference: str | None) -> dict:
+        self._onboarding_admin(context)
+        workflow_id = validate_workflow_uuid(workflow_id)
+        if governance_status not in {"pending_review", "requires_review", "approved", "prohibited"}:
+            raise ValueError("invalid_governance_status")
+        if consent_status not in {"pending_client_consent", "approved", "rejected"}:
+            raise ValueError("invalid_consent_status")
+        governance_reference = self._onboarding_reference(governance_reference, "governance_reference_required") if governance_status != "pending_review" else None
+        consent_reference = self._onboarding_reference(consent_reference, "consent_reference_required") if consent_status != "pending_client_consent" else None
+        with self.tenant_connection(context) as connection:
+            workflow = connection.execute("SELECT organization_id,website_id FROM app.onboarding_workflows WHERE id=%s::uuid FOR UPDATE", (workflow_id,)).fetchone()
+            if not workflow:
+                raise ValueError("onboarding_workflow_not_found")
+            eligibility = "approved" if governance_status == "approved" else "prohibited" if governance_status == "prohibited" else "requires_review"
+            connection.execute("UPDATE app.websites SET healthcare_eligibility=%s WHERE id=%s", (eligibility, workflow["website_id"]))
+            connection.execute("UPDATE app.onboarding_workflows SET governance_status=%s,consent_status=%s,governance_reference=%s,consent_reference=%s,updated_by=%s::uuid,updated_at=now() WHERE id=%s::uuid", (governance_status, consent_status, governance_reference, consent_reference, context.user_id, workflow_id))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'onboarding.governance_recorded','onboarding_workflow',%s::uuid,%s)", (context.organization_id, context.user_id, workflow_id, json.dumps({"governanceStatus": governance_status, "consentStatus": consent_status, "governanceReference": governance_reference, "consentReference": consent_reference})))
+        return self._onboarding_payload(context, workflow_id)
+
+    def register_onboarding_connection(self, context: TenantContext, workflow_id: str, connection_kind: str, mode: str,
+                                       idempotency_key: str, credential_type: str | None, credential_reference: str | None,
+                                       external_property_id: str | None, external_stream_id: str | None,
+                                       external_account_id: str | None, configuration: dict, defer_reason: str | None) -> dict:
+        self._onboarding_admin(context)
+        workflow_id = validate_workflow_uuid(workflow_id)
+        key = validate_onboarding_idempotency_key(idempotency_key)
+        if connection_kind not in ONBOARDING_CONNECTION_KINDS or mode not in {"registered", "deferred"}:
+            raise ValueError("invalid_onboarding_connection")
+        configuration = configuration if isinstance(configuration, dict) else {}
+        if mode == "deferred":
+            if not isinstance(defer_reason, str) or not defer_reason.strip() or len(defer_reason.strip()) > 500:
+                raise ValueError("defer_reason_required")
+            if any(value is not None for value in (credential_type, credential_reference, external_property_id, external_stream_id, external_account_id)) or configuration:
+                raise ValueError("deferred_connection_must_not_include_credentials")
+        elif connection_kind == "ga4":
+            if credential_type not in {"service_account", "oauth"} or not isinstance(credential_reference, str):
+                raise ValueError("ga4_connection_reference_required")
+            if credential_type == "service_account" and credential_reference != "application_default_credentials" and not PINNED_SECRET_REFERENCE.fullmatch(credential_reference):
+                raise ValueError("version_pinned_secret_reference_required")
+            if credential_type == "oauth" and not GA4_OAUTH_REFERENCE.fullmatch(credential_reference):
+                raise ValueError("oauth_connection_reference_required")
+            if (external_property_id is None) != (external_stream_id is None) or (external_property_id and not str(external_property_id).isdigit()) or (external_stream_id and not str(external_stream_id).isdigit()):
+                raise ValueError("invalid_google_resource_identifier")
+        else:
+            if not isinstance(credential_reference, str) or not PINNED_SECRET_REFERENCE.fullmatch(credential_reference):
+                raise ValueError("version_pinned_secret_reference_required")
+            allowed = {"google_ads": {"loginCustomerId", "timezone", "lookbackDays", "finalizationLagDays"}, "search_console": {"siteUrl", "privacyApprovedQueries", "timezone", "lookbackDays", "finalizationLagDays"}, "call_tracking": {"provider", "identityPolicyReference"}, "crm_booking": {"provider", "identityPolicyReference"}}[connection_kind]
+            if set(configuration) - allowed:
+                raise ValueError("unapproved_source_configuration")
+            if connection_kind == "google_ads" and not external_account_id:
+                raise ValueError("google_ads_customer_id_required")
+            if connection_kind == "search_console":
+                site_url = configuration.get("siteUrl")
+                if not isinstance(site_url, str) or not site_url.startswith("https://"):
+                    raise ValueError("search_console_site_required")
+                parsed = urlsplit(site_url)
+                normalize_canonical_domain(parsed.hostname or "")
+                if parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+                    raise ValueError("invalid_search_console_site")
+            if connection_kind in {"call_tracking", "crm_booking"} and not isinstance(configuration.get("identityPolicyReference"), str):
+                raise ValueError("identity_policy_reference_required")
+            if "timezone" in configuration:
+                try: ZoneInfo(configuration["timezone"])
+                except (TypeError, ZoneInfoNotFoundError): raise ValueError("invalid_source_timezone")
+            for field, minimum, maximum in (("lookbackDays", 1, 90), ("finalizationLagDays", 1, 14)):
+                if field in configuration and (isinstance(configuration[field], bool) or not isinstance(configuration[field], int) or not minimum <= configuration[field] <= maximum):
+                    raise ValueError(f"invalid_{field}")
+        request_hash = canonical_hash({"kind": connection_kind, "mode": mode, "idempotencyKey": key, "credentialType": credential_type, "credentialReference": credential_reference, "externalPropertyId": external_property_id, "externalStreamId": external_stream_id, "externalAccountId": external_account_id, "configuration": configuration, "deferReason": defer_reason})
+        with self.tenant_connection(context) as probe:
+            existing_probe = probe.execute("SELECT request_hash FROM app.onboarding_connection_requests WHERE workflow_id=%s::uuid AND connection_kind=%s", (workflow_id, connection_kind)).fetchone()
+        if existing_probe:
+            if existing_probe["request_hash"] != request_hash:
+                raise ValueError("onboarding_connection_idempotency_conflict")
+            result = self._onboarding_payload(context, workflow_id)
+            result["idempotentReplay"] = True
+            return result
+        with self.tenant_connection(context) as connection:
+            workflow = connection.execute("SELECT organization_id,website_id,contract_version_id FROM app.onboarding_workflows WHERE id=%s::uuid FOR UPDATE", (workflow_id,)).fetchone()
+            if not workflow:
+                raise ValueError("onboarding_workflow_not_found")
+            existing = connection.execute("SELECT id,request_hash,idempotency_key FROM app.onboarding_connection_requests WHERE workflow_id=%s::uuid AND connection_kind=%s FOR UPDATE", (workflow_id, connection_kind)).fetchone()
+            if existing and existing["request_hash"] == request_hash:
+                raise ValueError("onboarding_connection_idempotency_conflict")
+            if existing and existing["idempotency_key"] == key:
+                raise ValueError("onboarding_connection_idempotency_conflict")
+            analytics_connection_id = None; source_connection_id = None; status = "deferred" if mode == "deferred" else "pending_approval"
+            if mode == "registered" and connection_kind == "ga4":
+                analytics_connection_id = stable_id(f"onboarding:{workflow_id}:ga4")
+                connection.execute("""INSERT INTO app.analytics_connections(id,organization_id,credential_type,credential_reference,status,disabled_at)
+                    VALUES(%s,%s::uuid,%s,%s,'pending_approval',NULL)
+                    ON CONFLICT(id) DO UPDATE SET credential_type=excluded.credential_type,credential_reference=excluded.credential_reference,status='pending_approval',disabled_at=NULL""", (analytics_connection_id, context.organization_id, credential_type, credential_reference))
+                if external_property_id:
+                    property_id = stable_id(f"onboarding:{workflow_id}:property:{external_property_id}")
+                    stream_id = stable_id(f"onboarding:{workflow_id}:stream:{external_stream_id}")
+                    connection.execute("""INSERT INTO app.ga_properties(id,analytics_connection_id,external_property_id,display_name)
+                        VALUES(%s,%s,%s,%s) ON CONFLICT(analytics_connection_id,external_property_id) DO UPDATE SET display_name=excluded.display_name""", (property_id, analytics_connection_id, external_property_id, external_property_id))
+                    connection.execute("""INSERT INTO app.ga_data_streams(id,ga_property_id,external_stream_id,display_name,stream_type)
+                        VALUES(%s,%s,%s,%s,'WEB_DATA_STREAM') ON CONFLICT(ga_property_id,external_stream_id) DO UPDATE SET display_name=excluded.display_name""", (stream_id, property_id, external_stream_id, external_stream_id))
+                    existing_assignment = connection.execute("SELECT id,ga_property_id,ga_stream_id FROM app.website_analytics_assignments WHERE website_id=%s AND effective_from=current_date", (workflow["website_id"],)).fetchone()
+                    if existing_assignment and (existing_assignment["ga_property_id"] != property_id or existing_assignment["ga_stream_id"] != stream_id):
+                        raise ValueError("website_analytics_assignment_conflict")
+                    if not existing_assignment:
+                        connection.execute("""INSERT INTO app.website_analytics_assignments(website_id,analytics_connection_id,ga_property_id,ga_stream_id,reporting_scope,effective_from,status)
+                            VALUES(%s,%s,%s,%s,%s,current_date,'pending_approval')""", (workflow["website_id"], analytics_connection_id, property_id, stream_id, json.dumps({"propertyId": external_property_id, "streamId": external_stream_id})))
+            elif mode == "registered":
+                source_connection_id = connection.execute("""INSERT INTO app.source_connections(organization_id,website_id,source_type,credential_secret_reference,external_account_id,configuration_json,approval_status,disabled_at)
+                    VALUES(%s::uuid,%s,%s,%s,%s,%s,'pending_approval',NULL)
+                    ON CONFLICT(website_id,source_type) DO UPDATE SET credential_secret_reference=excluded.credential_secret_reference,external_account_id=excluded.external_account_id,configuration_json=excluded.configuration_json,approval_status='pending_approval',last_validated_at=NULL,disabled_at=NULL
+                    RETURNING id""", (context.organization_id, workflow["website_id"], connection_kind, credential_reference, external_account_id, json.dumps(configuration))).fetchone()["id"]
+            if existing:
+                connection.execute("""UPDATE app.onboarding_connection_requests SET mode=%s,status=%s,idempotency_key=%s,request_hash=%s,analytics_connection_id=%s,source_connection_id=%s,
+                    external_property_id=%s,external_stream_id=%s,external_account_id=%s,configuration_json=%s,defer_reason=%s,updated_by=%s::uuid,updated_at=now()
+                    WHERE id=%s""", (mode, status, key, request_hash, analytics_connection_id, source_connection_id, external_property_id, external_stream_id, external_account_id, json.dumps(configuration), defer_reason.strip() if isinstance(defer_reason, str) else None, context.user_id, existing["id"]))
+            else:
+                connection.execute("""INSERT INTO app.onboarding_connection_requests(workflow_id,organization_id,connection_kind,mode,status,idempotency_key,request_hash,analytics_connection_id,source_connection_id,external_property_id,external_stream_id,external_account_id,configuration_json,defer_reason,created_by,updated_by)
+                    VALUES(%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::uuid,%s::uuid)""", (workflow_id, context.organization_id, connection_kind, mode, status, key, request_hash, analytics_connection_id, source_connection_id, external_property_id, external_stream_id, external_account_id, json.dumps(configuration), defer_reason.strip() if isinstance(defer_reason, str) else None, context.user_id, context.user_id))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'onboarding.connection_recorded','onboarding_workflow',%s::uuid,%s)", (context.organization_id, context.user_id, workflow_id, json.dumps({"connectionKind": connection_kind, "mode": mode, "status": status})))
+        return self._onboarding_payload(context, workflow_id)
+
+    def onboarding_first_sync(self, context: TenantContext, workflow_id: str, action: str, idempotency_key: str | None = None) -> dict:
+        self._onboarding_admin(context)
+        workflow_id = validate_workflow_uuid(workflow_id)
+        if action not in {"request", "check"}:
+            raise ValueError("invalid_first_sync_action")
+        if action == "request":
+            key = validate_onboarding_idempotency_key(idempotency_key or "")
+        else:
+            key = None
+        with self.tenant_connection(context) as connection:
+            workflow = connection.execute("SELECT website_id FROM app.onboarding_workflows WHERE id=%s::uuid FOR UPDATE", (workflow_id,)).fetchone()
+            if not workflow:
+                raise ValueError("onboarding_workflow_not_found")
+            ga4 = connection.execute("SELECT mode,status FROM app.onboarding_connection_requests WHERE workflow_id=%s::uuid AND connection_kind='ga4'", (workflow_id,)).fetchone()
+            assignment = connection.execute("""SELECT a.id FROM app.website_analytics_assignments a JOIN app.analytics_connections c ON c.id=a.analytics_connection_id
+                WHERE a.website_id=%s::uuid AND a.status='approved' AND a.effective_to IS NULL AND c.status='approved' AND c.disabled_at IS NULL ORDER BY a.effective_from DESC LIMIT 1""", (workflow["website_id"],)).fetchone()
+            readiness = connection.execute("SELECT status,request_idempotency_key FROM app.onboarding_sync_readiness WHERE workflow_id=%s::uuid FOR UPDATE", (workflow_id,)).fetchone()
+            succeeded = bool(assignment and connection.execute("SELECT EXISTS(SELECT 1 FROM analytics.sync_runs WHERE assignment_id=%s AND status='succeeded') succeeded", (assignment["id"],)).fetchone()["succeeded"])
+            if succeeded:
+                state, detail = "ready", {"reason": "successful_sync_observed"}
+            elif not ga4:
+                state, detail = "blocked", {"code": "ga4_connection_required"}
+            elif ga4["mode"] == "deferred":
+                state, detail = "blocked", {"code": "ga4_connection_deferred"}
+            elif not assignment:
+                state, detail = "blocked", {"code": "ga4_assignment_approval_required"}
+            elif action == "request":
+                state, detail = "requested", {"code": "first_sync_requested", "externalExecutionRequired": True, "reportDispatch": "not_requested"}
+            else:
+                state, detail = readiness["status"] if readiness else "not_requested", {"code": "awaiting_first_sync"}
+            if action == "request" and readiness and readiness["request_idempotency_key"] == key and readiness["status"] == "requested":
+                replay = True
+            else:
+                replay = False
+                connection.execute("""INSERT INTO app.onboarding_sync_readiness(workflow_id,organization_id,website_id,assignment_id,status,request_idempotency_key,detail_json,requested_by,requested_at,checked_at,updated_at)
+                    VALUES(%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s::uuid,CASE WHEN %s IS NULL THEN NULL ELSE now() END,now(),now())
+                    ON CONFLICT(workflow_id) DO UPDATE SET assignment_id=excluded.assignment_id,status=excluded.status,request_idempotency_key=excluded.request_idempotency_key,detail_json=excluded.detail_json,requested_by=excluded.requested_by,requested_at=excluded.requested_at,checked_at=now(),updated_at=now()""", (workflow_id, context.organization_id, workflow["website_id"], assignment["id"] if assignment else None, state, key, json.dumps(detail), context.user_id if action == "request" else None, key))
+                if action == "request":
+                    connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'onboarding.first_sync_requested','onboarding_workflow',%s::uuid,%s)", (context.organization_id, context.user_id, workflow_id, json.dumps(detail)))
+        payload = self._onboarding_payload(context, workflow_id)
+        payload["firstSync"]["idempotentReplay"] = replay
+        return payload
+
+    def add_onboarding_client_membership(self, context: TenantContext, workflow_id: str, email: str, role: str, authorization_reference: str) -> dict:
+        self._onboarding_admin(context)
+        workflow_id = validate_workflow_uuid(workflow_id)
+        email = email.strip().lower() if isinstance(email, str) else ""
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) or len(email) > 254:
+            raise ValueError("invalid_client_member_email")
+        if role not in CLIENT_MEMBERSHIP_ROLES:
+            raise ValueError("invalid_client_membership_role")
+        authorization_reference = self._onboarding_reference(authorization_reference, "authorization_reference_required")
+        with self.tenant_connection(context) as connection:
+            workflow = connection.execute("SELECT organization_id,website_id FROM app.onboarding_workflows WHERE id=%s::uuid FOR UPDATE", (workflow_id,)).fetchone()
+            if not workflow:
+                raise ValueError("onboarding_workflow_not_found")
+            user = connection.execute("INSERT INTO app.users(email) VALUES(%s) ON CONFLICT(email) DO UPDATE SET email=excluded.email RETURNING id,email", (email,)).fetchone()
+            existing = connection.execute("SELECT role FROM app.memberships WHERE organization_id=%s::uuid AND user_id=%s", (context.organization_id, user["id"])).fetchone()
+            if existing and existing["role"] in {"agency_owner", "agency_admin", "agency_analyst"}:
+                raise ValueError("cannot_reclassify_agency_member")
+            connection.execute("INSERT INTO app.memberships(organization_id,user_id,role) VALUES(%s::uuid,%s,%s) ON CONFLICT(organization_id,user_id) DO UPDATE SET role=excluded.role", (context.organization_id, user["id"], role))
+            connection.execute("""INSERT INTO app.client_membership_scopes(organization_id,workflow_id,user_id,website_id,role,authorization_reference,created_by)
+                VALUES(%s::uuid,%s::uuid,%s,%s,%s,%s,%s::uuid)
+                ON CONFLICT(organization_id,user_id,website_id) DO UPDATE SET workflow_id=excluded.workflow_id,role=excluded.role,authorization_reference=excluded.authorization_reference,created_by=excluded.created_by""", (context.organization_id, workflow_id, user["id"], workflow["website_id"], role, authorization_reference, context.user_id))
+            connection.execute("INSERT INTO audit.events(organization_id,actor_user_id,action,target_type,target_id,detail_json) VALUES(%s::uuid,%s::uuid,'onboarding.client_membership_authorized','user',%s,%s)", (context.organization_id, context.user_id, user["id"], json.dumps({"workflowId": workflow_id, "websiteId": str(workflow["website_id"]), "role": role, "authorizationReference": authorization_reference})))
+        payload = self._onboarding_payload(context, workflow_id)
+        payload["membership"] = next(item for item in payload["clientMembers"] if item["email"] == email)
+        return payload
+
+    def onboarding_checklist(self, context: TenantContext, workflow_id: str) -> dict:
+        self._onboarding_admin(context)
+        payload = self._onboarding_payload(context, workflow_id)
+        return {"workflowId": payload["workflowId"], "status": payload["status"], "checklist": payload["checklist"], "handoff": payload["handoff"], "externalGates": {"credentials": "explicit_reference_or_deferred", "approvals": "caller_supplied_only", "reportDispatch": "not_requested"}}
 
     def list_memberships(self, context: TenantContext) -> list[dict]:
         context.require_role(frozenset({"agency_owner","agency_admin","agency_analyst"}))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from threading import Lock
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,11 @@ from .config import Site
 
 PERIODS = {"7d", "28d", "90d", "this_month", "last_month"}
 EVENT_FIELDS = (("generated_leads", "generate_lead"), ("appointment_requests", "appointment_request"), ("form_intent", "form_start"), ("technical_submissions", "form_submit"), ("phone_intent", "phone_click"), ("email_intent", "email_click"), ("cta_engagement", "cta_click"))
+ACCESS_PROBE_TIMEOUT_SECONDS = 5.0
+ACCESS_VERIFICATION_TTL_SECONDS = 300
+ACCESS_ERROR_RETRY_SECONDS = 60
+
+
 def period_dates(period, today=None):
     if period not in PERIODS: raise ValueError("unsupported_period")
     end = (today or date.today()) - timedelta(days=1)
@@ -51,9 +57,194 @@ def _message(value):
     except Exception: return {}
 
 
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _timestamp(value):
+    if value is None: return None
+    if value.tzinfo is None: value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalise_clock(value):
+    if value.tzinfo is None: return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _access_error_code(error):
+    """Return a bounded provider-independent code without exposing upstream text."""
+    name = type(error).__name__.lower()
+    detail = str(error).lower()
+    if any(token in name or token in detail for token in ("permissiondenied", "permission_denied", "forbidden", "access denied")):
+        return "access_denied"
+    if any(token in name or token in detail for token in ("unauthenticated", "invalid_grant", "authentication")):
+        return "authentication_failed"
+    if any(token in name or token in detail for token in ("resourceexhausted", "quota", "rate limit", "ratelimit")):
+        return "quota_exceeded"
+    if any(token in name or token in detail for token in ("deadline", "timeout", "temporarily", "unavailable")):
+        return "provider_unavailable"
+    return "verification_failed"
+
+
+def assignment_health(site: Site, runtime_property_id: str = "", runtime_stream_id: str = "") -> dict:
+    """Describe configured assignment separately from any live access evidence."""
+    property_id = str(getattr(site, "property_id", "") or "")
+    stream_id = str(getattr(site, "stream_id", "") or "")
+    measurement_id = str(getattr(site, "measurement_id", "") or "")
+    configured = bool(property_id and stream_id and measurement_id)
+    runtime_mismatch = bool(
+        configured and ((runtime_property_id and str(runtime_property_id) != property_id)
+                        or (runtime_stream_id and str(runtime_stream_id) != stream_id))
+    )
+    state = "mismatch" if runtime_mismatch else ("configured" if configured else "unconfigured")
+    return {
+        "state": state,
+        "property": f"properties/{property_id}" if property_id else None,
+        "stream": f"properties/{property_id}/dataStreams/{stream_id}" if property_id and stream_id else None,
+        "measurementId": measurement_id or None,
+        "detail": "runtime assignment does not match the configured site assignment" if runtime_mismatch else (
+            "property, web stream, and Measurement ID are configured" if configured else
+            "property, web stream, and Measurement ID are required"
+        ),
+    }
+
+
+def unverified_access_health(reason: str = "access_has_not_been_verified") -> dict:
+    return {
+        "state": "unverified",
+        "checkedAt": None,
+        "lastVerifiedAt": None,
+        "expiresAt": None,
+        "errorCode": None,
+        "reason": reason,
+        "probe": None,
+        "cache": {"hit": False, "ttlSeconds": ACCESS_VERIFICATION_TTL_SECONDS, "ageSeconds": None},
+    }
+
+
+def access_error_health(error, checked_at=None) -> dict:
+    checked_at = _normalise_clock(checked_at or _utc_now())
+    return {
+        "state": "error",
+        "checkedAt": _timestamp(checked_at),
+        "lastVerifiedAt": None,
+        "expiresAt": None,
+        "errorCode": _access_error_code(error),
+        "reason": "bounded_ga4_access_probe_failed",
+        "probe": None,
+        "cache": {"hit": False, "ttlSeconds": ACCESS_VERIFICATION_TTL_SECONDS, "ageSeconds": 0},
+    }
+
+
+class GA4AccessVerifier:
+    """Cache bounded access evidence so health reads do not become GA4 traffic."""
+
+    def __init__(self, reporter, ttl_seconds: int = ACCESS_VERIFICATION_TTL_SECONDS,
+                 error_retry_seconds: int = ACCESS_ERROR_RETRY_SECONDS, clock=None):
+        self.reporter = reporter
+        self.ttl_seconds = max(1, int(ttl_seconds))
+        self.error_retry_seconds = max(1, int(error_retry_seconds))
+        self.clock = clock or _utc_now
+        self._cached = None
+        self._last_attempt_at = None
+        self._last_verified_at = None
+        self._lock = Lock()
+
+    def _now(self):
+        return _normalise_clock(self.clock())
+
+    def _cached_result(self, now, hit=True, state=None):
+        result = dict(self._cached)
+        if state: result["state"] = state
+        age_source = self._last_verified_at or self._last_attempt_at
+        age = max(0, int((now - age_source).total_seconds())) if age_source else None
+        result["cache"] = {"hit": hit, "ttlSeconds": self.ttl_seconds, "ageSeconds": age}
+        return result
+
+    def _unverified(self, reason, now, hit=False):
+        result = unverified_access_health(reason)
+        result["cache"] = {"hit": hit, "ttlSeconds": self.ttl_seconds, "ageSeconds": None}
+        return result
+
+    def check(self, refresh: bool = True) -> dict:
+        with self._lock:
+            now = self._now()
+            if self._cached:
+                if self._cached["state"] == "verified":
+                    age = (now - self._last_verified_at).total_seconds()
+                    if age <= self.ttl_seconds:
+                        return self._cached_result(now)
+                    if not refresh:
+                        result = self._cached_result(now, state="stale")
+                        result["reason"] = "ga4_access_verification_stale"
+                        return result
+                elif self._cached["state"] == "error":
+                    attempt_age = (now - self._last_attempt_at).total_seconds() if self._last_attempt_at else self.error_retry_seconds
+                    if not refresh or attempt_age < self.error_retry_seconds:
+                        return self._cached_result(now)
+                elif not refresh:
+                    return self._cached_result(now)
+
+            if not refresh:
+                return self._unverified("access_has_not_been_verified", now)
+
+            probe = getattr(self.reporter, "verify_access", None)
+            if not callable(probe):
+                self._cached = self._unverified("bounded_access_verification_unavailable", now)
+                self._last_attempt_at = now
+                return self._cached_result(now, hit=False)
+
+            self._last_attempt_at = now
+            try:
+                evidence = probe(timeout=ACCESS_PROBE_TIMEOUT_SECONDS)
+            except Exception as error:
+                result = access_error_health(error, now)
+                result["lastVerifiedAt"] = _timestamp(self._last_verified_at)
+                self._cached = result
+                return self._cached_result(now, hit=False)
+
+            verified_at = now
+            result = {
+                "state": "verified",
+                "checkedAt": _timestamp(now),
+                "lastVerifiedAt": _timestamp(verified_at),
+                "expiresAt": _timestamp(now + timedelta(seconds=self.ttl_seconds)),
+                "errorCode": None,
+                "reason": "bounded_ga4_access_probe_succeeded",
+                "probe": evidence if isinstance(evidence, dict) else {"result": "succeeded"},
+                "cache": {"hit": False, "ttlSeconds": self.ttl_seconds, "ageSeconds": 0},
+            }
+            self._last_verified_at = verified_at
+            self._cached = result
+            return result
+
+    def status(self, refresh: bool = True) -> dict:
+        return self.check(refresh=refresh)
+
+
 class GA4Reporter:
     def __init__(self, site: Site, client=None): self.site, self.client = site, client or BetaAnalyticsDataClient()
     def today(self): return datetime.now(ZoneInfo(self.site.property_timezone or self.site.business_timezone)).date()
+    def verify_access(self, timeout: float = ACCESS_PROBE_TIMEOUT_SECONDS):
+        """Make one small, read-only Data API request proving assigned-property access."""
+        if not self.site.property_id: raise RuntimeError("ga4_property_not_configured")
+        probe_date = (self.today() - timedelta(days=1)).isoformat()
+        request = RunReportRequest(
+            property=f"properties/{self.site.property_id}",
+            date_ranges=[DateRange(start_date=probe_date, end_date=probe_date)],
+            metrics=[Metric(name="activeUsers")],
+            limit=1,
+            return_property_quota=True,
+        )
+        response = self.client.run_report(request=request, retry=None, timeout=timeout)
+        return {
+            "property": request.property,
+            "dateRange": {"start": probe_date, "end": probe_date},
+            "metric": "activeUsers",
+            "rowCount": int(getattr(response, "row_count", 0) or 0),
+        }
+
     def report_range(self, start, end, dimensions, metrics):
         request = RunReportRequest(property=f"properties/{self.site.property_id}", date_ranges=[DateRange(start_date=start, end_date=end)], dimensions=[Dimension(name=x) for x in dimensions], metrics=[Metric(name=x) for x in metrics], return_property_quota=True)
         response = self.client.run_report(request=request)

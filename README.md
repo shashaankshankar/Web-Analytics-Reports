@@ -1,6 +1,6 @@
 # Measurement and Reporting Platform
 
-Production FastAPI service for privacy-aware, stored GA4 reporting. House of Dental is the first website. The service is deployed privately on Cloud Run, uses read-only Application Default Credentials, synchronizes fixed reporting windows through Cloud Scheduler and Cloud Tasks, and stores versioned facts and report provenance in Cloud SQL Postgres.
+Production FastAPI service for privacy-aware, stored GA4 reporting across configurable client sites. A site configuration is selected at runtime through `MEASUREMENT_SITE_CONFIG`; the generic reporting contract contains no client identifiers. The service is deployed privately on Cloud Run, uses read-only Application Default Credentials, synchronizes fixed reporting windows through Cloud Scheduler and Cloud Tasks, and stores versioned facts and report provenance in Cloud SQL Postgres.
 
 ## Production
 
@@ -31,6 +31,8 @@ python3 -m venv .venv
 .venv/bin/python -m uvicorn app.main:app --reload
 ```
 
+Set `MEASUREMENT_SITE_CONFIG` to the reviewed JSON site configuration before starting the service. Relative paths resolve from the repository root. For a local checkout that intentionally contains one site config, omitting both `MEASUREMENT_SITE_CONFIG` and `MEASUREMENT_DEFAULT_SITE_CONFIG` uses that single file as a backwards-compatible example fallback. Once multiple site configs exist, an explicit selection is required. `MEASUREMENT_DEFAULT_SITE_CONFIG` is an optional, clearly named local/example fallback and must not be relied on for production selection.
+
 The reporting APIs read stored snapshots, not live GA4 requests. Sync workers are the only path that queries GA4. Failed or incomplete queries do not become zeros; a successful complete query with no matching rows is represented as `empty_complete`.
 
 ## Production operations
@@ -38,21 +40,25 @@ The reporting APIs read stored snapshots, not live GA4 requests. Sync workers ar
 - `/health` is process liveness only. Cloud Run uses it for startup and liveness probes.
 - `/healthz` is the private service's internal database-aware readiness probe; `/ready` exposes the same readiness state to authenticated operators.
 - `/oauth/google/ready` is the callback service's generic database-aware readiness endpoint and does not expose database details.
-- `/dashboard` is the single-client dashboard.
+- `/dashboard` is the selected-site client dashboard.
 - `/agency` is the role-restricted portfolio and annotation console.
-- `/api/websites/website_house_of_dental/goals` lists approved goal metrics and manages effective-dated targets for authorized writers.
-- `/api/websites/website_house_of_dental/reports/pdf?period=28d` downloads a tenant-scoped report generated from the stored dashboard snapshots.
-- `/api/websites/website_house_of_dental/recurring-reports` manages secret-referenced schedules and exposes whether email delivery is configured.
+- `/api/websites/{website_id}/goals` lists approved goal metrics and manages effective-dated targets for authorized writers.
+- `/api/websites/{website_id}/reports/pdf?period=28d` downloads a tenant-scoped report generated from the stored dashboard snapshots.
+- `/api/websites/{website_id}/recurring-reports` manages secret-referenced schedules and exposes whether email delivery is configured.
 - `/api/oauth/google/status` exposes the fail-closed Google Analytics OAuth production gate.
-- `/api/websites/website_house_of_dental/offboarding-preview` shows retention and deletion scope without mutating data.
-- `/api/websites/website_house_of_dental/external-sources` reports Google Ads, Search Console, call-tracking, and CRM connection state.
-- `/api/websites/website_house_of_dental/external-sources/{source}/approve` validates version-pinned credentials and records an explicit approval reference before activation.
-- `/api/websites/website_house_of_dental/external-sources/{call_tracking|crm_booking}/outcomes` accepts idempotent, privacy-validated first-party outcome batches.
-- `/api/websites/website_house_of_dental/paid-performance` and `/search-performance` expose approved stored source data with explicit unavailable/partial states.
-- `/api/websites/website_house_of_dental/business-outcomes` returns only approved first-party outcomes and explicitly null unavailable KPIs.
+- `/api/websites/{website_id}/offboarding-preview` shows retention and deletion scope without mutating data.
+- `/api/websites/{website_id}/external-sources` reports Google Ads, Search Console, call-tracking, and CRM connection state.
+- `/api/websites/{website_id}/external-sources/{source}/approve` validates version-pinned credentials and records an explicit approval reference before activation.
+- `/api/websites/{website_id}/external-sources/{call_tracking|crm_booking}/outcomes` accepts idempotent, privacy-validated first-party outcome batches.
+- `/api/websites/{website_id}/paid-performance` and `/search-performance` expose approved stored source data with explicit unavailable/partial states.
+- `/api/websites/{website_id}/business-outcomes` returns only approved first-party outcomes and explicitly null unavailable KPIs.
 - `/api/memberships` is the audited agency access-management surface; Cloud Run Invoker IAM remains a separate required access gate.
-- `/api/websites/website_house_of_dental/sync-status` exposes freshness, failures, and quality.
-- `/api/websites/website_house_of_dental/measurement-health` keeps collection, persistence, assignment, and governance separate.
+- `/api/websites/{website_id}/sync-status` exposes freshness, failures, and quality.
+- `/api/websites/{website_id}/measurement-health` keeps collection, persistence, assignment, and governance separate.
 - Internal GA4 and external-source scheduler/worker routes require Cloud Run IAM and a rotated Secret Manager trigger.
 
 Database migrations are in `infra/postgres/`. Reapplying them is safe. Do not place database, trigger, Google, or API credentials in the repository.
+
+## First-client example
+
+The repository includes `measurement/sites/house-of-dental.json` as the first configured client-site example. It supplies the site-specific company, domain, deployment, GA4 assignment, and governance values consumed by the generic runtime. Point `MEASUREMENT_SITE_CONFIG` at that file for the first-client local or deployment configuration; do not copy its identifiers into the generic contract, application code, or environment template.
