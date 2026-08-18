@@ -64,9 +64,9 @@ def test_migration_runner_applies_current_schema_in_strict_order():
     connection = _MigrationConnection(applied=MIGRATION_ORDER[:-1])
     result = _MigrationDatabase(connection).migrate()
 
-    assert result == {"status": "ok", "migration": "011_fact_provenance"}
+    assert result == {"status": "ok", "migration": MIGRATION_ORDER[-1]}
     executed_sql = [statement for statement in connection.statements if statement.lstrip().startswith("--")]
-    assert executed_sql == [(Path(__file__).resolve().parents[1] / "infra/postgres/011_fact_provenance.sql").read_text()]
+    assert executed_sql == [(Path(__file__).resolve().parents[1] / "infra/postgres" / f"{MIGRATION_ORDER[-1]}.sql").read_text()]
 
 
 def test_migration_runner_fails_closed_for_an_existing_schema_without_a_ledger():
@@ -81,10 +81,17 @@ def test_migration_runner_rejects_out_of_order_ledger_entries():
 
 def test_current_migrations_are_additive_and_bound_waits():
     root=Path(__file__).resolve().parents[1]/"infra"/"postgres"
-    for version in ("010_onboarding_workflows", "011_fact_provenance"):
+    for version in ("010_onboarding_workflows", "011_fact_provenance", "012_measurement_id_on_streams"):
         sql=(root/f"{version}.sql").read_text()
         assert "SET LOCAL lock_timeout" in sql
         assert "SET LOCAL statement_timeout" in sql
         assert "DROP TABLE" not in sql.upper()
         assert "TRUNCATE" not in sql.upper()
         assert "DELETE FROM" not in sql.upper()
+
+
+def test_012_measurement_id_column_is_canonical_and_additive():
+    sql=(Path(__file__).resolve().parents[1]/"infra"/"postgres"/"012_measurement_id_on_streams.sql").read_text()
+    assert "ADD COLUMN IF NOT EXISTS measurement_id" in sql
+    assert "VALUES('012_measurement_id_on_streams')" in sql
+    assert "DROP" not in sql.upper()

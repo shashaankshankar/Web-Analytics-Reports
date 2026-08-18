@@ -325,3 +325,13 @@ def test_callback_only_mode_still_leaves_health_and_callback_routes_available(mo
     assert health.status_code == 200
     assert callback.status_code == 400
     assert portal.status_code == 404
+
+
+def test_react_portal_static_assets_serving():
+    """Verify that the compiled React SPA index.html and assets are served by FastAPI."""
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/portal")
+        assert response.status_code == 200
+        assert "<div id=\"root\"></div>" in response.text or "vite" in response.text.lower() or "html" in response.text.lower()
+        assert response.headers.get("content-type", "").startswith("text/html")

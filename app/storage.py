@@ -60,6 +60,7 @@ MIGRATION_ORDER = (
     "009_oauth_assignment_management",
     "010_onboarding_workflows",
     "011_fact_provenance",
+    "012_measurement_id_on_streams",
 )
 
 
@@ -258,7 +259,7 @@ class Database:
             connection.execute("INSERT INTO app.resource_identifiers(organization_id,resource_type,resource_id,public_id) VALUES(%s,'company',%s,%s),(%s,'website',%s,%s) ON CONFLICT(organization_id,resource_type,public_id) DO UPDATE SET resource_id=excluded.resource_id", (ids["organization"],ids["company"],site.company_id,ids["organization"],ids["website"],site.site_id))
             connection.execute("INSERT INTO app.analytics_connections(id,organization_id,credential_type,credential_reference,status) VALUES(%s,%s,'service_account','application_default_credentials','approved') ON CONFLICT(id) DO UPDATE SET status='approved'", (ids["connection"], ids["organization"]))
             connection.execute("INSERT INTO app.ga_properties(id,analytics_connection_id,external_property_id,display_name,timezone) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET timezone=excluded.timezone", (ids["property"], ids["connection"], site.property_id, site.company, site.property_timezone))
-            connection.execute("INSERT INTO app.ga_data_streams(id,ga_property_id,external_stream_id,display_name,stream_type) VALUES(%s,%s,%s,%s,'WEB_DATA_STREAM') ON CONFLICT(id) DO NOTHING", (ids["stream"], ids["property"], site.stream_id, site.canonical_domain))
+            connection.execute("INSERT INTO app.ga_data_streams(id,ga_property_id,external_stream_id,display_name,stream_type,measurement_id) VALUES(%s,%s,%s,%s,'WEB_DATA_STREAM',%s) ON CONFLICT(id) DO UPDATE SET measurement_id=excluded.measurement_id", (ids["stream"], ids["property"], site.stream_id, site.canonical_domain, site.measurement_id))
             assignment = connection.execute("""
                 INSERT INTO app.website_analytics_assignments(id,website_id,analytics_connection_id,ga_property_id,ga_stream_id,reporting_scope,effective_from,status)
                 VALUES(%s,%s,%s,%s,%s,%s,%s,'approved')
@@ -319,7 +320,7 @@ class Database:
                 SELECT a.id assignment_id,a.reporting_scope,a.analytics_connection_id,c.credential_type,c.status connection_status,
                        w.id website_uuid,p.public_id website_id,w.canonical_domain,w.healthcare_eligibility,
                        company_public.public_id company_id,co.name company,gp.external_property_id property_id,
-                       gs.external_stream_id stream_id,gp.timezone property_timezone
+                       gs.external_stream_id stream_id,gs.measurement_id stream_measurement_id,gp.timezone property_timezone
                   FROM app.website_analytics_assignments a
                   JOIN app.analytics_connections c ON c.id=a.analytics_connection_id
                   JOIN app.websites w ON w.id=a.website_id JOIN app.companies co ON co.id=w.company_id
@@ -330,7 +331,7 @@ class Database:
                  WHERE a.id=%s::uuid AND a.status='approved' AND a.effective_to IS NULL AND c.status='approved' AND c.disabled_at IS NULL
             """,(assignment_id,)).fetchone()
         if not row: raise PermissionError("sync_assignment_not_approved")
-        measurement_id=(row["reporting_scope"] or {}).get("measurementId","")
+        measurement_id=row["stream_measurement_id"] or (row["reporting_scope"] or {}).get("measurementId","")
         return {**row,"assignment_id":str(row["assignment_id"]),"analytics_connection_id":str(row["analytics_connection_id"]),"website_uuid":str(row["website_uuid"]),"measurement_id":measurement_id}
 
     def internal_oauth_credential(self, connection_id: str) -> dict:
@@ -390,6 +391,57 @@ class Database:
                 ) allowed
             """, (website_id,)).fetchone()
         return bool(row["allowed"])
+
+    def website_site_context(self, context: TenantContext, website_id: str) -> dict:
+        """Resolve per-website metadata for tenant-scoped endpoints.
+
+        Governance comes from ``app.onboarding_workflows.governance_status``
+        (five-state). Only when no workflow exists is the legacy three-state
+        ``websites.healthcare_eligibility`` projection used. The GA4 web-stream
+        ``measurement_id`` column is canonical; assignment JSON is a
+        transitional fallback only. Collection/deployment are boot-JSON
+        presentation fields with no persisted runtime source, so they are
+        deliberately omitted here rather than fabricated.
+        """
+        with self.tenant_connection(context) as connection:
+            row = connection.execute("""
+                SELECT cp.public_id company_id, c.name company,
+                       wp.public_id site_id, w.canonical_domain,
+                       COALESCE(latest_workflow.governance_status,
+                                w.healthcare_eligibility) governance_status,
+                       gp.timezone property_timezone,
+                       gp.external_property_id property_id,
+                       gds.external_stream_id stream_id,
+                       gds.measurement_id stream_measurement_id,
+                       a.reporting_scope ->> 'measurementId' assignment_measurement_id
+                  FROM app.websites w
+                  JOIN app.companies c ON c.id = w.company_id
+                  JOIN app.resource_identifiers cp
+                    ON cp.resource_type = 'company' AND cp.resource_id = c.id
+                  JOIN app.resource_identifiers wp
+                    ON wp.resource_type = 'website' AND wp.resource_id = w.id
+                  LEFT JOIN LATERAL (
+                    SELECT ow.governance_status
+                      FROM app.onboarding_workflows ow
+                     WHERE ow.website_id = w.id
+                     ORDER BY ow.updated_at DESC
+                     LIMIT 1
+                  ) latest_workflow ON true
+                  LEFT JOIN app.website_analytics_assignments a
+                    ON a.website_id = w.id
+                   AND a.status = 'approved' AND a.effective_to IS NULL
+                  LEFT JOIN app.ga_properties gp
+                    ON gp.id = a.ga_property_id
+                  LEFT JOIN app.ga_data_streams gds
+                    ON gds.id = a.ga_stream_id
+                 WHERE wp.public_id = %s
+                 ORDER BY a.effective_from DESC LIMIT 1
+            """, (website_id,)).fetchone()
+        if not row:
+            raise PermissionError("website_not_authorized")
+        result = dict(row)
+        result["measurement_id"] = result.get("stream_measurement_id") or result.get("assignment_measurement_id")
+        return result
 
     def latest_snapshot(self, context: TenantContext, website_id: str, view: str, period: str) -> dict | None:
         with self.tenant_connection(context) as connection:
@@ -756,7 +808,7 @@ class Database:
             active=connection.execute("SELECT id,analytics_connection_id FROM app.website_analytics_assignments WHERE website_id=%s AND effective_to IS NULL AND status='approved'",(website["resource_id"],)).fetchone()
             if active: raise PermissionError("website_already_has_approved_assignment")
             connection.execute("INSERT INTO app.ga_properties(id,analytics_connection_id,external_property_id,display_name,timezone,currency_code,metadata_json) VALUES(%s,%s::uuid,%s,%s,%s,%s,'{}') ON CONFLICT(analytics_connection_id,external_property_id) DO UPDATE SET display_name=excluded.display_name,timezone=excluded.timezone,currency_code=excluded.currency_code",(property_uuid,connection_id,property_id,property_name,timezone_name,currency_code))
-            connection.execute("INSERT INTO app.ga_data_streams(id,ga_property_id,external_stream_id,display_name,stream_type) VALUES(%s,%s,%s,%s,'WEB_DATA_STREAM') ON CONFLICT(ga_property_id,external_stream_id) DO UPDATE SET display_name=excluded.display_name",(stream_uuid,property_uuid,stream_id,stream_name))
+            connection.execute("INSERT INTO app.ga_data_streams(id,ga_property_id,external_stream_id,display_name,stream_type,measurement_id) VALUES(%s,%s,%s,%s,'WEB_DATA_STREAM',%s) ON CONFLICT(ga_property_id,external_stream_id) DO UPDATE SET display_name=excluded.display_name,measurement_id=excluded.measurement_id",(stream_uuid,property_uuid,stream_id,stream_name,measurement_id))
             reporting_scope={"propertyId":property_id,"streamId":stream_id,"measurementId":measurement_id,"onePropertyPerWebsite":True}
             connection.execute("INSERT INTO app.website_analytics_assignments(id,website_id,analytics_connection_id,ga_property_id,ga_stream_id,reporting_scope,effective_from,status) VALUES(%s,%s,%s::uuid,%s,%s,%s,current_date,'approved')",(assignment_uuid,website["resource_id"],connection_id,property_uuid,stream_uuid,json.dumps(reporting_scope)))
             connection.execute("UPDATE app.analytics_connections SET status='approved' WHERE id=%s::uuid",(connection_id,))

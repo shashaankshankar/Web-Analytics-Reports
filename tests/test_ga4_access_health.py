@@ -102,6 +102,21 @@ class HealthDatabase:
     def website_authorized(self, context, website_id):
         return context.organization_id == "org-1" and website_id == "website_house_of_dental"
 
+    def website_site_context(self, context, website_id):
+        if website_id != "website_house_of_dental":
+            raise PermissionError("website_not_authorized")
+        return {
+            "company_id": "company_house_of_dental",
+            "company": "The House of Dental",
+            "site_id": "website_house_of_dental",
+            "canonical_domain": "https://thehouseofdentalwp.com",
+            "governance_status": "approved",
+            "property_timezone": "America/New_York",
+            "property_id": "549721844",
+            "stream_id": "15427015396",
+            "measurement_id": "G-TC66MQQ0T7",
+        }
+
     def sync_status(self, context=None, website_id=None):
         return {"status": "ok", "lastSuccessfulSync": "2026-08-13T12:00:00+00:00", "quality": {}}
 

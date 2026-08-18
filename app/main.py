@@ -11,12 +11,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.staticfiles import StaticFiles
 
-from .config import Settings, Site, load_dotenv, load_site
+from .config import ROOT, Settings, Site, load_dotenv, load_site
 from .auth import (
     AGENCY_ROLES,
     PortalIdentityError,
@@ -172,6 +173,11 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
             if tracing_runtime: tracing_runtime.shutdown()
 
     app = FastAPI(title="Measurement & Reporting Platform",version="1.0.0",description="Stored, privacy-aware measurement reporting for configured tenants.",lifespan=lifespan)
+    static_root = ROOT / "app" / "static"
+    static_index = static_root / "index.html"
+    static_assets = static_root / "assets"
+    if static_root.exists() and static_assets.exists():
+        app.mount("/assets", StaticFiles(directory=static_assets), name="assets")
     app.add_middleware(PrivacySafeTracingMiddleware)
     app.state.settings, app.state.site, app.state.database = settings, site, database
 
@@ -452,23 +458,33 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
         if len(settings.internal_trigger_token) < 32 or not hmac.compare_digest(x_internal_trigger_token,settings.internal_trigger_token):
             raise HTTPException(status_code=401,detail="unauthorized_internal_trigger")
 
-    def ga4():
-        if not settings.live_enabled: raise HTTPException(status_code=503,detail="live_reporting_not_enabled")
-        if app.state.reporter is None: app.state.reporter = GA4Reporter(site)
-        return app.state.reporter
+    def ga4_access_health(refresh: bool = True, website_site: Site | None = None):
+        """Return assignment and bounded access evidence for a given website.
 
-    def ga4_access_health(refresh: bool = True):
-        assignment = assignment_health(site, settings.property_id, settings.stream_id)
+        The verifier cache is keyed by the website's property so one tenant's
+        live probe cannot be reused for another and a stale boot singleton is
+        never consulted.
+        """
+        assignment = assignment_health(website_site, str(website_site.property_id), str(website_site.stream_id))
         if assignment["state"] != "configured":
             return assignment, unverified_access_health("ga4_assignment_not_configured")
         if not settings.live_enabled:
             return assignment, unverified_access_health("live_reporting_disabled")
         try:
-            reporter_instance = ga4()
-            verifier = getattr(app.state, "ga4_access_verifier", None)
-            if verifier is None or verifier.reporter is not reporter_instance:
+            cache = getattr(app.state, "ga4_access_verifiers", None)
+            if cache is None:
+                cache = {}
+                app.state.ga4_access_verifiers = cache
+            property_key = str(website_site.property_id)
+            verifier = cache.get(property_key)
+            if verifier is None:
+                # The injected reporter seam is a test double that provides
+                # verify_access(); production builds a per-website reporter.
+                reporter_instance = getattr(app.state, "reporter", None)
+                if reporter_instance is None:
+                    reporter_instance = GA4Reporter(website_site, AdcCredential().get_authorized_client())
                 verifier = GA4AccessVerifier(reporter_instance)
-                app.state.ga4_access_verifier = verifier
+                cache[property_key] = verifier
             return assignment, verifier.check(refresh=refresh)
         except Exception as error:
             return assignment, access_error_health(error)
@@ -497,6 +513,31 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
         value = database.latest_snapshot(context,website_id,view,period)
         if value is None: raise HTTPException(status_code=503,detail="report_not_synced")
         return value
+
+    def website_site(context: TenantContext, website_id: str) -> Site:
+        """Build a per-website Site from tenant-scoped storage metadata.
+
+        Endpoints that previously used the boot singleton now resolve the
+        requested website's company, domain, timezone, assignment, governance,
+        and stream measurement ID from Postgres under RLS. No value is borrowed
+        from the boot ``site`` singleton.
+        """
+        row = database.website_site_context(context, website_id)
+        property_timezone = row.get("property_timezone") or "UTC"
+        return Site(
+            row["site_id"],
+            row["company_id"],
+            row["company"],
+            row["canonical_domain"],
+            "live",  # deployment status is not a persisted runtime field
+            property_timezone,
+            str(row.get("property_id") or ""),
+            str(row.get("stream_id") or ""),
+            str(row.get("measurement_id") or ""),
+            property_timezone,
+            "unavailable",  # collection status is not a persisted runtime field
+            row.get("governance_status") or "requires_review",
+        )
 
     @app.get("/",response_class=HTMLResponse,include_in_schema=False)
     def home():
@@ -570,15 +611,20 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
     async def portal_access_resources(context: TenantContext = Depends(require_portal_context)):
         return {"resources": await portal_authorized_resources(context)}
 
-    @app.get("/portal", include_in_schema=False)
-    async def portal_home(context: TenantContext = Depends(require_portal_context)):
-        if context.role in AGENCY_ROLES:
-            return RedirectResponse("/agency", status_code=303)
-        resource = await portal_site_selection(context)
-        return RedirectResponse(
-            f"/dashboard?website_id={quote(resource['websiteId'], safe='')}&company_id={quote(resource['companyId'], safe='')}",
-            status_code=303,
-        )
+    if static_index.exists():
+        @app.get("/portal", include_in_schema=False)
+        def portal_home():
+            return FileResponse(static_index)
+    else:
+        @app.get("/portal", include_in_schema=False)
+        async def portal_home(context: TenantContext = Depends(require_portal_context)):
+            if context.role in AGENCY_ROLES:
+                return RedirectResponse("/agency", status_code=303)
+            resource = await portal_site_selection(context)
+            return RedirectResponse(
+                f"/dashboard?website_id={quote(resource['websiteId'], safe='')}&company_id={quote(resource['companyId'], safe='')}",
+                status_code=303,
+            )
 
     @app.get("/portal/agency", response_class=HTMLResponse, include_in_schema=False)
     async def portal_agency(context: TenantContext = Depends(require_portal_context)):
@@ -663,21 +709,24 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
     @app.get("/api/websites/{website_id}/measurement-health",tags=["Operations"])
     async def measurement_health(website_id:str,period:Period="28d",refresh:bool=True,context:TenantContext=Depends(require_context)):
         if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        requested_site = await call(website_site, context, website_id)
         sync = await call(database.sync_status,context,website_id) if database.configured else {"status":"disabled","quality":{}}
         admin_health = await call(database.latest_measurement_health,context,website_id) if database.configured and hasattr(database,"latest_measurement_health") else None
         event_health = await call(snapshot,context,website_id,"events",period) if database.configured else {"expectedEvents":[],"otherObservedEvents":[],"prohibitedEvents":[]}
-        assignment, access_health = await call(ga4_access_health, refresh)
+        assignment, access_health = await call(ga4_access_health, refresh, requested_site)
         access_check_state = {"verified":"ok","stale":"warning","unverified":"blocked","error":"error"}.get(access_health["state"],"error")
+        governance_status = requested_site.governance_status
+        quality = sync.get("quality", {}) or {}
         checks=[
           {"key":"ga4_data_api","state":access_check_state,"accessState":access_health["state"],"detail":access_health["reason"]},
           {"key":"assignment","state":"ok" if assignment["state"] == "configured" else "error","assignmentState":assignment["state"],"detail":assignment["detail"]},
           {"key":"persistence","state":"ok" if sync.get("lastSuccessfulSync") else "blocked","detail":"stored report execution available" if sync.get("lastSuccessfulSync") else "first sync has not succeeded"},
-          {"key":"governance","state":"ok" if site.governance_status == "approved" else "warning","detail":site.governance_status},
-          {"key":"collection","state":"warning" if sync.get("quality",{}).get("empty") else "ok","detail":"successful GA4 reports returned no rows" if sync.get("quality",{}).get("empty") else site.collection_status},
+          {"key":"governance","state":"ok" if governance_status == "approved" else "warning","detail":governance_status},
+          {"key":"collection","state":"warning" if quality.get("empty") else "ok","detail":"successful GA4 reports returned no rows" if quality.get("empty") else "stored GA4 reporting collection is present"},
         ]
         if admin_health: checks.extend(admin_health["details"].get("checks",[]))
         state="ready" if all(c["state"]=="ok" for c in checks) else "attention_required"
-        return {"websiteId":site.site_id,"deploymentStatus":site.deployment_status,"publicCollectionStatus":site.collection_status,"governanceStatus":site.governance_status,"state":state,"contract":{"slug":"local_service_v1","version":1,"approvalStatus":"approved" if site.governance_status == "approved" else "pending_approval"},"lastValidation":admin_health["checkedAt"] if admin_health else None,"lastAccessVerification":access_health["lastVerifiedAt"],"assignment":assignment,"ga4AccessHealth":access_health,"requiredEventHealth":event_health.get("expectedEvents",[]),"unexpectedEvents":event_health.get("otherObservedEvents",[]),"prohibitedEventDetection":event_health.get("prohibitedEvents",[]),"leadEventActivity":next((item for item in event_health.get("expectedEvents",[]) if item["event"]=="generate_lead"),None),"consentConfiguration":{"required":True,"approvalStatus":"approved" if site.governance_status == "approved" else "pending_authorized_review"},"adminHealth":admin_health,"checks":checks,"sync":sync}
+        return {"websiteId":requested_site.site_id,"governanceStatus":governance_status,"state":state,"contract":{"slug":"local_service_v1","version":1,"approvalStatus":"approved" if governance_status == "approved" else "pending_approval"},"lastValidation":admin_health["checkedAt"] if admin_health else None,"lastAccessVerification":access_health["lastVerifiedAt"],"assignment":assignment,"ga4AccessHealth":access_health,"requiredEventHealth":event_health.get("expectedEvents",[]),"unexpectedEvents":event_health.get("otherObservedEvents",[]),"prohibitedEventDetection":event_health.get("prohibitedEvents",[]),"leadEventActivity":next((item for item in event_health.get("expectedEvents",[]) if item["event"]=="generate_lead"),None),"consentConfiguration":{"required":True,"approvalStatus":"approved" if governance_status == "approved" else "pending_authorized_review"},"adminHealth":admin_health,"checks":checks,"sync":sync}
 
     @app.get("/api/websites/{website_id}/sync-status",tags=["Operations"])
     async def status_(website_id:str,context:TenantContext=Depends(require_context)):
@@ -714,10 +763,11 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
     @app.get("/api/websites/{website_id}/reports/pdf",tags=["Reporting"])
     async def report_pdf(website_id:str,period:Period="28d",context:TenantContext=Depends(require_context)):
         if not await call(database.website_authorized,context,website_id): raise HTTPException(status_code=403,detail="forbidden_website")
+        requested_site = await call(website_site, context, website_id)
         overview_data=await call(snapshot,context,website_id,"overview",period)
         acquisition_data=await call(snapshot,context,website_id,"acquisition",period)
         annotation_data=await call(database.list_annotations,context,website_id)
-        content=await call(build_client_pdf,site,period,overview_data,acquisition_data,annotation_data)
+        content=await call(build_client_pdf,requested_site,period,overview_data,acquisition_data,annotation_data)
         return Response(content=content,media_type="application/pdf",headers={"Content-Disposition":f'attachment; filename="{website_id}-{period}-report.pdf"'})
 
     @app.get("/api/websites/{website_id}/recurring-reports",tags=["Reporting"])
@@ -759,7 +809,8 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
                 overview_data=await call(snapshot,context,report["website_id"],"overview",report["period_key"])
                 acquisition_data=await call(snapshot,context,report["website_id"],"acquisition",report["period_key"])
                 annotation_data=await call(database.list_annotations,context,report["website_id"])
-                content=await call(build_client_pdf,site,report["period_key"],overview_data,acquisition_data,annotation_data)
+                report_site = await call(website_site, context, report["website_id"])
+                content=await call(build_client_pdf,report_site,report["period_key"],overview_data,acquisition_data,annotation_data)
                 report_hash=hashlib.sha256(content).hexdigest()
                 message_id=await call(report_sender.send_pdf,report["recipient_secret_reference"],f"{report['company']} analytics report",delivery_html(report["company"],report["period_key"]),f"{report['website_id']}-{report['period_key']}-report.pdf",content,f"report-delivery/{delivery_id}")
                 await call(database.finish_report_delivery,report,delivery_id,report_hash,message_id,None)
@@ -1097,4 +1148,17 @@ def create_app(settings=None, reporter=None, database=None, task_queue=None, sou
 
 
 load_dotenv(); app = create_app()
+def migrate():
+    """Apply pending migrations through the application's database connection.
+
+    This entrypoint is intended for a Cloud Run Job or deployment preamble so
+    migrations are always applied before portal or reporting processes start.
+    """
+    load_dotenv(); site = load_site(); settings = Settings.from_environment(); settings.validate(site)
+    database = Database(settings)
+    result = database.migrate()
+    database.close()
+    return result
+
+
 def run(): uvicorn.run("app.main:app",host=app.state.settings.host,port=app.state.settings.port)

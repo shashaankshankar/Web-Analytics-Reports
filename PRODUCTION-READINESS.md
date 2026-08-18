@@ -1,6 +1,14 @@
 # Production readiness: House of Dental analytics platform
 
-Updated August 14, 2026.
+Updated August 18, 2026.
+
+## Current implementation and verification boundary
+
+The working tree now completes the singleton-to-database elimination for per-website runtime behavior. The canonical GA4 stream `measurement_id` is persisted by migration `012_measurement_id_on_streams.sql`; the stream column is authoritative and the assignment JSON value is only a transitional fallback. The GA4 access verifier cache is keyed by property ID, preserving isolation between websites. The React Single Page Application is implemented in `frontend/`; its compiled static distribution is checked in under `app/static/`, with assets mounted at `/assets` and the SPA served at `/portal`. The portal release configuration is present at `infra/gcp/portal-env.yaml` and is referenced by the declarative `deploy-portal` Cloud Build step.
+
+This is implementation/configuration evidence, not a production cutover claim: migration 012 has not been applied to production, the `measurement-portal` service has not been deployed, and the local changes are not in the deployed revisions listed below. The current repository baseline is 140 tests passing, including `test_react_portal_static_assets_serving` in `tests/test_portal_integration.py`, 18 privacy fixtures passing, Python `compileall` passing, and `git diff --check` passing; `tests/test_data_contract_regression.py` provides regression coverage for the new data-contract behavior. The historical 59-test Cloud Build result below remains historical release evidence.
+
+External-only gates are intentionally not marked implemented: client IAP email identities, external Google OAuth production verification/authorized-domain and legal approval, client Ads/CRM/call-tracking credentials, real recurring report dispatch, and independent inbox-delivery proof. Report dispatch remains paused and no client report was sent.
 
 ## Verified live
 

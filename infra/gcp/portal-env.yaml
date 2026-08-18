@@ -1,0 +1,5 @@
+PORTAL_IAP_MODE: "direct"
+PORTAL_IAP_AUDIENCE: "/projects/495946300014/locations/us-central1/services/measurement-portal"
+PORTAL_IAP_EXPECTED_AUDIENCE: "/projects/495946300014/locations/us-central1/services/measurement-portal"
+OAUTH_CALLBACK_ONLY: "false"
+AUTH_MODE: "cloud_run"

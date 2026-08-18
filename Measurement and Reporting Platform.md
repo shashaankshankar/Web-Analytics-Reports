@@ -1,7 +1,15 @@
 # Measurement and Reporting Platform
 ## Step-by-Step Implementation Plan
 
-## Current implementation status — August 14, 2026
+## Current implementation status — August 18, 2026
+
+The current working-tree implementation has completed the singleton-to-database elimination for per-website runtime behavior. Website metadata, governance, timezone, assignment, and the canonical GA4 stream `measurement_id` are resolved from tenant-scoped Postgres state; the boot-time site singleton is no longer the runtime source for measurement health, PDF generation, or report dispatch. Migration `012_measurement_id_on_streams.sql` adds the nullable canonical stream field, with the assignment JSON value retained only as a transitional compatibility fallback.
+
+The GA4 access verifier cache is isolated per property ID. The React Single Page Application is implemented in `frontend/`; its compiled static distribution is in `app/static/`, with assets mounted at `/assets` and the SPA served at `/portal`. The portal release is declaratively represented by `infra/gcp/portal-env.yaml` and the `deploy-portal` Cloud Build step. These are implementation/configuration completions in the working tree. They do not claim that migration 012 has been applied to production, that the portal service has been deployed, or that IAP identities have been approved.
+
+The current regression baseline is 140 tests passing, including `test_react_portal_static_assets_serving` in `tests/test_portal_integration.py`, 18 privacy fixtures passing, Python `compileall` passing, and `git diff --check` passing. The regression coverage is anchored by `tests/test_data_contract_regression.py`. The historical deployed Cloud Build release counts below remain historical production evidence and are not a substitute for this current local baseline.
+
+External-only gates remain separate: client IAP email identities, external Google OAuth production verification and legal/domain approval, client Ads/CRM/call-tracking credentials, and real recurring report dispatch/inbox delivery remain unconfigured or deliberately paused and are not implemented by this update.
 
 House of Dental is the first live website. The reporting service is deployed privately on Cloud Run and uses the official Python GA4 Data API client with read-only Application Default Credentials (ADC).
 

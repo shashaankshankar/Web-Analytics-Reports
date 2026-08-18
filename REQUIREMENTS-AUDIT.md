@@ -1,6 +1,16 @@
 # Requirement audit
 
-Updated August 14, 2026. This is the evidence ledger for `Measurement and Reporting Platform.md`. A later stage is not treated as authorization to bypass an earlier hard gate.
+Updated August 18, 2026. This is the evidence ledger for `Measurement and Reporting Platform.md`. A later stage is not treated as authorization to bypass an earlier hard gate.
+
+## Current implementation audit boundary
+
+The working-tree implementation completes the singleton-to-database elimination for per-website runtime consumers. Migration `012_measurement_id_on_streams.sql` makes the GA4 stream `measurement_id` column canonical; assignment JSON remains only a transitional fallback. The GA4 access verifier cache is isolated by property ID. The React Single Page Application lives in `frontend/`; its compiled static distribution is in `app/static/`, with assets mounted at `/assets` and the SPA served at `/portal`. Portal release configuration is complete in `infra/gcp/portal-env.yaml` and the `deploy-portal` Cloud Build step, but this does not mean the portal service is deployed or that production migration 012 has run.
+
+Current local verification is 140 tests passing, including `test_react_portal_static_assets_serving` in `tests/test_portal_integration.py`, 18 privacy fixtures passing, Python `compileall` passing, and `git diff --check` passing. `tests/test_data_contract_regression.py` is part of that regression baseline. These results establish repository implementation evidence only; they do not replace deployed-service or owner-approval evidence.
+
+## External-only gates — not implemented
+
+The following remain separate owner/provider gates and must not be counted as completed requirements: approved client/agency IAP email identities; external Google OAuth production verification, authorized domains, branding, privacy policy, and terms; client authorization and credentials for Google Ads, call tracking, CRM/booking; real recurring report dispatch; and independent inbox-delivery proof. Report dispatch remains deliberately paused, and no real client report has been sent.
 
 ## Current release boundary
 

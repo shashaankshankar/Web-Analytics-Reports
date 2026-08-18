@@ -59,6 +59,23 @@ steps:
       - --liveness-probe=httpGet.path=/health,initialDelaySeconds=10,timeoutSeconds=2,periodSeconds=30,failureThreshold=3
       - --quiet
 
+  - id: deploy-portal
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:144d47fa0304a95021a154107409422af38f302f3fca9fd1038ce487e76ac3ff
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - measurement-portal
+      - '--project=$PROJECT_ID'
+      - --region=us-central1
+      - '--image=${_IMAGE}:$BUILD_ID'
+      - --startup-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=5,failureThreshold=12
+      - --readiness-probe=httpGet.path=/healthz,timeoutSeconds=2,periodSeconds=5,failureThreshold=3
+      - --liveness-probe=httpGet.path=/health,initialDelaySeconds=10,timeoutSeconds=2,periodSeconds=30,failureThreshold=3
+      - --no-allow-unauthenticated
+      - '--env-vars-file=./infra/gcp/portal-env.yaml'
+      - --quiet
+
   - id: deploy-callback
     name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:144d47fa0304a95021a154107409422af38f302f3fca9fd1038ce487e76ac3ff
     entrypoint: gcloud
@@ -86,6 +103,8 @@ steps:
           --project='$PROJECT_ID' --region=us-central1 --format=json > /workspace/reporting-service.json
         gcloud run services describe measurement-oauth-callback \
           --project='$PROJECT_ID' --region=us-central1 --format=json > /workspace/callback-service.json
+        gcloud run services describe measurement-portal \
+          --project='$PROJECT_ID' --region=us-central1 --format=json > /workspace/portal-service.json
 
   - id: verify-release
     name: python:3.13-slim-trixie@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a
@@ -101,6 +120,7 @@ steps:
         for filename, readiness_path in [
             ('/workspace/reporting-service.json', '/healthz'),
             ('/workspace/callback-service.json', '/oauth/google/ready'),
+            ('/workspace/portal-service.json', '/healthz'),
         ]:
             value = json.load(open(filename))
             assert any(item.get('percent') == 100 for item in value['status']['traffic'])

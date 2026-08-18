@@ -23,6 +23,9 @@ class StubDatabase:
         return TenantContext("org-1","user-1",email,self.role)
     def company_authorized(self,context,company_id): return context.organization_id == "org-1" and company_id == "company_house_of_dental"
     def website_authorized(self,context,website_id): return context.organization_id == "org-1" and website_id == "website_house_of_dental"
+    def website_site_context(self,context,website_id):
+        if website_id != "website_house_of_dental": raise PermissionError("website_not_authorized")
+        return {"company_id":"company_house_of_dental","company":"The House of Dental","site_id":"website_house_of_dental","canonical_domain":"https://thehouseofdentalwp.com","governance_status":"approved","property_timezone":"America/New_York","property_id":"549721844","stream_id":"15427015396","measurement_id":"G-TC66MQQ0T7",}
     def sync_status(self,context=None,website_id=None): return {"status":"warning","lastSuccessfulSync":"2026-08-12T12:00:00+00:00","queuedJobs":0,"failedJobs":0,"freshness":"provisional","quality":{"empty":True}}
     def latest_snapshot(self,context,website_id,view,period):
         values={
@@ -142,7 +145,11 @@ def test_stored_reporting_contract_and_scope_are_preserved():
         assert client.get("/api/websites/not-this-site/sync-status",headers=headers()).status_code == 403
         health=client.get("/api/websites/website_house_of_dental/measurement-health",headers=headers()).json()
         assert health["state"] == "attention_required"
+        assert health["websiteId"] == "website_house_of_dental"
+        assert health["governanceStatus"] == "approved"
         assert any(check["key"] == "collection" and check["state"] == "warning" for check in health["checks"])
+        assert "deploymentStatus" not in health
+        assert "publicCollectionStatus" not in health
 
 
 def test_cloud_run_auth_mode_relies_on_platform_identity():
