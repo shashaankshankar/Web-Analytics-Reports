@@ -89,9 +89,9 @@ class Settings(BaseModel):
     resend_api_key: str = Field(default_factory=lambda: os.getenv("RESEND_API_KEY", os.getenv("REPORT_EMAIL_API_KEY", "")))
     resend_from_email: str = Field(default_factory=lambda: os.getenv("RESEND_FROM_EMAIL", os.getenv("REPORT_EMAIL_FROM", "reports@growthagency.com")))
     google_application_credentials: str = Field(default_factory=lambda: os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""))
-    llm_model: str = Field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-4o-mini"))
-    site_url: str = Field(default_factory=lambda: os.getenv("OPENROUTER_SITE_URL", "https://github.com/agency/growth-reports"))
-    site_name: str = Field(default_factory=lambda: os.getenv("OPENROUTER_SITE_NAME", "Growth Reports AI Analyst"))
+    llm_model: str = Field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-5.6-luna"))
+    llm_reasoning_mode: str = Field(default_factory=lambda: os.getenv("LLM_REASONING_MODE", "standard"))
+    llm_reasoning_effort: str = Field(default_factory=lambda: os.getenv("LLM_REASONING_EFFORT", "medium"))
 
     @classmethod
     def from_env(cls) -> Settings:

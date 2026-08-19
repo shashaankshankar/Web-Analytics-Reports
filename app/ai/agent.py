@@ -63,16 +63,18 @@ class ExploratoryGrowthAgent:
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_mode: Optional[str] = None,
         base_url: Optional[str] = None,
         http_client: Optional[httpx.Client] = None,
         max_steps: int = 5,
     ):
         settings = Settings.from_env()
-        self.api_key = api_key or settings.openrouter_api_key
+        self.api_key = api_key if api_key is not None else settings.openrouter_api_key
         self.model = model or settings.llm_model
+        self.reasoning_effort = reasoning_effort or settings.llm_reasoning_effort
+        self.reasoning_mode = reasoning_mode or settings.llm_reasoning_mode
         self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
-        self.site_url = settings.site_url
-        self.site_name = settings.site_name
         self.http_client = http_client
         self.max_steps = max_steps
 
@@ -89,8 +91,6 @@ class ExploratoryGrowthAgent:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": self.site_url,
-            "X-Title": self.site_name,
         }
         tools = toolkit.get_tool_definitions()
 
@@ -111,12 +111,14 @@ class ExploratoryGrowthAgent:
         endpoint = f"{self.base_url}/chat/completions"
 
         for _ in range(self.max_steps):
-            payload = {
+            payload: Dict[str, Any] = {
                 "model": self.model,
                 "messages": messages,
                 "tools": tools,
                 "temperature": 0.2,
             }
+            if self.reasoning_effort:
+                payload["reasoning"] = {"effort": self.reasoning_effort}
 
             try:
                 if self.http_client:
@@ -133,7 +135,6 @@ class ExploratoryGrowthAgent:
                 message = choice["message"]
                 messages.append(message)
 
-                # Check for tool calls
                 tool_calls = message.get("tool_calls")
                 if tool_calls:
                     for tool_call in tool_calls:
@@ -153,7 +154,6 @@ class ExploratoryGrowthAgent:
                             "content": tool_result,
                         })
                 else:
-                    # Agent finished and responded with content
                     content = message.get("content", "")
                     try:
                         clean_content = content

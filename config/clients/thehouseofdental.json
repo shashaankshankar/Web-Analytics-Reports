@@ -1,0 +1,21 @@
+{
+  "client_id": "thehouseofdental",
+  "company_name": "The House of Dental",
+  "domain": "https://thehouseofdentalwp.com",
+  "industry": "dental_healthcare",
+  "ga4_property_id": "549721844",
+  "gsc_site_url": "https://thehouseofdentalwp.com/",
+  "gbp_location_id": "places/ChIJM7fB_p1v54gR35t3HRaGH_Q",
+  "branding": {
+    "primary_color": "#1E3A8A",
+    "secondary_color": "#3B82F6",
+    "accent_color": "#F59E0B",
+    "logo_url": null
+  },
+  "recipients": {
+    "client": "",
+    "agency_cc": ""
+  },
+  "timezone": "America/New_York",
+  "monthly_retainer_focus": "Local Winter Park SEO, cosmetic dentistry & restorative inquiries"
+}

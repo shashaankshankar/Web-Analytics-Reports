@@ -44,3 +44,6 @@ def test_settings_from_env(monkeypatch):
     settings = Settings.from_env()
     assert settings.openrouter_api_key == "sk-or-v1-test-key-123"
     assert settings.resend_api_key == "re_test_98765432101234567890"
+    assert settings.llm_model == "openai/gpt-5.6-luna"
+    assert settings.llm_reasoning_effort == "medium"
+    assert settings.llm_reasoning_mode == "standard"

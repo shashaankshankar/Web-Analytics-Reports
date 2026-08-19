@@ -21,7 +21,7 @@ Your job is to transform pre-computed client analytics data into a clear, factua
 CORE RULES:
 1. All numbers and statistics cited must match the input dataset exactly. Do not invent metrics or metrics deltas.
 2. Keep explanations concise, practical, and grounded in the metrics provided.
-3. Tailor vocabulary to the client\'s industry context.
+3. Tailor vocabulary to the client's industry context.
 4. Provide clear, realistic recommended next steps based on the data.
 5. Return valid JSON matching the requested schema.
 """
@@ -147,15 +147,17 @@ class GrowthAnalyst:
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_mode: Optional[str] = None,
         base_url: Optional[str] = None,
         http_client: Optional[httpx.Client] = None,
     ):
         settings = Settings.from_env()
-        self.api_key = api_key or settings.openrouter_api_key
+        self.api_key = api_key if api_key is not None else settings.openrouter_api_key
         self.model = model or settings.llm_model
+        self.reasoning_effort = reasoning_effort or settings.llm_reasoning_effort
+        self.reasoning_mode = reasoning_mode or settings.llm_reasoning_mode
         self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
-        self.site_url = settings.site_url
-        self.site_name = settings.site_name
         self.http_client = http_client
 
     def analyze(self, data: GrowthAnalysisInput) -> AIReportOutput:
@@ -167,10 +169,8 @@ class GrowthAnalyst:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": self.site_url,
-            "X-Title": self.site_name,
         }
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": GROWTH_ANALYST_SYSTEM_PROMPT},
@@ -179,6 +179,8 @@ class GrowthAnalyst:
             "temperature": 0.3,
             "response_format": {"type": "json_object"},
         }
+        if self.reasoning_effort:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
 
         endpoint = f"{self.base_url}/chat/completions"
         try:

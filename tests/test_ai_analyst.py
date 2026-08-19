@@ -14,6 +14,9 @@ from app.analytics.contracts import (
 
 @pytest.fixture
 def sample_growth_input():
+    return GrowthAnalysisInput
+
+def make_growth_input():
     return GrowthAnalysisInput(
         client_id="test-client",
         company_name="Test Company",
@@ -83,7 +86,8 @@ def sample_growth_input():
         ),
     )
 
-def test_fallback_growth_briefing(sample_growth_input):
+def test_fallback_growth_briefing():
+    sample_growth_input = make_growth_input()
     briefing = fallback_growth_briefing(sample_growth_input)
     assert isinstance(briefing, AIReportOutput)
     assert len(briefing.executive_summary) == 3
@@ -92,13 +96,15 @@ def test_fallback_growth_briefing(sample_growth_input):
     assert len(briefing.agency_action_plan) >= 2
     assert briefing.overall_sentiment == "Growth"
 
-def test_growth_analyst_fallback_when_no_api_key(sample_growth_input):
+def test_growth_analyst_fallback_when_no_api_key():
+    sample_growth_input = make_growth_input()
     analyst = GrowthAnalyst(api_key="")
     briefing = analyst.analyze(sample_growth_input)
     assert isinstance(briefing, AIReportOutput)
     assert len(briefing.executive_summary) == 3
 
-def test_growth_analyst_with_mock_client(sample_growth_input):
+def test_growth_analyst_with_mock_client():
+    sample_growth_input = make_growth_input()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -136,7 +142,8 @@ def test_growth_analyst_with_mock_client(sample_growth_input):
     assert briefing.executive_summary[0] == "Win 1: Strong 20% organic session lift."
     assert briefing.agency_action_plan[0].title == "On-page Optimization"
 
-def test_growth_analyst_openrouter_headers(sample_growth_input):
+def test_growth_analyst_openrouter_payload():
+    sample_growth_input = make_growth_input()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -162,17 +169,16 @@ def test_growth_analyst_openrouter_headers(sample_growth_input):
     
     analyst = GrowthAnalyst(
         api_key="sk-or-v1-test",
-        model="openai/gpt-4o-mini",
+        model="openai/gpt-5.6-luna",
+        reasoning_effort="medium",
         base_url="https://openrouter.ai/api/v1",
         http_client=mock_http,
     )
     briefing = analyst.analyze(sample_growth_input)
     assert briefing.executive_summary[0] == "Point 1"
     
-    # Verify endpoint and headers
     called_url, kwargs = mock_http.post.call_args
     assert called_url[0] == "https://openrouter.ai/api/v1/chat/completions"
     assert kwargs["headers"]["Authorization"] == "Bearer sk-or-v1-test"
-    assert "HTTP-Referer" in kwargs["headers"]
-    assert "X-Title" in kwargs["headers"]
-    assert kwargs["json"]["model"] == "openai/gpt-4o-mini"
+    assert kwargs["json"]["model"] == "openai/gpt-5.6-luna"
+    assert kwargs["json"]["reasoning"] == {"effort": "medium"}
