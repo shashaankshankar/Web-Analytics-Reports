@@ -1,1 +1,1 @@
-"""Automated AI Growth Briefings & Local SEO Intelligence Engine."""
+"""Client growth reports and performance briefing generator."""

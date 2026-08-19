@@ -173,7 +173,7 @@ def generate_report(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Automated AI Growth Briefings & Local SEO Intelligence Engine")
+    parser = argparse.ArgumentParser(description="Generate client performance reports and briefings")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # List clients command

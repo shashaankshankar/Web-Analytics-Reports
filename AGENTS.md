@@ -2,38 +2,19 @@
 
 ## Working Principles
 
-* Inspect before editing. Understand the relevant schema, implementation, callers, consumers, tests, and configuration before making changes.
+* Inspect before editing. Keep the code simple, clean, and directly aligned with real inputs.
 * Prefer the smallest coherent change that fixes the root cause.
 * Preserve existing behavior unless the task explicitly requires changing it.
-* Do not invent state, constants, fallbacks, schema semantics, or business rules.
-* Treat similarly named fields as distinct until repository evidence proves otherwise.
-* Prefer canonical persisted state over boot-time configuration or singleton objects.
-* Maintain tenant, company, and website isolation. Never weaken authorization or cross-tenant boundaries.
+* Do not invent synthetic metrics, fallbacks, or data fields that do not exist in the source APIs.
+* Keep the project stateless and simple: client parameters are loaded from standard JSON configuration files.
 
-## Source of Truth
+## Architecture & Contracts
 
-For database-backed behavior, trace important fields and states to their authoritative source before using them.
-
-When changing a field, enum, mapping, API contract, or persistence path, inspect:
-
-* migrations/schema
-* producers/writers
-* readers/consumers
-* seed/bootstrap paths
-* relevant tests
-
-If the repository has multiple possible sources of truth, resolve the ambiguity rather than adding another fallback.
-
-## Database Changes
-
-Before modifying the schema:
-
-* determine migration and backfill requirements
-* preserve compatibility with existing data where required
-* verify fresh-database and existing-database behavior
-* avoid storing the same canonical state in multiple places
-
-Do not add columns merely to preserve legacy response shapes without verifying that the state is meaningful and persistent.
+* **Client Configurations (`config/clients/<slug>.json`)**: Client details, branding colors, target recipients, and site IDs.
+* **Data Ingestion (`app/sources/`)**: On-demand queries to GA4, Search Console, and Google Business Profile.
+* **Metrics Pre-Processor (`app/analytics/`)**: Mathematical delta calculations (current vs. prior period) and keyword ranking analysis.
+* **AI Insights (`app/ai/`)**: Structured summary generation from computed analytics.
+* **Delivery (`app/delivery/`)**: HTML email and PDF generation via ReportLab.
 
 ## Verification
 
@@ -42,12 +23,8 @@ Verification is part of implementation.
 After making changes:
 
 1. Inspect the complete `git diff`.
-2. Trace new or changed semantic assumptions back to repository evidence.
-3. Run the narrowest relevant tests/checks first.
-4. Run the broader relevant repository validation afterward.
-5. For bug fixes, add or update regression coverage when practical.
-6. Check for unrelated changes, fabricated values, hidden fallbacks, lossy mappings, and duplicate sources of truth.
-7. Verify important failure and edge cases, not only the happy path.
+2. Run `pytest` to ensure all tests pass.
+3. Verify CLI runs cleanly: `python -m app.cli generate --client <slug> --mock`.
 
 Do not claim success unless the relevant validation actually ran and passed.
 

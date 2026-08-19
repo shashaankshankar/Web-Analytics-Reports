@@ -1,6 +1,0 @@
-{
-  "name": "oauth_callback_query_privacy",
-  "description": "Prevent OAuth authorization codes and signed state from entering retained Cloud Run request logs",
-  "disabled": false,
-  "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"measurement-oauth-callback\" AND httpRequest.requestUrl:\"/oauth/google/callback\""
-}

@@ -64,8 +64,8 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         leftMargin=0.5 * inch,
         topMargin=0.5 * inch,
         bottomMargin=0.5 * inch,
-        title=f"{briefing.company_name} - Growth & Intelligence Briefing",
-        author="Agency Growth Engine",
+        title=f"{briefing.company_name} - Performance Report",
+        author="Analytics Reporting",
     )
 
     def draw_footer(canvas, doc):
@@ -74,7 +74,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         canvas.line(doc.leftMargin, 0.4 * inch, LETTER[0] - doc.rightMargin, 0.4 * inch)
         canvas.setFont("Helvetica", 8)
         canvas.setFillColor(MUTED)
-        canvas.drawString(doc.leftMargin, 0.25 * inch, f"{briefing.company_name} | Growth Intelligence Briefing")
+        canvas.drawString(doc.leftMargin, 0.25 * inch, f"{briefing.company_name} | Performance Report")
         canvas.drawRightString(LETTER[0] - doc.rightMargin, 0.25 * inch, f"Page {doc.page}")
         canvas.restoreState()
 
@@ -82,7 +82,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
 
     # 1. Header
     story.append(Paragraph(escape(briefing.company_name), styles["DocHeader"]))
-    story.append(Paragraph(f"Growth & Local SEO Intelligence Briefing &bull; {briefing.period_label} &bull; Generated {briefing.generated_at}", styles["DocSubHeader"]))
+    story.append(Paragraph(f"Performance Report &bull; {briefing.period_label} &bull; Generated {briefing.generated_at}", styles["DocSubHeader"]))
     story.append(HRFlowable(width="100%", thickness=1.5, color=PRIMARY, spaceBefore=0, spaceAfter=10))
 
     # 2. Executive Snapshot

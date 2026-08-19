@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "growth-intelligence-engine"
+name = "client-growth-reports"
 version = "1.0.0"
 requires-python = ">=3.12"
 dependencies = [

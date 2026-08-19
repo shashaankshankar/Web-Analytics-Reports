@@ -14,9 +14,9 @@ try:
     from fastapi.responses import JSONResponse
     
     app = FastAPI(
-        title="Agency Growth & Intelligence Engine",
+        title="Client Growth Reports API",
         version="1.0.0",
-        description="Stateless automated AI growth briefings & local SEO intelligence engine",
+        description="On-demand analytics report generation",
     )
 
     class ReportTriggerRequest(BaseModel):
@@ -27,7 +27,7 @@ try:
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "growth-intelligence-engine"}
+        return {"status": "ok", "service": "client-growth-reports"}
 
     @app.get("/clients")
     def get_clients():

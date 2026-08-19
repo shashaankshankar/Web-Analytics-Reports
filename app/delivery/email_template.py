@@ -85,9 +85,9 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
           <!-- Header Banner -->
           <tr>
             <td style="background: linear-gradient(135deg, {primary_color} 0%, {secondary_color} 100%); padding: 32px 28px; color: #FFFFFF;">
-              <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; opacity: 0.85; font-weight: 700; margin-bottom: 8px;">Automated Growth & Intelligence Engine</div>
+              <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; opacity: 0.85; font-weight: 700; margin-bottom: 8px;">Monthly Performance Report</div>
               <h1 style="margin: 0 0 6px 0; font-size: 24px; font-weight: 800; letter-spacing: -0.02em;">{client_name}</h1>
-              <div style="font-size: 13px; opacity: 0.9;">Monthly Performance & Local SEO Briefing &bull; {period}</div>
+              <div style="font-size: 13px; opacity: 0.9;">{period}</div>
             </td>
           </tr>
 
@@ -154,8 +154,8 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
           <!-- Footer -->
           <tr>
             <td style="background-color: #F8FAFC; border-top: 1px solid #E2E8F0; padding: 20px 28px; text-align: center;">
-              <div style="font-size: 12px; color: #64748B; margin-bottom: 4px;">Attached is your comprehensive Executive PDF Growth Report.</div>
-              <div style="font-size: 11px; color: #94A3B8;">Confidential &bull; Prepared by Agency Growth & Intelligence Engine for {client_name}</div>
+              <div style="font-size: 12px; color: #64748B; margin-bottom: 4px;">Attached is your PDF performance summary.</div>
+              <div style="font-size: 11px; color: #94A3B8;">Confidential report prepared for {client_name}</div>
             </td>
           </tr>
 

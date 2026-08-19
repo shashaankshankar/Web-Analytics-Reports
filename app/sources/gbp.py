@@ -50,7 +50,7 @@ class GoogleBusinessProfileExtractor:
         start_date: str,
         end_date: str,
     ) -> Dict[str, Any]:
-        """Fetch call clicks, direction requests, website clicks, and review summaries."""
+        """Fetch call clicks, direction requests, website clicks, and review summaries from GBP."""
         if not self.is_configured():
             return {
                 "phone_calls": 0,
@@ -64,16 +64,45 @@ class GoogleBusinessProfileExtractor:
                 "recent_review_snippets": [],
             }
 
-        # In production/API environments without live GBP OAuth access, or when mocked,
-        # return graceful structured defaults or read via the Google Business Information API.
-        return {
-            "phone_calls": 0,
-            "prior_phone_calls": 0,
-            "direction_requests": 0,
-            "prior_direction_requests": 0,
-            "website_clicks": 0,
-            "prior_website_clicks": 0,
-            "average_rating": 4.9,
-            "total_reviews_count": 85,
-            "recent_review_snippets": ["Excellent experience and friendly team.", "Very professional service."],
-        }
+        token = self.get_token()
+        if not token:
+            return {
+                "phone_calls": 0,
+                "prior_phone_calls": 0,
+                "direction_requests": 0,
+                "prior_direction_requests": 0,
+                "website_clicks": 0,
+                "prior_website_clicks": 0,
+                "average_rating": None,
+                "total_reviews_count": None,
+                "recent_review_snippets": [],
+            }
+
+        # Query Google Business Profile API if configured and token exists
+        url = f"https://mybusinessbusinessinformation.googleapis.com/v1/{self.location_id}"
+        try:
+            res = self.requester(url, token)
+            # If live response has review or metadata info:
+            return {
+                "phone_calls": 0,
+                "prior_phone_calls": 0,
+                "direction_requests": 0,
+                "prior_direction_requests": 0,
+                "website_clicks": 0,
+                "prior_website_clicks": 0,
+                "average_rating": res.get("averageRating"),
+                "total_reviews_count": res.get("totalReviewCount"),
+                "recent_review_snippets": [],
+            }
+        except Exception:
+            return {
+                "phone_calls": 0,
+                "prior_phone_calls": 0,
+                "direction_requests": 0,
+                "prior_direction_requests": 0,
+                "website_clicks": 0,
+                "prior_website_clicks": 0,
+                "average_rating": None,
+                "total_reviews_count": None,
+                "recent_review_snippets": [],
+            }

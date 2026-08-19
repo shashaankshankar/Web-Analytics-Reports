@@ -1,6 +1,6 @@
-# Automated AI Growth Briefings & Local SEO Intelligence Engine
+# Client Growth Reports
 
-A website-agnostic digital growth intelligence engine. It statelessly queries Google analytics/search APIs on demand, pre-computes deterministic metric deltas, synthesizes executive insights via AI, and delivers branded HTML briefings with attached executive PDF reports directly to clients.
+A simple, website-agnostic performance reporting tool. It reads client site configs, fetches analytics on demand (GA4, Google Search Console, Google Business Profile), calculates metric deltas, generates structured AI insights, and produces email briefings and PDF reports.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ A website-agnostic digital growth intelligence engine. It statelessly queries Go
 [ Trigger: CLI / Scheduled Cron / Webhook ]
                      │
          [ Client Site Config Loader ]
-     (Reads config/clients/<client-slug>.json: GA4 ID, GSC URL, GBP ID, Recipients)
+     (Reads config/clients/<slug>.json)
                      │
        ┌─────────────┼─────────────┐
        ▼             ▼             ▼
@@ -16,23 +16,22 @@ A website-agnostic digital growth intelligence engine. It statelessly queries Go
        └─────────────┬─────────────┘
                      ▼
        [ Deterministic Aggregator ]
-       • 28d vs prior 28d metric deltas & percentage changes
-       • Top acquisition channels & high-intent landing pages
-       • Striking-distance SEO queries (positions 8–20 with high impressions)
-       • Local intent (calls, directions, reviews)
+       • 28d vs prior 28d metric deltas
+       • Acquisition channels & landing pages
+       • Striking-distance SEO keywords (rank 8–20)
+       • Local interaction stats
                      │
                      ▼
-          [ LLM Growth Analyst ]
-       • Industry-agnostic structured prompts
-       • Executive Snapshot (30-second takeaway)
-       • Acquisition, engagement, and conversion insights
-       • Concrete monthly agency action items
+          [ AI Growth Analyst ]
+       • Executive summary
+       • Traffic & keyword opportunities
+       • Recommended action items
                      │
                      ▼
          [ Multi-Format Delivery ]
-       • Responsive HTML Email Briefing
-       • Branded Executive PDF Attachment (ReportLab)
-       • Email Dispatcher (Resend API)
+       • Responsive HTML email
+       • Branded PDF report (ReportLab)
+       • Email dispatch (Resend API)
 ```
 
 ## Quick Start
