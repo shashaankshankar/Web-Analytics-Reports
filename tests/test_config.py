@@ -39,8 +39,8 @@ def test_list_available_clients(tmp_path):
     assert clients == ["client-a", "client-b"]
 
 def test_settings_from_env(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key-123")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test-key-123")
     monkeypatch.setenv("RESEND_API_KEY", "re_test_98765432101234567890")
     settings = Settings.from_env()
-    assert settings.openai_api_key == "test-key-123"
+    assert settings.openrouter_api_key == "sk-or-v1-test-key-123"
     assert settings.resend_api_key == "re_test_98765432101234567890"

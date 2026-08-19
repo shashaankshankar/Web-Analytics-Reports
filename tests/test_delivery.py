@@ -4,6 +4,7 @@ import pytest
 from app.analytics.contracts import (
     ActionItem,
     AIReportOutput,
+    DataDiscovery,
     FullGrowthBriefing,
     GrowthAnalysisInput,
     MetricDelta,
@@ -87,6 +88,20 @@ def test_render_growth_email_html(sample_full_briefing):
     assert "1,850" in html
     assert "dental implants cost" in html
     assert "On-Page Content Expansion" in html
+
+def test_render_growth_email_html_with_discoveries_and_escaping(sample_full_briefing):
+    sample_full_briefing.insights.deep_discoveries = [
+        DataDiscovery(
+            title="High-ROI <Mobile> Breakthrough & Queries",
+            source="GA4 & Search Console",
+            insight="Mobile queries with <special> characters & symbols drove 70% of conversion volume.",
+            recommended_action="Enhance <meta> tags & CTA buttons.",
+        )
+    ]
+    html_out = render_growth_email_html(sample_full_briefing)
+    assert "&lt;Mobile&gt;" in html_out
+    assert "GA4 &amp; Search Console" in html_out
+    assert "&lt;meta&gt;" in html_out
 
 def test_build_executive_pdf(sample_full_briefing):
     pdf_bytes = build_executive_pdf(sample_full_briefing)

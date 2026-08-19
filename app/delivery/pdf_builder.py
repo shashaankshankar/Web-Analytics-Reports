@@ -165,6 +165,27 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         story.append(Paragraph(escape(briefing.insights.local_seo_insights), styles["BodyTextCustom"]))
         story.append(Spacer(1, 6))
 
+    # 7b. Autonomous Deep Discoveries (if present)
+    if briefing.insights.deep_discoveries:
+        story.append(Paragraph("AUTONOMOUS MULTI-SOURCE DEEP DISCOVERIES", styles["SectionTitle"]))
+        for disc in briefing.insights.deep_discoveries:
+            disc_box = [
+                Paragraph(f"<b>{escape(disc.title)}</b> &bull; <font color='{secondary_hex}'><b>[{escape(disc.source)}]</b></font>", styles["ActionTitle"]),
+                Paragraph(escape(disc.insight), styles["ActionDesc"]),
+                Paragraph(f"<b>Action:</b> {escape(disc.recommended_action)}", styles["ActionDesc"]),
+            ]
+            t_disc = Table([[disc_box]], colWidths=[7.5 * inch])
+            t_disc.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), LIGHT_BG),
+                ("BOX", (0, 0), (-1, -1), 1, BORDER_COLOR),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]))
+            story.append(KeepTogether([t_disc, Spacer(1, 4)]))
+        story.append(Spacer(1, 6))
+
     # 8. Agency Action Plan (Justifying Retainer)
     story.append(Paragraph("AGENCY GROWTH ACTION PLAN (UPCOMING MONTH)", styles["SectionTitle"]))
     for item in briefing.insights.agency_action_plan:

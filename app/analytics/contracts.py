@@ -82,6 +82,14 @@ class ActionItem(BaseModel):
     priority: str = "High"  # "High", "Medium", "Low"
 
 
+class DataDiscovery(BaseModel):
+    """Autonomous data discovery produced by exploratory multi-source tool analysis."""
+    title: str = Field(..., description="High-level discovery headline")
+    source: str = Field(..., description="Data source (e.g., 'GA4 Device Breakdown', 'Search Console Long-Tail', 'GBP Interaction Shift')")
+    insight: str = Field(..., description="Detailed analytical insight derived from dynamic querying")
+    recommended_action: str = Field(..., description="Tactical growth action to exploit this discovery")
+
+
 class AIReportOutput(BaseModel):
     """Structured growth intelligence briefing produced by AI."""
     executive_summary: List[str] = Field(..., description="Top 3 plain-English takeaways")
@@ -89,6 +97,7 @@ class AIReportOutput(BaseModel):
     seo_and_content_opportunities: str = Field(..., description="Striking-distance keyword targets and new service pages")
     local_seo_insights: str = Field(default="", description="Analysis of GBP interactions, reviews, and local discovery")
     agency_action_plan: List[ActionItem] = Field(..., description="2-4 concrete optimizations for upcoming month justifying retainer")
+    deep_discoveries: List[DataDiscovery] = Field(default_factory=list, description="Client-specific discoveries from exploratory multi-source agent tools")
     overall_sentiment: str = Field(default="Growth", description="Positive, Moderate, Critical, Growth")
 
 

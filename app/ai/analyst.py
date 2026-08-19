@@ -6,9 +6,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
+from app.config import Settings
 from app.analytics.contracts import (
     ActionItem,
     AIReportOutput,
+    DataDiscovery,
     GrowthAnalysisInput,
 )
 
@@ -135,6 +137,7 @@ def fallback_growth_briefing(data: GrowthAnalysisInput) -> AIReportOutput:
         seo_and_content_opportunities=seo_insights,
         local_seo_insights=local_insights,
         agency_action_plan=action_plan,
+        deep_discoveries=[],
         overall_sentiment="Growth",
     )
 
@@ -143,11 +146,16 @@ class GrowthAnalyst:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o-mini",
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
         http_client: Optional[httpx.Client] = None,
     ):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
-        self.model = model
+        settings = Settings.from_env()
+        self.api_key = api_key or settings.openrouter_api_key
+        self.model = model or settings.llm_model
+        self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
+        self.site_url = settings.site_url
+        self.site_name = settings.site_name
         self.http_client = http_client
 
     def analyze(self, data: GrowthAnalysisInput) -> AIReportOutput:
@@ -159,6 +167,8 @@ class GrowthAnalyst:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "HTTP-Referer": self.site_url,
+            "X-Title": self.site_name,
         }
         payload = {
             "model": self.model,
@@ -170,12 +180,13 @@ class GrowthAnalyst:
             "response_format": {"type": "json_object"},
         }
 
+        endpoint = f"{self.base_url}/chat/completions"
         try:
             if self.http_client:
-                response = self.http_client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
+                response = self.http_client.post(endpoint, headers=headers, json=payload, timeout=60.0)
             else:
                 with httpx.Client(timeout=60.0) as client:
-                    response = client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+                    response = client.post(endpoint, headers=headers, json=payload)
             
             if response.status_code != 200:
                 return fallback_growth_briefing(data)

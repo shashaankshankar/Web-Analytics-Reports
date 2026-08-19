@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from app.ai.agent import ExploratoryGrowthAgent
 from app.ai.analyst import GrowthAnalyst
+from app.ai.tools import MultiSourceAnalyticsToolkit
 from app.analytics.contracts import FullGrowthBriefing
 from app.analytics.metrics import aggregate_growth_metrics, calculate_date_ranges
 from app.config import ClientConfig, list_available_clients, load_client_config
@@ -26,6 +28,7 @@ def generate_report(
     send_email: bool = False,
     output_dir: Optional[Path] = None,
     mock_data: bool = False,
+    explore_deep_insights: bool = False,
 ) -> FullGrowthBriefing:
     """Run complete growth intelligence pipeline for a specific client."""
     client = load_client_config(client_slug)
@@ -119,6 +122,25 @@ def generate_report(
     analyst = GrowthAnalyst()
     insights = analyst.analyze(growth_input)
 
+    # 4b. Optional Exploratory Multi-Source Deep Discoveries
+    if explore_deep_insights:
+        print("[*] Launching Autonomous Multi-Source Exploration Agent...")
+        toolkit = MultiSourceAnalyticsToolkit(
+            client=client,
+            start_date=start_date,
+            end_date=end_date,
+            prior_start_date=prior_start_date,
+            prior_end_date=prior_end_date,
+            ga4_extractor=ga4_ext if 'ga4_ext' in locals() else None,
+            gsc_extractor=gsc_ext if 'gsc_ext' in locals() else None,
+            gbp_extractor=gbp_ext if 'gbp_ext' in locals() else None,
+            mock_data=mock_data or client.ga4_property_id in ('', 'mock', '123456789', '987654321'),
+        )
+        agent = ExploratoryGrowthAgent()
+        discoveries = agent.explore(client, growth_input, toolkit)
+        insights.deep_discoveries = discoveries
+        print(f"[+] Autonomous agent completed with {len(discoveries)} deep discoveries.")
+
     # 5. Build Full Briefing Model
     now_str = datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
     briefing = FullGrowthBriefing(
@@ -185,6 +207,7 @@ def main():
     gen_parser.add_argument("--days", "-d", type=int, default=28, help="Period days to analyze (default: 28)")
     gen_parser.add_argument("--send", "-s", action="store_true", help="Send the report email via Resend")
     gen_parser.add_argument("--mock", "-m", action="store_true", help="Use mock/synthetic analytics data")
+    gen_parser.add_argument("--explore", "--deep-insights", dest="explore", action="store_true", help="Run autonomous multi-source exploratory agent for deep anomalies & opportunities")
     gen_parser.add_argument("--output", "-o", type=Path, default=None, help="Output directory for generated artifacts")
 
     args = parser.parse_args()
@@ -204,6 +227,7 @@ def main():
                 send_email=args.send,
                 output_dir=args.output,
                 mock_data=args.mock,
+                explore_deep_insights=args.explore,
             )
             print("\n[✓] Growth briefing pipeline completed successfully.")
         except Exception as e:

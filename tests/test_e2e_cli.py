@@ -37,6 +37,27 @@ def test_generate_report_e2e_saas(tmp_path):
     assert html_file.is_file()
     assert pdf_file.is_file()
 
+def test_generate_report_with_exploratory_agent(tmp_path):
+    briefing = generate_report(
+        client_slug="example-dental",
+        days=28,
+        send_email=False,
+        output_dir=tmp_path,
+        mock_data=True,
+        explore_deep_insights=True,
+    )
+    assert briefing.client_id == "example-dental"
+    assert len(briefing.insights.deep_discoveries) >= 2
+    
+    html_file = tmp_path / "example-dental_briefing.html"
+    pdf_file = tmp_path / "example-dental_growth_report.pdf"
+    assert html_file.is_file()
+    assert pdf_file.is_file()
+    
+    html_content = html_file.read_text(encoding="utf-8")
+    assert "Autonomous Multi-Source Deep Discoveries" in html_content
+    assert briefing.insights.deep_discoveries[0].title in html_content
+
 def test_sources_graceful_when_unconfigured():
     from app.sources.ga4 import GA4Extractor
     from app.sources.gsc import SearchConsoleExtractor

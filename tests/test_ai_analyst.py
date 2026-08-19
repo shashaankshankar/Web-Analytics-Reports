@@ -135,3 +135,44 @@ def test_growth_analyst_with_mock_client(sample_growth_input):
     briefing = analyst.analyze(sample_growth_input)
     assert briefing.executive_summary[0] == "Win 1: Strong 20% organic session lift."
     assert briefing.agency_action_plan[0].title == "On-page Optimization"
+
+def test_growth_analyst_openrouter_headers(sample_growth_input):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({
+                        "executive_summary": ["Point 1", "Point 2", "Point 3"],
+                        "traffic_and_inflow_insights": "Traffic info",
+                        "seo_and_content_opportunities": "SEO info",
+                        "local_seo_insights": "Local info",
+                        "agency_action_plan": [
+                            {"title": "Action 1", "description": "Desc", "impact_area": "SEO", "priority": "High"}
+                        ],
+                        "overall_sentiment": "Growth"
+                    })
+                }
+            }
+        ]
+    }
+    mock_http = MagicMock()
+    mock_http.post.return_value = mock_response
+    
+    analyst = GrowthAnalyst(
+        api_key="sk-or-v1-test",
+        model="openai/gpt-4o-mini",
+        base_url="https://openrouter.ai/api/v1",
+        http_client=mock_http,
+    )
+    briefing = analyst.analyze(sample_growth_input)
+    assert briefing.executive_summary[0] == "Point 1"
+    
+    # Verify endpoint and headers
+    called_url, kwargs = mock_http.post.call_args
+    assert called_url[0] == "https://openrouter.ai/api/v1/chat/completions"
+    assert kwargs["headers"]["Authorization"] == "Bearer sk-or-v1-test"
+    assert "HTTP-Referer" in kwargs["headers"]
+    assert "X-Title" in kwargs["headers"]
+    assert kwargs["json"]["model"] == "openai/gpt-4o-mini"
