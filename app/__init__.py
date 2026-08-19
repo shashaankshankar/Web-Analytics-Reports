@@ -1,1 +1,1 @@
-"""FastAPI application for the measurement reporting platform."""
+"""Automated AI Growth Briefings & Local SEO Intelligence Engine."""
