@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.cli import generate_report
-from app.config import ClientConfig, list_available_clients, load_client_config
+from app.analytics.contracts import ReportType
+from app.config import load_client_config_by_slug, is_production_dispatch_allowed
 
 # Optional lightweight web service / webhook trigger support
 try:
-    from fastapi import FastAPI, HTTPException, BackgroundTasks
-    from fastapi.responses import JSONResponse
+    from fastapi import FastAPI, HTTPException
     
     app = FastAPI(
         title="Client Growth Reports API",
@@ -21,32 +19,31 @@ try:
 
     class ReportTriggerRequest(BaseModel):
         client_slug: str
-        days: int = 28
+        report_type: ReportType = ReportType.PERFORMANCE_28D
+        days: int = Field(default=28, ge=1, le=90)
         send_email: bool = False
         mock_data: bool = False
         dry_run: bool = False
-        model: Optional[str] = None
-        reasoning_effort: Optional[str] = None
 
     @app.get("/health")
     def health():
         return {"status": "ok", "service": "client-growth-reports"}
 
-    @app.get("/clients")
-    def get_clients():
-        return {"clients": list_available_clients()}
-
     @app.post("/reports/generate")
     def trigger_report(req: ReportTriggerRequest):
         try:
+            load_client_config_by_slug(req.client_slug)
+            if req.send_email and not is_production_dispatch_allowed(req.client_slug):
+                raise HTTPException(status_code=403, detail="Client is not enabled for production delivery.")
+            if req.send_email and req.mock_data:
+                raise HTTPException(status_code=400, detail="Mock data cannot be emailed.")
             briefing = generate_report(
                 client_slug=req.client_slug,
+                report_type=req.report_type,
                 days=req.days,
                 send_email=req.send_email,
                 mock_data=req.mock_data,
                 dry_run=req.dry_run,
-                model=req.model,
-                reasoning_effort=req.reasoning_effort,
             )
             return {
                 "status": "success",
@@ -56,8 +53,12 @@ try:
                 "period": briefing.period_label,
                 "executive_summary": briefing.insights.executive_summary,
             }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        except HTTPException:
+            raise
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception:
+            raise HTTPException(status_code=500, detail="Report generation failed; see protected service logs.")
 
 except ImportError:
     app = None

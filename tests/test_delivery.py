@@ -131,6 +131,8 @@ def test_render_growth_email_html(sample_full_briefing):
     assert "dental implants cost" in html
     assert "On-Page Content Expansion" in html
     assert "Detailed Executive PDF Report Attached" in html
+    assert "weekly-action-copy" not in html
+    assert "weekly-action-check" not in html
 
 def test_render_weekly_digest_html(sample_full_briefing):
     sample_full_briefing.report_type = ReportType.WEEKLY
@@ -151,6 +153,8 @@ def test_render_weekly_digest_html(sample_full_briefing):
     assert "Weekly patient inquiries jumped 35%." in html
     assert "Area to Improve" in html
     assert "Update Mobile CTA" in html
+    assert ".weekly-brand-badge" in html
+    assert ".weekly-action-copy" in html
 
 def test_render_growth_email_html_with_discoveries_and_escaping(sample_full_briefing):
     sample_full_briefing.insights.deep_discoveries = [
@@ -183,23 +187,20 @@ def test_resend_sender_validation():
 def test_resend_sender_simulated_when_unconfigured():
     sender = ResendEmailSender(api_key="", from_email="")
     assert sender.is_configured is False
-    res = sender.send_briefing(
-        to_recipients=["client@example.com"],
-        subject="Test Report",
-        html_content="<p>Test</p>",
-    )
-    assert res["status"] == "simulated_unconfigured"
+    with pytest.raises(RuntimeError, match="refusing to treat the report as sent"):
+        sender.send_briefing(
+            to_recipients=["client@example.com"],
+            subject="Test Report",
+            html_content="<p>Test</p>",
+        )
 
 def test_sender_with_comma_separated_recipients():
     sender = ResendEmailSender(api_key="", from_email="")
-    res = sender.send_briefing(
-        to_recipients="client1@example.com, client2@example.com",
-        subject="Test Multi",
-        html_content="<p>Test</p>",
-        cc_recipients="agency@example.com, lead@example.com",
-        idempotency_key="test-key-123",
-    )
-    assert res["status"] == "simulated_unconfigured"
-    assert res["to"] == ["client1@example.com", "client2@example.com"]
-    assert res["idempotency_key"] == "test-key-123"
-
+    with pytest.raises(RuntimeError, match="refusing to treat the report as sent"):
+        sender.send_briefing(
+            to_recipients="client1@example.com, client2@example.com",
+            subject="Test Multi",
+            html_content="<p>Test</p>",
+            cc_recipients="agency@example.com, lead@example.com",
+            idempotency_key="test-key-123",
+        )

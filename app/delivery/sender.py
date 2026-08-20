@@ -55,14 +55,7 @@ class ResendEmailSender:
             valid_cc = [r for r in raw_cc if is_valid_email(r)]
 
         if not self.is_configured:
-            return {
-                "status": "simulated_unconfigured",
-                "message": "Resend API key or sender email not configured; delivery skipped.",
-                "to": valid_to,
-                "cc": valid_cc,
-                "subject": subject,
-                "idempotency_key": idempotency_key,
-            }
+            raise RuntimeError("Resend delivery is not configured; refusing to treat the report as sent.")
 
         payload: dict = {
             "from": self.from_email,

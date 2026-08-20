@@ -331,14 +331,17 @@ def fallback_growth_briefing(data: GrowthAnalysisInput) -> AIReportOutput:
             priority="High",
             evidence=f"Supporting {conv_val} key consultation inquiries",
         ),
-        ActionItem(
-            title="Strengthen Local Google Maps Profile",
-            description="Ensure local practice details remain consistent and support regular patient review collection to maintain map prominence.",
-            impact_area="Local",
-            priority="Medium",
-            evidence=f"Direct calls ({data.local_seo.phone_calls}) and direction requests ({data.local_seo.direction_requests})",
-        ),
     ]
+    if data.local_seo.phone_calls > 0 or data.local_seo.direction_requests > 0 or data.local_seo.total_reviews_count is not None:
+        action_plan.append(
+            ActionItem(
+                title="Strengthen Local Google Maps Profile",
+                description="Ensure local practice details remain consistent and support regular patient review collection to maintain map prominence.",
+                impact_area="Local",
+                priority="Medium",
+                evidence=f"Verified local profile signals; calls ({data.local_seo.phone_calls}) and directions ({data.local_seo.direction_requests}) where available",
+            )
+        )
 
     out = AIReportOutput(
         executive_summary=exec_summary,
@@ -372,10 +375,12 @@ class GrowthAnalyst:
         self.reasoning_mode = reasoning_mode or settings.llm_reasoning_mode
         self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
         self.http_client = http_client
+        self.used_fallback = False
 
     def analyze_weekly(self, data: GrowthAnalysisInput) -> WeeklyDigestOutput:
         """Synthesize 7-day metrics into a concise WeeklyDigestOutput."""
         if not self.api_key or self.api_key.strip() == "":
+            self.used_fallback = True
             return fallback_weekly_briefing(data)
 
         prompt = build_weekly_user_prompt(data)
@@ -404,6 +409,7 @@ class GrowthAnalyst:
                     response = client.post(endpoint, headers=headers, json=payload)
 
             if response.status_code != 200:
+                self.used_fallback = True
                 return fallback_weekly_briefing(data)
 
             res_json = response.json()
@@ -417,11 +423,13 @@ class GrowthAnalyst:
             raw_output = WeeklyDigestOutput(**parsed)
             return sanitize_weekly_output(raw_output)
         except Exception:
+            self.used_fallback = True
             return fallback_weekly_briefing(data)
 
     def analyze(self, data: GrowthAnalysisInput) -> AIReportOutput:
         """Synthesize structured growth metrics into executive AI briefing."""
         if not self.api_key or self.api_key.strip() == "":
+            self.used_fallback = True
             return fallback_growth_briefing(data)
 
         prompt = build_performance_user_prompt(data)
@@ -450,6 +458,7 @@ class GrowthAnalyst:
                     response = client.post(endpoint, headers=headers, json=payload)
 
             if response.status_code != 200:
+                self.used_fallback = True
                 return fallback_growth_briefing(data)
 
             res_json = response.json()
@@ -463,8 +472,8 @@ class GrowthAnalyst:
             raw_output = AIReportOutput(**parsed)
             return sanitize_report_output(raw_output)
         except Exception:
+            self.used_fallback = True
             return fallback_growth_briefing(data)
 
 # Backward compatibility alias
 build_user_prompt = build_performance_user_prompt
-

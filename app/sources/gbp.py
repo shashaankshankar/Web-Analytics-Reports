@@ -52,9 +52,12 @@ class GoogleBusinessProfileExtractor:
         self,
         start_date: str,
         end_date: str,
+        strict: bool = False,
     ) -> Dict[str, Any]:
         """Fetch call clicks, direction requests, website clicks, and review summaries from GBP."""
         if not self.is_configured():
+            if strict:
+                raise RuntimeError("Google Business Profile location is not configured.")
             return {
                 "phone_calls": 0,
                 "prior_phone_calls": 0,
@@ -69,6 +72,8 @@ class GoogleBusinessProfileExtractor:
 
         token = self.get_token()
         if not token:
+            if strict:
+                raise RuntimeError("Google Business Profile credentials are unavailable.")
             return {
                 "phone_calls": 0,
                 "prior_phone_calls": 0,
@@ -116,8 +121,10 @@ class GoogleBusinessProfileExtractor:
                     "total_reviews_count": data.get("userRatingCount"),
                     "recent_review_snippets": snippets,
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                place_error = exc
+        else:
+            place_error = None
 
         # Query Google Business Profile API if configured and token exists
         url = f"https://mybusinessbusinessinformation.googleapis.com/v1/{self.location_id}"
@@ -135,7 +142,9 @@ class GoogleBusinessProfileExtractor:
                 "total_reviews_count": res.get("totalReviewCount"),
                 "recent_review_snippets": [],
             }
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise RuntimeError("Google Business Profile request failed.") from (place_error if place_error else exc)
             return {
                 "phone_calls": 0,
                 "prior_phone_calls": 0,

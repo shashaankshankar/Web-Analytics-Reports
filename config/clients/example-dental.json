@@ -17,5 +17,9 @@
     "agency_cc": "reports@growthagency.example.com"
   },
   "timezone": "America/New_York",
-  "monthly_retainer_focus": "Local SEO, high-value cosmetic & implant inquiries"
+  "monthly_retainer_focus": "Local SEO, high-value cosmetic & implant inquiries",
+  "reporting": {
+    "weekly_digest": {"enabled": false},
+    "performance_report": {"enabled": false}
+  }
 }

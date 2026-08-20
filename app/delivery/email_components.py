@@ -67,7 +67,13 @@ def render_kpi_card(metric: MetricDelta, primary_color: str = '#000000', accent_
     </div>
     '''
 
-def render_action_card(action: ActionItem, primary_color: str = '#000000', accent_color: str = '#C6A15B', is_last: bool = False) -> str:
+def render_action_card(
+    action: ActionItem,
+    primary_color: str = '#000000',
+    accent_color: str = '#C6A15B',
+    is_last: bool = False,
+    responsive_mobile: bool = False,
+) -> str:
     """Render a prioritized strategic action row item matching client-friendly language."""
     title = html.escape(action.title)
     desc = html.escape(action.description)
@@ -88,23 +94,26 @@ def render_action_card(action: ActionItem, primary_color: str = '#000000', accen
 
     evidence_html = f'<div style="margin-top: 4px; font-size: 11px; color: #515F74; font-family: {FONT_FAMILY_MAIN};"><span style="font-weight: 600;">Context:</span> {evidence}</div>' if evidence else ''
 
+    copy_class = 'weekly-action-copy' if responsive_mobile else ''
+    badge_class = 'weekly-action-badge' if responsive_mobile else ''
+    check_class = 'weekly-action-check' if responsive_mobile else ''
+
     return f'''
     <div style="padding: 14px 16px; {border_bottom}">
       <table role="presentation" style="width: 100%; border-collapse: collapse;">
         <tr>
-          <td style="width: 24px; vertical-align: top; padding-top: 2px; padding-right: 12px;">
+          <td class="{check_class}" style="width: 24px; vertical-align: top; padding-top: 2px; padding-right: 12px;">
             <div style="width: 16px; height: 16px; border: 1.5px solid {primary_color if primary_color else '#76777D'}; border-radius: 2px; background: #FFFFFF;"></div>
           </td>
-          <td style="vertical-align: middle;">
+          <td class="{copy_class}" style="vertical-align: middle;">
             <div style="font-family: {FONT_FAMILY_MAIN}; color: #191C1E; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; margin-bottom: 2px;">{title}</div>
             <div style="font-family: {FONT_FAMILY_MAIN}; color: #515F74; font-size: 13px; line-height: 1.45;">{desc}</div>
             {evidence_html}
           </td>
-          <td style="text-align: right; vertical-align: middle; white-space: nowrap; padding-left: 12px;">
+          <td class="{badge_class}" style="text-align: right; vertical-align: middle; white-space: nowrap; padding-left: 12px;">
             <span style="{p_badge} padding: 3px 8px; border-radius: 2px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; font-family: {FONT_FAMILY_MAIN}; display: inline-block;">{priority_label}</span>
           </td>
         </tr>
       </table>
     </div>
     '''
-

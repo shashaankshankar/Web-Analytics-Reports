@@ -54,13 +54,18 @@ class SearchConsoleExtractor:
         row_limit: int = 1000,
         data_state: str = "final",
         query_filter: Optional[str] = None,
+        strict: bool = False,
     ) -> List[Dict[str, Any]]:
         """Fetch search queries, clicks, impressions, CTR, and average position."""
         if not self.is_configured():
+            if strict:
+                raise RuntimeError("Search Console site is not configured.")
             return []
 
         token = self.get_token()
         if not token:
+            if strict:
+                raise RuntimeError("Search Console credentials are unavailable.")
             return []
 
         encoded_site = urllib.parse.quote(self.site_url, safe="")
@@ -83,7 +88,9 @@ class SearchConsoleExtractor:
 
         try:
             result = self.requester(url, token, payload)
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise RuntimeError("Search Console request failed.") from exc
             return []
 
         rows = result.get("rows", [])
@@ -110,8 +117,9 @@ class SearchConsoleExtractor:
         prior_start_date: str,
         prior_end_date: str,
         row_limit: int = 1000,
+        strict: bool = False,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Fetch both current and prior period search queries."""
-        current = self.fetch_search_analytics(start_date, end_date, row_limit=row_limit)
-        prior = self.fetch_search_analytics(prior_start_date, prior_end_date, row_limit=row_limit)
+        current = self.fetch_search_analytics(start_date, end_date, row_limit=row_limit, strict=strict)
+        prior = self.fetch_search_analytics(prior_start_date, prior_end_date, row_limit=row_limit, strict=strict)
         return current, prior

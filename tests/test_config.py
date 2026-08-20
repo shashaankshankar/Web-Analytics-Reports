@@ -1,7 +1,7 @@
 from pathlib import Path
 import pytest
 from pydantic import ValidationError
-from app.config import ClientConfig, BrandingConfig, load_client_config, list_available_clients, Settings
+from app.config import ClientConfig, BrandingConfig, load_client_config, load_client_config_by_slug, list_available_clients, Settings
 
 def test_valid_client_config(sample_client_config_path):
     config = load_client_config(sample_client_config_path)
@@ -47,3 +47,14 @@ def test_settings_from_env(monkeypatch):
     assert settings.llm_model == "openai/gpt-5.6-luna"
     assert settings.llm_reasoning_effort == "medium"
     assert settings.llm_reasoning_mode == "standard"
+
+def test_slug_loader_rejects_paths(tmp_path):
+    with pytest.raises(ValueError):
+        load_client_config_by_slug("../thehouseofdental", config_dir=tmp_path)
+
+def test_delivery_requires_explicit_allowlist(monkeypatch):
+    monkeypatch.setenv("REPORT_DELIVERY_ENABLED", "true")
+    monkeypatch.setenv("REPORT_ALLOWED_CLIENTS", "thehouseofdental")
+    settings = Settings.from_env()
+    assert settings.report_delivery_enabled is True
+    assert settings.report_allowed_clients == ("thehouseofdental",)

@@ -99,11 +99,11 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
     num_acts = len(insights.next_actions[:2])
     for idx, act in enumerate(insights.next_actions[:2]):
         is_last = (idx == num_acts - 1)
-        actions_html += render_action_card(act, primary_color, accent_color, is_last=is_last)
+        actions_html += render_action_card(act, primary_color, accent_color, is_last=is_last, responsive_mobile=True)
     if not actions_html:
         actions_html = f'<div style="padding: 16px; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: #515F74;">Continue standard optimization schedule.</div>'
 
-    logo_markup = f'<img src="{html.escape(logo_url)}" alt="{client_name}" height="52" style="height: 52px; width: auto; max-width: 260px; max-height: 56px; display: block; border: 0;" />' if logo_url else f'<span style="font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 700; color: {header_text_color}; letter-spacing: -0.01em;">{client_name}</span>'
+    logo_markup = f'<img class="weekly-brand-logo" src="{html.escape(logo_url)}" alt="{client_name}" height="52" style="height: 52px; width: auto; max-width: 260px; max-height: 56px; display: block; border: 0;" />' if logo_url else f'<span class="weekly-brand-logo" style="font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 700; color: {header_text_color}; letter-spacing: -0.01em;">{client_name}</span>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -114,6 +114,52 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Work+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    @media screen and (max-width: 480px) {{
+      .weekly-brand-logo-cell,
+      .weekly-brand-badge-cell {{
+        display: block !important;
+        width: 100% !important;
+        box-sizing: border-box !important;
+        text-align: center !important;
+      }}
+      .weekly-brand-logo-cell {{
+        padding-bottom: 10px !important;
+      }}
+      .weekly-brand-logo {{
+        height: auto !important;
+        max-width: 190px !important;
+        max-height: 44px !important;
+        margin: 0 auto !important;
+      }}
+      .weekly-brand-badge {{
+        white-space: nowrap !important;
+        padding: 5px 9px !important;
+        font-size: 10px !important;
+        letter-spacing: 0.04em !important;
+      }}
+      .weekly-action-copy,
+      .weekly-action-badge,
+      .weekly-action-check {{
+        display: block !important;
+        width: auto !important;
+        box-sizing: border-box !important;
+        text-align: left !important;
+      }}
+      .weekly-action-check {{
+        width: 100% !important;
+        padding: 0 0 8px 0 !important;
+      }}
+      .weekly-action-badge {{
+        padding: 10px 0 0 0 !important;
+        white-space: normal !important;
+      }}
+      .weekly-action-badge span {{
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }}
+    }}
+  </style>
 </head>
 <body style="margin: 0; padding: 0; background-color: #F7F9FB; font-family: {FONT_FAMILY_MAIN}; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; color: #191C1E;">
   <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #F7F9FB; padding: 24px 0;">
@@ -126,11 +172,11 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
             <td style="background-color: {primary_color}; padding: 18px 24px; border-bottom: 2px solid {accent_color};">
               <table role="presentation" style="width: 100%; border-collapse: collapse;">
                 <tr>
-                  <td style="vertical-align: middle;">
+                  <td class="weekly-brand-logo-cell" style="vertical-align: middle;">
                     {logo_markup}
                   </td>
-                  <td style="text-align: right; vertical-align: middle;">
-                    <span style="display: inline-block; background-color: {pill_bg}; color: {pill_text}; padding: 5px 10px; border-radius: 2px; font-family: {FONT_FAMILY_MAIN}; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;">
+                  <td class="weekly-brand-badge-cell" style="text-align: right; vertical-align: middle;">
+                    <span class="weekly-brand-badge" style="display: inline-block; background-color: {pill_bg}; color: {pill_text}; padding: 5px 10px; border-radius: 2px; font-family: {FONT_FAMILY_MAIN}; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;">
                       Weekly Digest
                     </span>
                   </td>

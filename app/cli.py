@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -14,7 +15,7 @@ from app.ai.analyst import GrowthAnalyst
 from app.ai.tools import MultiSourceAnalyticsToolkit
 from app.analytics.contracts import FullGrowthBriefing, REPORT_SPECS, ReportType
 from app.analytics.metrics import aggregate_growth_metrics, calculate_date_ranges
-from app.config import ClientConfig, list_available_clients, load_client_config
+from app.config import ClientConfig, is_production_dispatch_allowed, list_available_clients, load_client_config, load_client_config_by_slug
 from app.delivery.email_template import render_growth_email_html
 from app.delivery.pdf_builder import build_executive_pdf
 from app.delivery.sender import ResendEmailSender
@@ -71,6 +72,7 @@ def generate_report(
     model: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     recipient_override: Optional[str] = None,
+    test_send: bool = False,
 ) -> FullGrowthBriefing:
     """Run complete growth intelligence pipeline for a specific client."""
     if isinstance(report_type, str):
@@ -81,7 +83,21 @@ def generate_report(
     spec = REPORT_SPECS[rtype]
     period_days = days if days is not None else spec.default_days
 
-    client = load_client_config(client_slug)
+    if test_send and not send_email:
+        raise RuntimeError("--test-send requires --send.")
+
+    client = load_client_config_by_slug(client_slug)
+    if send_email:
+        if mock_data or client.ga4_property_id in ("", "mock", "123456789", "987654321"):
+            raise RuntimeError("Mock or placeholder analytics configurations cannot send client email.")
+        if recipient_override:
+            raise RuntimeError("Recipient overrides are not permitted for production delivery.")
+        if not is_production_dispatch_allowed(client.client_id):
+            raise RuntimeError("Client is not enabled for production delivery.")
+        if rtype == ReportType.WEEKLY and not client.reporting.weekly_digest.enabled:
+            raise RuntimeError("Weekly delivery is disabled for this client.")
+        if rtype == ReportType.PERFORMANCE_28D and not client.reporting.performance_report.enabled:
+            raise RuntimeError("Performance delivery is disabled for this client.")
     print(f"[*] Loaded client configuration: {client.company_name} ({client.client_id})")
     print(f"[*] Report Type: {spec.display_name} ({period_days} days)")
 
@@ -208,12 +224,18 @@ def generate_report(
         print("[*] Ingestion: Connecting to live Google API endpoints...")
         ga4_ext = GA4Extractor(client.ga4_property_id)
         ga4_data = ga4_ext.fetch_metrics_and_channels(start_date, end_date, prior_start_date, prior_end_date)
+        if ga4_data.get("errors"):
+            raise RuntimeError("GA4 data retrieval failed; refusing to generate a client report.")
 
         gsc_ext = SearchConsoleExtractor(client.gsc_site_url)
-        gsc_queries, prior_gsc_queries = gsc_ext.fetch_comparative_search_analytics(start_date, end_date, prior_start_date, prior_end_date)
+        gsc_queries, prior_gsc_queries = gsc_ext.fetch_comparative_search_analytics(
+            start_date, end_date, prior_start_date, prior_end_date, strict=send_email
+        )
 
         gbp_ext = GoogleBusinessProfileExtractor(client.gbp_location_id)
-        gbp_data = gbp_ext.fetch_local_insights(start_date, end_date)
+        gbp_data = gbp_ext.fetch_local_insights(
+            start_date, end_date, strict=send_email and bool(client.gbp_location_id)
+        )
 
     # 3. Deterministic Aggregation
     print("[*] Pre-processing & calculating metric deltas...")
@@ -242,6 +264,9 @@ def generate_report(
         insights = analyst.analyze(growth_input)
     else:
         insights = analyst.analyze(growth_input)
+
+    if send_email and analyst.used_fallback:
+        raise RuntimeError("OpenRouter synthesis failed or was unavailable; refusing to email fallback content.")
 
     # 4b. Optional Exploratory Deep Discoveries
     if explore_deep_insights and rtype == ReportType.PERFORMANCE_28D:
@@ -331,10 +356,12 @@ def generate_report(
         client_email = target_recipient
         agency_cc = client.recipients.get("agency_cc")
         if not client_email:
-            print("[!] Warning: No client email configured; skipping dispatch.")
+            raise RuntimeError("No client recipient is configured; refusing to skip delivery.")
         else:
             print(f"[*] Dispatching briefing to {client_email} (CC: {agency_cc or 'None'})...")
             sender = ResendEmailSender()
+            if not sender.is_configured:
+                raise RuntimeError("Resend delivery is not configured; refusing to send.")
             to_list = [client_email]
             cc_list = [agency_cc] if agency_cc else []
             if rtype == ReportType.WEEKLY:
@@ -344,6 +371,9 @@ def generate_report(
 
             # Idempotency key to prevent double dispatch
             idempotency_raw = f"{client.client_id}:{rtype.value}:{start_date}:{end_date}"
+            if test_send:
+                idempotency_raw += f":test:{uuid.uuid4()}"
+                print("[!] Test send enabled: using a fresh idempotency key for this deliberate re-send.")
             idempotency_key = hashlib.sha256(idempotency_raw.encode("utf-8")).hexdigest()
 
             res = sender.send_briefing(
@@ -371,6 +401,7 @@ def main():
     gen_parser.add_argument("--report", "-r", choices=["weekly", "performance"], default="performance", help="Report cadence variant (weekly=7d, performance=28d)")
     gen_parser.add_argument("--days", "-d", type=int, default=None, help="Period days override")
     gen_parser.add_argument("--send", "-s", action="store_true", help="Send the report email via Resend")
+    gen_parser.add_argument("--test-send", action="store_true", help="Deliberately re-send via Resend with a fresh idempotency key")
     gen_parser.add_argument("--to", type=str, default=None, help="Recipient override for QA testing")
     gen_parser.add_argument("--mock", "-m", action="store_true", help="Use mock/synthetic analytics data")
     gen_parser.add_argument("--explore", "--deep-insights", dest="explore", action="store_true", help="Run exploratory multi-source analysis agent")
@@ -419,6 +450,7 @@ def main():
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
                 recipient_override=args.to,
+                test_send=args.test_send,
             )
             print("\n[✓] Growth briefing pipeline completed successfully.")
         except Exception as e:

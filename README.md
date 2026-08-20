@@ -57,8 +57,9 @@ python -m app.cli list-clients
 # Generate a 28-day growth briefing (HTML + Executive PDF)
 python -m app.cli generate --client example-dental --mock
 
-# Generate and send directly via Resend to client & agency
-python -m app.cli generate --client example-dental --send
+# Generate a report locally; production delivery requires the explicit
+# REPORT_DELIVERY_ENABLED and REPORT_ALLOWED_CLIENTS settings in DEPLOYMENT.md
+python -m app.cli generate --client thehouseofdental --report performance
 ```
 
 ### 4. Run Test Suite
@@ -66,3 +67,11 @@ python -m app.cli generate --client example-dental --send
 ```bash
 pytest
 ```
+
+## Scheduled production deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the private Cloud Run and authenticated
+Cloud Scheduler setup. Local and mock runs never enable delivery. Production
+email requires `REPORT_DELIVERY_ENABLED=true` and an explicit
+`REPORT_ALLOWED_CLIENTS` allowlist; the initial allowlist should contain only
+`thehouseofdental`.

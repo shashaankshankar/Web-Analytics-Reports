@@ -85,6 +85,17 @@ def load_client_config(client_slug_or_path: str | Path, config_dir: Path | None 
 
     return ClientConfig(**data)
 
+def load_client_config_by_slug(client_slug: str, config_dir: Path | None = None) -> ClientConfig:
+    """Load only a configured client slug; never interpret caller input as a path."""
+    if not re.match(r"^[a-z0-9_-]+$", client_slug.strip().lower()):
+        raise ValueError("Client slug must contain only lowercase letters, numbers, dashes, or underscores.")
+    slug = client_slug.strip().lower()
+    base_dir = config_dir or CONFIG_DIR
+    path = (base_dir / f"{slug}.json").resolve()
+    if path.parent != base_dir.resolve():
+        raise ValueError("Client configuration must be inside the configured client directory.")
+    return load_client_config(path, config_dir=base_dir)
+
 def list_available_clients(config_dir: Path | None = None) -> list[str]:
     """List all available client configuration slugs in the clients directory."""
     base_dir = config_dir or CONFIG_DIR
@@ -103,7 +114,20 @@ class Settings(BaseModel):
     llm_model: str = Field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-5.6-luna"))
     llm_reasoning_mode: str = Field(default_factory=lambda: os.getenv("LLM_REASONING_MODE", "standard"))
     llm_reasoning_effort: str = Field(default_factory=lambda: os.getenv("LLM_REASONING_EFFORT", "medium"))
+    report_delivery_enabled: bool = Field(default_factory=lambda: os.getenv("REPORT_DELIVERY_ENABLED", "false").lower() == "true")
+    report_allowed_clients: tuple[str, ...] = Field(
+        default_factory=lambda: tuple(
+            slug.strip().lower()
+            for slug in os.getenv("REPORT_ALLOWED_CLIENTS", "").split(",")
+            if slug.strip()
+        )
+    )
 
     @classmethod
     def from_env(cls) -> Settings:
         return cls()
+
+def is_production_dispatch_allowed(client_slug: str) -> bool:
+    """Require an explicit deployment allowlist before any real email dispatch."""
+    settings = Settings.from_env()
+    return settings.report_delivery_enabled and client_slug.strip().lower() in settings.report_allowed_clients

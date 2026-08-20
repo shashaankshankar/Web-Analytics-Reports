@@ -148,6 +148,13 @@ class GA4Extractor:
         curr_events_raw = self.run_report(start_date, end_date, ["eventName"], ["eventCount"])
         prior_events_raw = self.run_report(prior_start_date, prior_end_date, ["eventName"], ["eventCount"])
 
+        errors = [
+            raw.get("error")
+            for raw in (curr_summary_raw, prior_summary_raw, curr_channels_raw, prior_channels_raw,
+                        curr_pages_raw, prior_pages_raw, curr_events_raw, prior_events_raw)
+            if raw.get("error")
+        ]
+
         events = {r["dimensions"][0]: int(float(r["metrics"][0])) for r in curr_events_raw.get("rows", [])}
         prior_events = {r["dimensions"][0]: int(float(r["metrics"][0])) for r in prior_events_raw.get("rows", [])}
 
@@ -158,4 +165,5 @@ class GA4Extractor:
             "pages": pages,
             "events": events,
             "prior_events": prior_events,
+            "errors": errors,
         }
