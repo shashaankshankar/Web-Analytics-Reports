@@ -206,17 +206,14 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
             </td>
           </tr>
 
-          <!-- Footer -->
-          <tr>
-            <td style="background-color: #FFFFFF; border-top: 1px solid rgba(0, 0, 0, 0.12); padding: 20px 24px; text-align: center;">
-              <p style="margin: 0 0 10px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 12px; color: #515F74;">
-                &copy; 2026 {client_name} &bull; Delivered weekly by your Growth Team.
-              </p>
-              <div style="font-family: {FONT_FAMILY_MAIN}; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #515F74;">
-                <a href="#" style="color: #515F74; text-decoration: none;">Privacy Policy</a> &nbsp;|&nbsp; <a href="#" style="color: #515F74; text-decoration: none;">Contact Support</a> &nbsp;|&nbsp; <a href="#" style="color: #515F74; text-decoration: none;">Unsubscribe</a>
-              </div>
-            </td>
-          </tr>
+        <!-- Footer -->
+        <tr>
+          <td style="background-color: #FFFFFF; border-top: 1px solid rgba(0, 0, 0, 0.12); padding: 20px 24px; text-align: center;">
+            <p style="margin: 0; font-family: {FONT_FAMILY_MAIN}; font-size: 12px; color: #515F74;">
+               &copy; 2026 {client_name} &bull; Prepared by Vector Studios.
+            </p>
+           </td>
+         </tr>
 
         </table>
       </td>
@@ -225,4 +222,3 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
 </body>
 </html>
 """
-

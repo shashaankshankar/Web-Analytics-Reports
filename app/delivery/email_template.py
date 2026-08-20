@@ -375,20 +375,17 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
             </td>
           </tr>
 
-          <!-- Footer -->
-          <tr>
-            <td style="background-color: #FFFFFF; border-top: 1px solid rgba(0, 0, 0, 0.12); padding: 24px 32px; text-align: center;">
-              <div style="display: inline-block; background: #F2F4F6; border: 1px solid #E0E3E5; border-left: 3px solid {accent_color}; padding: 6px 14px; border-radius: 2px; font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; font-weight: 600; color: #191C1E; margin-bottom: 12px;">
-                &#128206; Detailed Executive PDF Report Attached
-              </div>
-              <p style="margin: 0 0 12px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 12px; color: #515F74;">
-                &copy; 2026 {client_name} &bull; Confidential Executive Report.
-              </p>
-              <div style="font-family: {FONT_FAMILY_MAIN}; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #515F74;">
-                <a href="#" style="color: #515F74; text-decoration: none;">Privacy Policy</a> &nbsp;|&nbsp; <a href="#" style="color: #515F74; text-decoration: none;">Contact Support</a> &nbsp;|&nbsp; <a href="#" style="color: #515F74; text-decoration: none;">Unsubscribe</a>
-              </div>
-            </td>
-          </tr>
+         <!-- Footer -->
+         <tr>
+           <td style="background-color: #FFFFFF; border-top: 1px solid rgba(0, 0, 0, 0.12); padding: 24px 32px; text-align: center;">
+             <div style="display: inline-block; background: #F2F4F6; border: 1px solid #E0E3E5; border-left: 3px solid {accent_color}; padding: 6px 14px; border-radius: 2px; font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; font-weight: 600; color: #191C1E; margin-bottom: 12px;">
+               &#128206; Detailed Executive PDF Report Attached
+             </div>
+             <p style="margin: 0; font-family: {FONT_FAMILY_MAIN}; font-size: 12px; color: #515F74;">
+               &copy; 2026 {client_name} &bull; Confidential Executive Report.
+             </p>
+           </td>
+         </tr>
 
         </table>
       </td>
@@ -397,4 +394,3 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
 </body>
 </html>
 """
-

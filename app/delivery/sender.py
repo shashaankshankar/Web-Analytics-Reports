@@ -85,6 +85,7 @@ class ResendEmailSender:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "ClientGrowthReports/1.0",
         }
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
