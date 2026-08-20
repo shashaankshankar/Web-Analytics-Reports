@@ -4,12 +4,11 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 from pydantic import BaseModel, Field, field_validator
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "config" / "clients"
-
 
 class BrandingConfig(BaseModel):
     primary_color: str = "#1E3A8A"
@@ -25,6 +24,20 @@ class BrandingConfig(BaseModel):
             return "#1E3A8A"
         return v
 
+class WeeklyDigestConfig(BaseModel):
+    enabled: bool = True
+    day: str = "monday"
+    attach_pdf: bool = False
+
+class PerformanceReportConfig(BaseModel):
+    enabled: bool = True
+    cadence: str = "28d"
+    attach_pdf: bool = True
+    deep_insights: bool = False
+
+class ReportingSettingsConfig(BaseModel):
+    weekly_digest: WeeklyDigestConfig = Field(default_factory=WeeklyDigestConfig)
+    performance_report: PerformanceReportConfig = Field(default_factory=PerformanceReportConfig)
 
 class ClientConfig(BaseModel):
     client_id: str = Field(..., description="Unique slug identifier for client")
@@ -38,6 +51,7 @@ class ClientConfig(BaseModel):
     recipients: dict[str, str] = Field(default_factory=dict, description="Recipient email map")
     timezone: str = Field(default="America/New_York", description="Local business timezone")
     monthly_retainer_focus: str = Field(default="", description="Agency goals & monthly priority focus")
+    reporting: ReportingSettingsConfig = Field(default_factory=ReportingSettingsConfig)
 
     @field_validator("client_id")
     @classmethod
@@ -55,7 +69,6 @@ class ClientConfig(BaseModel):
             v = f"https://{v}"
         return v
 
-
 def load_client_config(client_slug_or_path: str | Path, config_dir: Path | None = None) -> ClientConfig:
     """Load a client configuration by slug from config/clients/<slug>.json or from a direct file path."""
     path = Path(client_slug_or_path)
@@ -72,14 +85,12 @@ def load_client_config(client_slug_or_path: str | Path, config_dir: Path | None 
 
     return ClientConfig(**data)
 
-
 def list_available_clients(config_dir: Path | None = None) -> list[str]:
     """List all available client configuration slugs in the clients directory."""
     base_dir = config_dir or CONFIG_DIR
     if not base_dir.exists():
         return []
     return sorted([p.stem for p in base_dir.glob("*.json")])
-
 
 class Settings(BaseModel):
     openrouter_api_key: str = Field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))

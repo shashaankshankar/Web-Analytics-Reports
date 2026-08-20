@@ -4,7 +4,7 @@ import json
 import urllib.parse
 import urllib.request
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import google.auth
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -44,7 +44,7 @@ class SearchConsoleExtractor:
             credentials.refresh(GoogleAuthRequest())
             self._access_token = credentials.token
             return self._access_token
-        except Exception as e:
+        except Exception:
             return ""
 
     def fetch_search_analytics(
@@ -102,3 +102,16 @@ class SearchConsoleExtractor:
                 "position": round(position, 1),
             })
         return output
+
+    def fetch_comparative_search_analytics(
+        self,
+        start_date: str,
+        end_date: str,
+        prior_start_date: str,
+        prior_end_date: str,
+        row_limit: int = 1000,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Fetch both current and prior period search queries."""
+        current = self.fetch_search_analytics(start_date, end_date, row_limit=row_limit)
+        prior = self.fetch_search_analytics(prior_start_date, prior_end_date, row_limit=row_limit)
+        return current, prior

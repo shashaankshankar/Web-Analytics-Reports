@@ -1,31 +1,37 @@
 import json
 from unittest.mock import MagicMock
 import pytest
-from app.ai.analyst import GrowthAnalyst, fallback_growth_briefing, build_user_prompt
+from app.ai.analyst import (
+    GrowthAnalyst,
+    fallback_growth_briefing,
+    fallback_weekly_briefing,
+    build_weekly_user_prompt,
+    build_performance_user_prompt,
+)
 from app.analytics.contracts import (
     AIReportOutput,
-    GrowthAnalysisInput,
-    MetricDelta,
     ChannelPerformance,
-    PagePerformance,
-    StrikingDistanceKeyword,
+    GrowthAnalysisInput,
     LocalInteractionData,
+    MetricDelta,
+    PagePerformance,
+    ReportType,
+    StrikingDistanceKeyword,
+    WeeklyDigestOutput,
 )
 
-@pytest.fixture
-def sample_growth_input():
-    return GrowthAnalysisInput
-
-def make_growth_input():
+def make_growth_input(report_type: ReportType = ReportType.PERFORMANCE_28D, period_days: int = 28):
     return GrowthAnalysisInput(
         client_id="test-client",
         company_name="Test Company",
         domain="https://test.example.com",
         industry="healthcare",
-        period_start="2026-07-22",
+        report_type=report_type,
+        period_days=period_days,
+        period_start="2026-07-22" if period_days == 28 else "2026-08-12",
         period_end="2026-08-18",
-        comparison_start="2026-06-24",
-        comparison_end="2026-07-21",
+        comparison_start="2026-06-24" if period_days == 28 else "2026-08-05",
+        comparison_end="2026-07-21" if period_days == 28 else "2026-08-11",
         monthly_retainer_focus="Local patient acquisition",
         core_metrics=[
             MetricDelta(
@@ -38,13 +44,15 @@ def make_growth_input():
                 direction="up",
             ),
             MetricDelta(
-                metric_name="active_users",
-                display_name="Active Users",
-                current_value=950,
-                prior_value=800,
-                absolute_change=150,
-                percentage_change=18.8,
+                metric_name="conversion_rate",
+                display_name="Conversion Rate",
+                current_value=3.5,
+                prior_value=3.0,
+                absolute_change=0.5,
+                percentage_points_change=0.5,
+                is_percentage_rate=True,
                 direction="up",
+                unit="percentage",
             ),
         ],
         top_channels=[
@@ -93,8 +101,18 @@ def test_fallback_growth_briefing():
     assert len(briefing.executive_summary) == 3
     assert "1,200" in briefing.executive_summary[0]
     assert "Organic Search" in briefing.executive_summary[1]
+    assert briefing.biggest_win != ""
     assert len(briefing.agency_action_plan) >= 2
     assert briefing.overall_sentiment == "Growth"
+
+def test_fallback_weekly_briefing():
+    sample_growth_input = make_growth_input(report_type=ReportType.WEEKLY, period_days=7)
+    weekly = fallback_weekly_briefing(sample_growth_input)
+    assert isinstance(weekly, WeeklyDigestOutput)
+    assert "1,200" in weekly.biggest_win
+    assert "Organic Search" in weekly.acquisition_insight
+    assert len(weekly.next_actions) <= 2
+    assert weekly.overall_sentiment == "Growth"
 
 def test_growth_analyst_fallback_when_no_api_key():
     sample_growth_input = make_growth_input()
@@ -103,8 +121,8 @@ def test_growth_analyst_fallback_when_no_api_key():
     assert isinstance(briefing, AIReportOutput)
     assert len(briefing.executive_summary) == 3
 
-def test_growth_analyst_with_mock_client():
-    sample_growth_input = make_growth_input()
+def test_growth_analyst_weekly_with_mock_client():
+    sample_growth_input = make_growth_input(report_type=ReportType.WEEKLY, period_days=7)
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -112,21 +130,13 @@ def test_growth_analyst_with_mock_client():
             {
                 "message": {
                     "content": json.dumps({
-                        "executive_summary": [
-                            "Win 1: Strong 20% organic session lift.",
-                            "Win 2: Direct local conversions up 38%.",
-                            "Focus 3: Page 2 striking queries primed for breakthrough."
-                        ],
-                        "traffic_and_inflow_insights": "Organic search drove over 58% of overall traffic.",
-                        "seo_and_content_opportunities": "Targeting dentist near me with dedicated FAQ will move it to rank 3.",
-                        "local_seo_insights": "Direct calls grew from 18 to 25.",
-                        "agency_action_plan": [
-                            {
-                                "title": "On-page Optimization",
-                                "description": "Update headers and metadata.",
-                                "impact_area": "SEO",
-                                "priority": "High"
-                            }
+                        "biggest_win": "Organic sessions grew 20% to 1,200.",
+                        "needs_attention": None,
+                        "acquisition_insight": "Search remains the primary qualified driver.",
+                        "search_opportunity": "Target dentist near me to capture top-3 map pack.",
+                        "local_insight": "Direct calls rose to 25.",
+                        "next_actions": [
+                            {"title": "Header optimization", "description": "Update H2 tags.", "impact_area": "SEO", "priority": "High", "evidence": "Pos 11.2 rank"}
                         ],
                         "overall_sentiment": "Growth"
                     })
@@ -136,11 +146,10 @@ def test_growth_analyst_with_mock_client():
     }
     mock_http = MagicMock()
     mock_http.post.return_value = mock_response
-    
     analyst = GrowthAnalyst(api_key="sk-test-key", http_client=mock_http)
-    briefing = analyst.analyze(sample_growth_input)
-    assert briefing.executive_summary[0] == "Win 1: Strong 20% organic session lift."
-    assert briefing.agency_action_plan[0].title == "On-page Optimization"
+    weekly = analyst.analyze_weekly(sample_growth_input)
+    assert weekly.biggest_win == "Organic sessions grew 20% to 1,200."
+    assert len(weekly.next_actions) == 1
 
 def test_growth_analyst_openrouter_payload():
     sample_growth_input = make_growth_input()
@@ -152,11 +161,14 @@ def test_growth_analyst_openrouter_payload():
                 "message": {
                     "content": json.dumps({
                         "executive_summary": ["Point 1", "Point 2", "Point 3"],
+                        "biggest_win": "Win 1",
+                        "watch_item": "Watch 1",
                         "traffic_and_inflow_insights": "Traffic info",
+                        "conversion_insights": "Conversion info",
                         "seo_and_content_opportunities": "SEO info",
                         "local_seo_insights": "Local info",
                         "agency_action_plan": [
-                            {"title": "Action 1", "description": "Desc", "impact_area": "SEO", "priority": "High"}
+                            {"title": "Action 1", "description": "Desc", "impact_area": "SEO", "priority": "High", "evidence": "Ev"}
                         ],
                         "overall_sentiment": "Growth"
                     })
@@ -166,7 +178,6 @@ def test_growth_analyst_openrouter_payload():
     }
     mock_http = MagicMock()
     mock_http.post.return_value = mock_response
-    
     analyst = GrowthAnalyst(
         api_key="sk-or-v1-test",
         model="openai/gpt-5.6-luna",
@@ -176,7 +187,7 @@ def test_growth_analyst_openrouter_payload():
     )
     briefing = analyst.analyze(sample_growth_input)
     assert briefing.executive_summary[0] == "Point 1"
-    
+    assert briefing.biggest_win == "Win 1"
     called_url, kwargs = mock_http.post.call_args
     assert called_url[0] == "https://openrouter.ai/api/v1/chat/completions"
     assert kwargs["headers"]["Authorization"] == "Bearer sk-or-v1-test"

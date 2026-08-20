@@ -8,11 +8,9 @@ import urllib.request
 from email.utils import parseaddr
 from typing import List, Optional
 
-
 def is_valid_email(val: str) -> bool:
     _, addr = parseaddr(val)
     return bool(addr and "@" in addr and addr == val.strip())
-
 
 class ResendEmailSender:
     def __init__(
@@ -37,6 +35,7 @@ class ResendEmailSender:
         pdf_attachment: Optional[bytes] = None,
         pdf_filename: str = "Executive_Growth_Briefing.pdf",
         cc_recipients: Optional[List[str] | str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> dict:
         """Dispatch growth briefing email via Resend API."""
         if isinstance(to_recipients, str):
@@ -47,13 +46,22 @@ class ResendEmailSender:
         if not valid_to:
             raise ValueError("No valid recipient email addresses provided.")
 
+        valid_cc = []
+        if cc_recipients:
+            if isinstance(cc_recipients, str):
+                raw_cc = [s.strip() for s in cc_recipients.split(",") if s.strip()]
+            else:
+                raw_cc = [s.strip() for s in cc_recipients if s.strip()]
+            valid_cc = [r for r in raw_cc if is_valid_email(r)]
+
         if not self.is_configured:
-            # Return dry-run / unconfigured simulation dict
             return {
                 "status": "simulated_unconfigured",
                 "message": "Resend API key or sender email not configured; delivery skipped.",
                 "to": valid_to,
+                "cc": valid_cc,
                 "subject": subject,
+                "idempotency_key": idempotency_key,
             }
 
         payload: dict = {
@@ -62,14 +70,8 @@ class ResendEmailSender:
             "subject": subject,
             "html": html_content,
         }
-        if cc_recipients:
-            if isinstance(cc_recipients, str):
-                raw_cc = [s.strip() for s in cc_recipients.split(",") if s.strip()]
-            else:
-                raw_cc = [s.strip() for s in cc_recipients if s.strip()]
-            valid_cc = [r for r in raw_cc if is_valid_email(r)]
-            if valid_cc:
-                payload["cc"] = valid_cc
+        if valid_cc:
+            payload["cc"] = valid_cc
 
         if pdf_attachment:
             payload["attachments"] = [
@@ -80,14 +82,18 @@ class ResendEmailSender:
             ]
 
         data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+
         request = urllib.request.Request(
             self.endpoint,
             data=data,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
 
         try:
@@ -97,7 +103,9 @@ class ResendEmailSender:
                     "status": "sent",
                     "id": res_data.get("id"),
                     "to": valid_to,
+                    "cc": valid_cc,
                     "subject": subject,
+                    "idempotency_key": idempotency_key,
                 }
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8", errors="ignore")
