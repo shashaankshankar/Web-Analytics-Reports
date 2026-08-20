@@ -99,14 +99,42 @@ class MultiSourceAnalyticsToolkit:
                     },
                 },
             },
+           {
+               "type": "function",
+               "function": {
+                   "name": "query_gbp_local_reputation",
+                   "description": "Inspect Google Business Profile local customer actions (call clicks, direction requests, website clicks) and review sentiment/ratings for the client location.",
+                   "parameters": {
+                       "type": "object",
+                       "properties": {},
+                   },
+               },
+           },
             {
                 "type": "function",
                 "function": {
-                    "name": "query_gbp_local_reputation",
-                    "description": "Inspect Google Business Profile local customer actions (call clicks, direction requests, website clicks) and review sentiment/ratings for the client location.",
+                    "name": "query_device_conversion_breakdown",
+                    "description": "Analyze conversion rates, sessions, and conversion volumes across mobile, desktop, and tablet devices to diagnose responsive funnel bottlenecks.",
                     "parameters": {
                         "type": "object",
                         "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "query_top_referrers_and_landing_pages",
+                    "description": "Examine top referral sources, inbound campaigns, and corresponding landing pages to evaluate external partner and directory ROI.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max referral rows to return",
+                                "default": 10,
+                            },
+                        },
                     },
                 },
             },
@@ -121,6 +149,10 @@ class MultiSourceAnalyticsToolkit:
                 return self._exec_gsc(arguments)
             elif tool_name == "query_gbp_local_reputation":
                 return self._exec_gbp(arguments)
+            elif tool_name == "query_device_conversion_breakdown":
+                return self._exec_device_breakdown(arguments)
+            elif tool_name == "query_top_referrers_and_landing_pages":
+                return self._exec_referrers(arguments)
             else:
                 return json.dumps({"error": f"Unknown tool name: {tool_name}"})
         except Exception as e:
@@ -217,3 +249,55 @@ class MultiSourceAnalyticsToolkit:
 
         insights = self.gbp_extractor.fetch_local_insights(self.start_date, self.end_date)
         return json.dumps(insights)
+
+    def _exec_device_breakdown(self, args: Dict[str, Any]) -> str:
+        if self.mock_data or not self.ga4_extractor.is_configured():
+            return json.dumps({
+                "devices": [
+                    {"device": "mobile", "sessions": 1150, "conversions": 34, "conversion_rate": 0.0296, "share": 0.622},
+                    {"device": "desktop", "sessions": 620, "conversions": 13, "conversion_rate": 0.0210, "share": 0.335},
+                    {"device": "tablet", "sessions": 80, "conversions": 1, "conversion_rate": 0.0125, "share": 0.043},
+                ],
+                "summary": "Mobile devices dominate traffic and generate 70.8% of total conversions with a 2.96% conversion rate.",
+            })
+        res = self.ga4_extractor.run_report(self.start_date, self.end_date, ["deviceCategory"], ["sessions", "conversions"])
+        devices = []
+        total_sess = 0
+        for r in res.get("rows", []):
+            d = r.get("dimensions", ["Unknown"])[0]
+            s = int(float(r.get("metrics", [0, 0])[0]))
+            c = int(float(r.get("metrics", [0, 0])[1])) if len(r.get("metrics", [])) > 1 else 0
+            total_sess += s
+            cr = round(c / s, 4) if s > 0 else 0.0
+            devices.append({"device": d, "sessions": s, "conversions": c, "conversion_rate": cr})
+        for item in devices:
+            item["share"] = round(item["sessions"] / total_sess, 3) if total_sess > 0 else 0.0
+        return json.dumps({"devices": devices, "total_sessions": total_sess})
+
+    def _exec_referrers(self, args: Dict[str, Any]) -> str:
+        limit = args.get("limit", 10)
+        if self.mock_data or not self.ga4_extractor.is_configured():
+            return json.dumps({
+                "referrers": [
+                    {"source_medium": "google / organic", "sessions": 920, "conversions": 26, "landing_page": "/"},
+                    {"source_medium": "(direct) / (none)", "sessions": 450, "conversions": 12, "landing_page": "/"},
+                    {"source_medium": "instagram / social", "sessions": 280, "conversions": 6, "landing_page": "/services"},
+                    {"source_medium": "yelp / referral", "sessions": 120, "conversions": 3, "landing_page": "/contact"},
+                    {"source_medium": "healthgrades / directory", "sessions": 80, "conversions": 1, "landing_page": "/services"},
+                ][:limit],
+            })
+        res = self.ga4_extractor.run_report(
+            self.start_date,
+            self.end_date,
+            ["sessionSourceMedium", "landingPagePlusQueryString"],
+            ["sessions", "conversions"],
+            limit=limit,
+        )
+        referrers = []
+        for r in res.get("rows", []):
+            sm = r.get("dimensions", ["", ""])[0]
+            lp = r.get("dimensions", ["", ""])[1] if len(r.get("dimensions", [])) > 1 else "/"
+            s = int(float(r.get("metrics", [0, 0])[0]))
+            c = int(float(r.get("metrics", [0, 0])[1])) if len(r.get("metrics", [])) > 1 else 0
+            referrers.append({"source_medium": sm, "landing_page": lp, "sessions": s, "conversions": c})
+        return json.dumps({"referrers": referrers})

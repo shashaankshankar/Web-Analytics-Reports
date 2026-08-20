@@ -24,6 +24,9 @@ try:
         days: int = 28
         send_email: bool = False
         mock_data: bool = False
+        dry_run: bool = False
+        model: Optional[str] = None
+        reasoning_effort: Optional[str] = None
 
     @app.get("/health")
     def health():
@@ -41,6 +44,9 @@ try:
                 days=req.days,
                 send_email=req.send_email,
                 mock_data=req.mock_data,
+                dry_run=req.dry_run,
+                model=req.model,
+                reasoning_effort=req.reasoning_effort,
             )
             return {
                 "status": "success",

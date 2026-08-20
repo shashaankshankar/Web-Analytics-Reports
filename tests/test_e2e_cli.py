@@ -74,3 +74,13 @@ def test_sources_graceful_when_unconfigured():
     gbp = GoogleBusinessProfileExtractor(location_id="")
     assert gbp.is_configured() is False
     assert gbp.fetch_local_insights("2026-07-01", "2026-07-28")["phone_calls"] == 0
+
+
+def test_generate_report_dry_run():
+    briefing = generate_report(
+        client_slug="example-dental",
+        mock_data=True,
+        dry_run=True,
+    )
+    assert briefing.client_id == "example-dental"
+    assert len(briefing.analytics.core_metrics) == 5

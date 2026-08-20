@@ -66,8 +66,12 @@ def filter_striking_distance_keywords(
 
         if min_position <= pos <= max_position and imp >= min_impressions:
             # Opportunity score: Higher impressions and closer to page 1 rank higher
-            # Formula: Impressions * (21 - Position)
-            score = round(imp * max(1.0, (21.0 - pos)), 1)
+            # Enhanced formula with CTR opportunity weighting:
+            # Queries with lower CTR than expected benchmark (~2.5% for pos 8-20) represent higher optimization upside
+            expected_ctr = max(0.01, min(0.05, 0.05 - (pos - 8.0) * 0.003))
+            ctr_opportunity_multiplier = 1.0 + max(0.0, (expected_ctr - ctr) / expected_ctr)
+            base_score = imp * max(1.0, (21.0 - pos))
+            score = round(base_score * ctr_opportunity_multiplier, 1)
             results.append(
                 StrikingDistanceKeyword(
                     query=query,
@@ -126,7 +130,21 @@ def aggregate_growth_metrics(
             prior_value=round(float(prior_summary.get("engagementRate", 0.0)) * 100.0, 1),
             absolute_change=round((float(summary.get("engagementRate", 0.0)) - float(prior_summary.get("engagementRate", 0.0))) * 100.0, 1),
             percentage_change=calculate_percentage_change(float(summary.get("engagementRate", 0.0)), float(prior_summary.get("engagementRate", 0.0))),
+            percentage_points_change=round((float(summary.get("engagementRate", 0.0)) - float(prior_summary.get("engagementRate", 0.0))) * 100.0, 1),
+            is_percentage_rate=True,
             direction=determine_direction(float(summary.get("engagementRate", 0.0)), float(prior_summary.get("engagementRate", 0.0))),
+            unit="percentage",
+        ),
+        MetricDelta(
+            metric_name="bounce_rate",
+            display_name="Bounce Rate",
+            current_value=round(float(summary.get("bounceRate", 0.0)) * 100.0, 1),
+            prior_value=round(float(prior_summary.get("bounceRate", 0.0)) * 100.0, 1),
+            absolute_change=round((float(summary.get("bounceRate", 0.0)) - float(prior_summary.get("bounceRate", 0.0))) * 100.0, 1),
+            percentage_change=calculate_percentage_change(float(summary.get("bounceRate", 0.0)), float(prior_summary.get("bounceRate", 0.0))),
+            percentage_points_change=round((float(summary.get("bounceRate", 0.0)) - float(prior_summary.get("bounceRate", 0.0))) * 100.0, 1),
+            is_percentage_rate=True,
+            direction=determine_direction(float(summary.get("bounceRate", 0.0)), float(prior_summary.get("bounceRate", 0.0))),
             unit="percentage",
         ),
         MetricDelta(

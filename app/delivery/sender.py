@@ -31,15 +31,19 @@ class ResendEmailSender:
 
     def send_briefing(
         self,
-        to_recipients: List[str],
+        to_recipients: List[str] | str,
         subject: str,
         html_content: str,
         pdf_attachment: Optional[bytes] = None,
         pdf_filename: str = "Executive_Growth_Briefing.pdf",
-        cc_recipients: Optional[List[str]] = None,
+        cc_recipients: Optional[List[str] | str] = None,
     ) -> dict:
         """Dispatch growth briefing email via Resend API."""
-        valid_to = [r.strip() for r in to_recipients if is_valid_email(r.strip())]
+        if isinstance(to_recipients, str):
+            raw_to = [s.strip() for s in to_recipients.split(",") if s.strip()]
+        else:
+            raw_to = [s.strip() for s in to_recipients if s.strip()]
+        valid_to = [r for r in raw_to if is_valid_email(r)]
         if not valid_to:
             raise ValueError("No valid recipient email addresses provided.")
 
@@ -59,7 +63,11 @@ class ResendEmailSender:
             "html": html_content,
         }
         if cc_recipients:
-            valid_cc = [r.strip() for r in cc_recipients if is_valid_email(r.strip())]
+            if isinstance(cc_recipients, str):
+                raw_cc = [s.strip() for s in cc_recipients.split(",") if s.strip()]
+            else:
+                raw_cc = [s.strip() for s in cc_recipients if s.strip()]
+            valid_cc = [r for r in raw_cc if is_valid_email(r)]
             if valid_cc:
                 payload["cc"] = valid_cc
 

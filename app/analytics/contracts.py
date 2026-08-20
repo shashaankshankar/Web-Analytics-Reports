@@ -11,6 +11,8 @@ class MetricDelta(BaseModel):
     prior_value: float
     absolute_change: float
     percentage_change: Optional[float] = None  # None if prior was 0
+    percentage_points_change: Optional[float] = None  # Absolute percentage point diff for rates
+    is_percentage_rate: bool = False
     direction: str  # "up", "down", "flat"
     unit: str = "count"  # "count", "currency", "percentage", "seconds"
 

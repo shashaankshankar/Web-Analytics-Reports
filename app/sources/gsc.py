@@ -52,6 +52,8 @@ class SearchConsoleExtractor:
         start_date: str,
         end_date: str,
         row_limit: int = 1000,
+        data_state: str = "final",
+        query_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Fetch search queries, clicks, impressions, CTR, and average position."""
         if not self.is_configured():
@@ -68,8 +70,16 @@ class SearchConsoleExtractor:
             "endDate": end_date,
             "dimensions": ["query"],
             "rowLimit": row_limit,
-            "dataState": "final",
+            "dataState": data_state,
         }
+        if query_filter:
+            payload["dimensionFilterGroups"] = [{
+                "filters": [{
+                    "dimension": "query",
+                    "operator": "contains",
+                    "expression": query_filter,
+                }]
+            }]
 
         try:
             result = self.requester(url, token, payload)

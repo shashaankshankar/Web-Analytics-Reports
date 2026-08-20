@@ -80,9 +80,14 @@ def test_aggregate_growth_metrics():
         gbp_data=gbp_data,
     )
     assert isinstance(growth_input, GrowthAnalysisInput)
-    assert len(growth_input.core_metrics) == 4
+    assert len(growth_input.core_metrics) == 5
     sess_metric = next(m for m in growth_input.core_metrics if m.metric_name == "sessions")
     assert sess_metric.current_value == 700
     assert sess_metric.prior_value == 550
     assert sess_metric.direction == "up"
+    eng_metric = next(m for m in growth_input.core_metrics if m.metric_name == "engagement_rate")
+    assert eng_metric.percentage_points_change == 5.0
+    assert eng_metric.is_percentage_rate is True
+    bounce_metric = next(m for m in growth_input.core_metrics if m.metric_name == "bounce_rate")
+    assert bounce_metric.percentage_points_change == -5.0
     assert growth_input.top_pages[0].is_high_intent is True  # '/signup' is high intent

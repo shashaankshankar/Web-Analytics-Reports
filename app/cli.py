@@ -29,6 +29,9 @@ def generate_report(
     output_dir: Optional[Path] = None,
     mock_data: bool = False,
     explore_deep_insights: bool = False,
+    dry_run: bool = False,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> FullGrowthBriefing:
     """Run complete growth intelligence pipeline for a specific client."""
     client = load_client_config(client_slug)
@@ -119,7 +122,7 @@ def generate_report(
 
     # 4. AI Growth Analyst Synthesis
     print("[*] Running AI Growth Analyst synthesis...")
-    analyst = GrowthAnalyst()
+    analyst = GrowthAnalyst(api_key="" if mock_data else None, model=model, reasoning_effort=reasoning_effort)
     insights = analyst.analyze(growth_input)
 
     # 4b. Optional Exploratory Multi-Source Deep Discoveries
@@ -136,7 +139,7 @@ def generate_report(
             gbp_extractor=gbp_ext if 'gbp_ext' in locals() else None,
             mock_data=mock_data or client.ga4_property_id in ('', 'mock', '123456789', '987654321'),
         )
-        agent = ExploratoryGrowthAgent()
+        agent = ExploratoryGrowthAgent(api_key="" if mock_data else None, model=model, reasoning_effort=reasoning_effort)
         discoveries = agent.explore(client, growth_input, toolkit)
         insights.deep_discoveries = discoveries
         print(f"[+] Autonomous agent completed with {len(discoveries)} deep discoveries.")
@@ -156,15 +159,21 @@ def generate_report(
     )
 
     # 6. Render Artifacts
+    html_content = render_growth_email_html(briefing)
+    pdf_bytes = build_executive_pdf(briefing)
+
+    if dry_run:
+        print("[*] Dry-run enabled: Artifacts rendered in memory; file writes and email dispatch skipped.")
+        print(f"[+] Executive Takeaways: {briefing.insights.executive_summary}")
+        return briefing
+
     out_dir = output_dir or (Path(__file__).resolve().parents[1] / "output")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    html_content = render_growth_email_html(briefing)
     html_file = out_dir / f"{client.client_id}_briefing.html"
     html_file.write_text(html_content, encoding="utf-8")
     print(f"[+] Rendered HTML email brief: {html_file}")
 
-    pdf_bytes = build_executive_pdf(briefing)
     pdf_file = out_dir / f"{client.client_id}_growth_report.pdf"
     pdf_file.write_bytes(pdf_bytes)
     print(f"[+] Generated Executive PDF: {pdf_file} ({len(pdf_bytes):,} bytes)")
@@ -201,6 +210,9 @@ def main():
     # List clients command
     subparsers.add_parser("list-clients", help="List all configured client slugs")
 
+    # Validate configs command
+    subparsers.add_parser("validate-configs", help="Validate all client JSON configurations")
+
     # Generate report command
     gen_parser = subparsers.add_parser("generate", help="Generate growth briefing report for a client")
     gen_parser.add_argument("--client", "-c", required=True, help="Client ID slug (e.g. example-dental)")
@@ -209,6 +221,9 @@ def main():
     gen_parser.add_argument("--mock", "-m", action="store_true", help="Use mock/synthetic analytics data")
     gen_parser.add_argument("--explore", "--deep-insights", dest="explore", action="store_true", help="Run autonomous multi-source exploratory agent for deep anomalies & opportunities")
     gen_parser.add_argument("--output", "-o", type=Path, default=None, help="Output directory for generated artifacts")
+    gen_parser.add_argument("--dry-run", action="store_true", help="Preview output without saving files or sending emails")
+    gen_parser.add_argument("--model", type=str, default=None, help="Override LLM model name (e.g. google/gemini-3.7-flash)")
+    gen_parser.add_argument("--reasoning-effort", type=str, default=None, help="Override reasoning effort (e.g. high, max)")
 
     args = parser.parse_args()
 
@@ -217,6 +232,23 @@ def main():
         print("Available client configurations:")
         for c in clients:
             print(f"  - {c}")
+        sys.exit(0)
+
+    elif args.command == "validate-configs":
+        clients = list_available_clients()
+        print(f"[*] Validating {len(clients)} client configurations...")
+        errors = 0
+        for slug in clients:
+            try:
+                cfg = load_client_config(slug)
+                print(f"  [✓] {slug}: {cfg.company_name} ({cfg.domain}) - Industry: {cfg.industry}")
+            except Exception as e:
+                print(f"  [✗] {slug}: INVALID -> {e}", file=sys.stderr)
+                errors += 1
+        if errors > 0:
+            print(f"\n[!] Config validation failed with {errors} errors.", file=sys.stderr)
+            sys.exit(1)
+        print(f"\n[✓] All {len(clients)} client configurations valid.")
         sys.exit(0)
 
     elif args.command == "generate":
@@ -228,6 +260,9 @@ def main():
                 output_dir=args.output,
                 mock_data=args.mock,
                 explore_deep_insights=args.explore,
+                dry_run=args.dry_run,
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
             )
             print("\n[✓] Growth briefing pipeline completed successfully.")
         except Exception as e:

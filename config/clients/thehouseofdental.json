@@ -7,10 +7,10 @@
   "gsc_site_url": "https://thehouseofdentalwp.com/",
   "gbp_location_id": "places/ChIJM7fB_p1v54gR35t3HRaGH_Q",
   "branding": {
-    "primary_color": "#1E3A8A",
-    "secondary_color": "#3B82F6",
-    "accent_color": "#F59E0B",
-    "logo_url": null
+    "primary_color": "#0A0A0B",
+    "secondary_color": "#F7F4EE",
+    "accent_color": "#C6A15B",
+    "logo_url": "https://thehouseofdentalwp.com/assets/logo.svg"
   },
   "recipients": {
     "client": "",

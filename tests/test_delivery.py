@@ -125,3 +125,15 @@ def test_resend_sender_simulated_when_unconfigured():
         html_content="<p>Test</p>",
     )
     assert res["status"] == "simulated_unconfigured"
+
+
+def test_sender_with_comma_separated_recipients():
+    sender = ResendEmailSender(api_key="", from_email="")
+    res = sender.send_briefing(
+        to_recipients="client1@example.com, client2@example.com",
+        subject="Test Multi",
+        html_content="<p>Test</p>",
+        cc_recipients="agency@example.com, lead@example.com",
+    )
+    assert res["status"] == "simulated_unconfigured"
+    assert res["to"] == ["client1@example.com", "client2@example.com"]

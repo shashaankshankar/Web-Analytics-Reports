@@ -29,18 +29,27 @@ class GA4Extractor:
         dimensions: List[str],
         metrics: List[str],
         limit: int = 10000,
+        comparison_start_date: Optional[str] = None,
+        comparison_end_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not self.is_configured():
             return {"rows": [], "row_count": 0}
 
-        request = RunReportRequest(
-            property=f"properties/{self.property_id}",
-            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-            dimensions=[Dimension(name=d) for d in dimensions],
-            metrics=[Metric(name=m) for m in metrics],
-            limit=limit,
-        )
-        response = self.client.run_report(request=request)
+        date_ranges = [DateRange(start_date=start_date, end_date=end_date)]
+        if comparison_start_date and comparison_end_date:
+            date_ranges.append(DateRange(start_date=comparison_start_date, end_date=comparison_end_date))
+
+        try:
+            request = RunReportRequest(
+                property=f"properties/{self.property_id}",
+                date_ranges=date_ranges,
+                dimensions=[Dimension(name=d) for d in dimensions],
+                metrics=[Metric(name=m) for m in metrics],
+                limit=limit,
+            )
+            response = self.client.run_report(request=request)
+        except Exception as e:
+            return {"rows": [], "row_count": 0, "error": str(e)}
         
         rows = [
             {

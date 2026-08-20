@@ -48,11 +48,13 @@ def test_toolkit_schemas(sample_client):
         mock_data=True,
     )
     defs = toolkit.get_tool_definitions()
-    assert len(defs) == 3
+    assert len(defs) == 5
     tool_names = [d["function"]["name"] for d in defs]
     assert "query_ga4_dimensions" in tool_names
     assert "query_gsc_search_queries" in tool_names
     assert "query_gbp_local_reputation" in tool_names
+    assert "query_device_conversion_breakdown" in tool_names
+    assert "query_top_referrers_and_landing_pages" in tool_names
 
 
 def test_toolkit_execution(sample_client):
@@ -73,6 +75,12 @@ def test_toolkit_execution(sample_client):
 
     gbp_res = json.loads(toolkit.execute_tool("query_gbp_local_reputation", {}))
     assert "phone_calls" in gbp_res
+
+    dev_res = json.loads(toolkit.execute_tool("query_device_conversion_breakdown", {}))
+    assert "devices" in dev_res
+
+    ref_res = json.loads(toolkit.execute_tool("query_top_referrers_and_landing_pages", {"limit": 5}))
+    assert "referrers" in ref_res
 
 
 def test_exploratory_agent_fallback_when_no_key(sample_client, sample_input):

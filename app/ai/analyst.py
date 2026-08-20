@@ -195,7 +195,13 @@ class GrowthAnalyst:
 
             res_json = response.json()
             content_str = res_json["choices"][0]["message"]["content"]
-            parsed = json.loads(content_str)
+            # Strip optional markdown code fence if present
+            clean_str = content_str.strip()
+            if "```json" in clean_str:
+                clean_str = clean_str.split("```json")[1].split("```")[0].strip()
+            elif "```" in clean_str:
+                clean_str = clean_str.split("```")[1].split("```")[0].strip()
+            parsed = json.loads(clean_str)
             return AIReportOutput(**parsed)
         except Exception:
             return fallback_growth_briefing(data)
