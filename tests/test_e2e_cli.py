@@ -80,7 +80,7 @@ def test_generate_report_with_exploratory_agent(tmp_path):
     assert pdf_file.is_file()
     
     html_content = html_file.read_text(encoding="utf-8")
-    assert "Autonomous Deep Discoveries" in html_content
+    assert "Key Opportunities &amp; Discoveries" in html_content
     assert briefing.insights.deep_discoveries[0].title in html_content
 
 def test_sources_graceful_when_unconfigured():
@@ -110,3 +110,4 @@ def test_generate_report_dry_run():
     )
     assert briefing.client_id == "example-dental"
     assert len(briefing.analytics.core_metrics) == 5
+

@@ -17,16 +17,34 @@ from app.analytics.contracts import (
     WeeklyDigestOutput,
 )
 
-GROWTH_ANALYST_SYSTEM_PROMPT = """You are an elite Senior Growth Analyst & Technical SEO Director at a premier digital growth agency.
-Your job is to transform pre-computed client analytics data into a clear, factual, and actionable performance report or weekly digest.
+GROWTH_ANALYST_SYSTEM_PROMPT = """You are a warm, articulate Senior Growth Advisor writing executive performance briefings for small business owners (e.g. dentists, clinic directors, and local practice owners).
 
-CORE RULES:
-1. All numbers and statistics cited must match the input dataset exactly. Do not invent metrics or metrics deltas.
-2. Keep explanations concise, practical, and grounded in the metrics provided.
-3. Tailor vocabulary to the client's industry context.
-4. Provide clear, realistic recommended next steps based on the data.
-5. Return valid JSON matching the requested schema.
+YOUR AUDIENCE & TONE:
+1. Our clients are busy small business owners. They do not have technical SEO or analytics backgrounds.
+2. Write in clear, natural, human-readable plain English. Be encouraging, transparent, and direct.
+3. Avoid technical jargon (do NOT say 'slicing', 'dimension clusters', 'raw event counts', 'funnel contraction', 'data state final'). Translate metrics into real-world business outcomes: phone calls, consultation requests, appointment inquiries, and website visitors.
+4. CRITICAL FORMATTING RULE: Do NOT use markdown syntax (NO asterisks like **bold**, NO em-dashes like —, NO markdown bullets, NO hashtags). Write natural, clean sentences.
+5. Ground every observation in the provided data. Do not invent numbers or metrics.
+6. Return ONLY a valid JSON object matching the requested schema.
 """
+
+
+def clean_plain_text(text: Optional[str]) -> str:
+    """Sanitize LLM text to ensure clean, human-readable plain English without markdown artifacts."""
+    if not text:
+        return ""
+    t = text.strip()
+    # Convert markdown bold labels like '**Title** — description' or '**Title:** desc' to clean 'Title: desc'
+    t = re.sub(r"\*\*(.*?)\*\*\s*[—–\-:]*\s*", r"\1: ", t)
+    # Remove remaining markdown asterisks, underscores used for italics, and backticks
+    t = t.replace("**", "").replace("*", "").replace("`", "")
+    # Replace raw em-dashes with clean commas or dashes
+    t = t.replace(" — ", ", ").replace(" —", ", ").replace("— ", ", ").replace("—", ", ")
+    # Clean up double colons or excessive spaces
+    t = re.sub(r":\s*:", ":", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 
 def build_weekly_user_prompt(data: GrowthAnalysisInput) -> str:
     payload = {
@@ -50,30 +68,35 @@ def build_weekly_user_prompt(data: GrowthAnalysisInput) -> str:
         "conversion_events": [e.model_dump() for e in data.conversion_events[:4]],
     }
     schema_str = json.dumps(payload, indent=2)
-    return f"""Analyze this 7-day weekly growth dataset for {data.company_name} ({data.domain}) and produce a concise executive weekly digest.
+    return f"""Analyze this 7-day weekly growth dataset for {data.company_name} ({data.domain}) and produce a concise, warm, executive weekly digest for the business owner.
 
 Dataset:
 {schema_str}
 
+Instructions:
+- Write in natural, easy-to-read sentences without technical jargon or markdown formatting (no asterisks, no em-dashes).
+- Highlight key wins in patient/customer activity, website visitors, and local search visibility.
+
 Respond in JSON with the exact following schema:
 {{
-  "biggest_win": "One punchy sentence highlighting the single strongest positive movement supported by data.",
-  "needs_attention": "One sentence explaining a meaningful decline or gap, or null if healthy.",
-  "acquisition_insight": "1-2 sentences summarizing top traffic channel performance.",
-  "search_opportunity": "1-2 sentences identifying the top striking-distance search query or rank mover, or null if no search data.",
-  "local_insight": "1-2 sentences on GBP calls/directions if active, or null if unconfigured.",
+  "biggest_win": "One clear, encouraging sentence highlighting the single best positive achievement this week.",
+  "needs_attention": "One constructive sentence on an area to improve or monitor, or null if everything is performing smoothly.",
+  "acquisition_insight": "1-2 plain-English sentences summarizing how new and returning visitors found the business this week.",
+  "search_opportunity": "1-2 sentences in simple terms about a high-value Google search topic we are close to ranking for, or null if not applicable.",
+  "local_insight": "1-2 sentences on local Google Maps activity, phone calls, or directions, or null if unconfigured.",
   "next_actions": [
     {{
-      "title": "Concise weekly action title",
-      "description": "Tactical growth task for this week.",
+      "title": "Clear, professional action title",
+      "description": "Simple explanation of what our team is doing this week to help grow the practice.",
       "impact_area": "SEO / Conversion / Content / Local / Technical",
       "priority": "High / Medium",
-      "evidence": "Citing exact metric from data"
+      "evidence": "Specific metric or observation supporting this step"
     }}
   ],
   "overall_sentiment": "Growth / Moderate / Critical"
 }}
 """
+
 
 def build_performance_user_prompt(data: GrowthAnalysisInput) -> str:
     payload = {
@@ -101,36 +124,82 @@ def build_performance_user_prompt(data: GrowthAnalysisInput) -> str:
         "raw_summary_stats": data.raw_summary_stats,
     }
     schema_str = json.dumps(payload, indent=2)
-    return f"""Analyze this normalized 28-day growth dataset for {data.company_name} ({data.domain}) and produce an executive growth briefing.
+    return f"""Analyze this 28-day performance dataset for {data.company_name} ({data.domain}) and produce an executive growth briefing for the practice owner.
 
 Dataset:
 {schema_str}
 
+Important Guidelines:
+- Write in natural, warm, professional English tailored for a busy business owner.
+- Do NOT use markdown formatting (no asterisks like **bold**, no em-dashes like —, no raw markdown symbols). Write clean sentences.
+- Clearly translate data into business value: patient inquiries, phone calls, website traffic, and Google search rankings.
+
 Respond in JSON with the exact following schema:
 {{
   "executive_summary": [
-    "First high-impact takeaway (bold headline + 1 sentence on key win/movement)",
-    "Second takeaway (acquisition channel or traffic driver)",
-    "Third takeaway (conversion, local intent, or primary opportunity area)"
+    "First key takeaway in one clear, natural sentence covering overall traffic and audience growth.",
+    "Second key takeaway explaining the primary channel bringing visitors to the practice.",
+    "Third key takeaway highlighting customer actions, inquiries, or the top upcoming growth opportunity."
   ],
-  "biggest_win": "One punchy takeaway on the single strongest positive achievement during this period.",
-  "watch_item": "One clear observation on a key risk, traffic decline, or conversion optimization gap to monitor.",
-  "traffic_and_inflow_insights": "2-3 paragraphs analyzing top performing channels, traffic momentum, high-intent landing page engagement, and customer acquisition flow.",
-  "conversion_insights": "1-2 paragraphs detailing total conversions, conversion rate movements, and key lead actions.",
-  "seo_and_content_opportunities": "2-3 paragraphs identifying specific striking-distance search queries (positions 8-20), ranking opportunity scores, content gaps, and recommended new landing or service pages.",
-  "local_seo_insights": "1-2 paragraphs evaluating Google Business Profile visibility, direction requests, direct calls, review velocity, and local map pack capture.",
+  "biggest_win": "One encouraging sentence celebrating the single biggest positive result achieved during this cycle.",
+  "watch_item": "One clear, practical observation on an area we are actively refining or monitoring to maximize results.",
+  "traffic_and_inflow_insights": "2 short, conversational paragraphs explaining where visitors came from, how traffic trended, and which service pages were most popular.",
+  "conversion_insights": "1-2 short paragraphs detailing inquiries, phone calls, and appointment requests in clear terms.",
+  "seo_and_content_opportunities": "2 short paragraphs highlighting valuable Google search terms that potential customers are using and where adding helpful service content will attract more inquiries.",
+  "local_seo_insights": "1-2 short paragraphs on Google Maps visibility, local reviews, and direct patient phone calls.",
   "agency_action_plan": [
     {{
       "title": "Clear action title",
-      "description": "Specific tactical action the agency is executing this cycle to capture growth.",
+      "description": "Specific tactical initiative the agency is delivering this cycle to capture more business.",
       "impact_area": "SEO / Conversion / Content / Local / Technical",
       "priority": "High / Medium",
-      "evidence": "Data point justifying action"
+      "evidence": "Specific metric or observation supporting this priority"
     }}
   ],
   "overall_sentiment": "Growth / Moderate / Critical"
 }}
 """
+
+
+def sanitize_weekly_output(output: WeeklyDigestOutput) -> WeeklyDigestOutput:
+    """Clean all text fields in WeeklyDigestOutput of markdown artifacts."""
+    output.biggest_win = clean_plain_text(output.biggest_win)
+    if output.needs_attention:
+        output.needs_attention = clean_plain_text(output.needs_attention)
+    output.acquisition_insight = clean_plain_text(output.acquisition_insight)
+    if output.search_opportunity:
+        output.search_opportunity = clean_plain_text(output.search_opportunity)
+    if output.local_insight:
+        output.local_insight = clean_plain_text(output.local_insight)
+    for act in output.next_actions:
+        act.title = clean_plain_text(act.title)
+        act.description = clean_plain_text(act.description)
+        if act.evidence:
+            act.evidence = clean_plain_text(act.evidence)
+    return output
+
+
+def sanitize_report_output(output: AIReportOutput) -> AIReportOutput:
+    """Clean all text fields in AIReportOutput of markdown artifacts."""
+    output.executive_summary = [clean_plain_text(item) for item in output.executive_summary]
+    output.biggest_win = clean_plain_text(output.biggest_win)
+    if output.watch_item:
+        output.watch_item = clean_plain_text(output.watch_item)
+    output.traffic_and_inflow_insights = clean_plain_text(output.traffic_and_inflow_insights)
+    output.conversion_insights = clean_plain_text(output.conversion_insights)
+    output.seo_and_content_opportunities = clean_plain_text(output.seo_and_content_opportunities)
+    output.local_seo_insights = clean_plain_text(output.local_seo_insights)
+    for act in output.agency_action_plan:
+        act.title = clean_plain_text(act.title)
+        act.description = clean_plain_text(act.description)
+        if act.evidence:
+            act.evidence = clean_plain_text(act.evidence)
+    for disc in output.deep_discoveries:
+        disc.title = clean_plain_text(disc.title)
+        disc.insight = clean_plain_text(disc.insight)
+        disc.recommended_action = clean_plain_text(disc.recommended_action)
+    return output
+
 
 def fallback_weekly_briefing(data: GrowthAnalysisInput) -> WeeklyDigestOutput:
     """Deterministic rule-based fallback for 7-day weekly digest."""
@@ -143,50 +212,50 @@ def fallback_weekly_briefing(data: GrowthAnalysisInput) -> WeeklyDigestOutput:
     top_kw = data.striking_distance_keywords[0].query if data.striking_distance_keywords else None
 
     if sessions_metric and (sessions_metric.percentage_change or 0) > 0:
-        biggest_win = f"Weekly sessions reached {int(sessions_metric.current_value):,} ({sess_pct} vs prior 7 days), led by strong {top_channel_name} traffic."
+        biggest_win = f"Weekly sessions reached {int(sessions_metric.current_value):,} ({sess_pct} compared to the prior 7 days), driven by steady {top_channel_name} interest."
     elif conv_metric and conv_metric.current_value > 0:
-        biggest_win = f"High-intent conversion activity generated {int(conv_metric.current_value)} qualified inquiries this week."
+        biggest_win = f"Patient engagement was strong, generating {int(conv_metric.current_value)} direct inquiries this week."
     else:
-        biggest_win = f"Maintained steady baseline visibility with {int(sessions_metric.current_value if sessions_metric else 0):,} total site sessions."
+        biggest_win = f"Maintained consistent baseline visibility with {int(sessions_metric.current_value if sessions_metric else 0):,} total website visits."
 
     needs_attention = None
     if sessions_metric and (sessions_metric.percentage_change or 0) < -10.0:
-        needs_attention = f"Total sessions dipped {sess_pct} compared to the previous 7 days, primarily due to channel fluctuations."
+        needs_attention = f"Total visits saw a temporary dip of {sess_pct} compared to the previous week, which we are addressing through channel adjustments."
     elif cr_metric and (cr_metric.percentage_points_change or 0) < -0.5:
-        needs_attention = f"Conversion rate contracted {cr_metric.percentage_points_change:+.1f} percentage points, warranting mobile CTA review."
+        needs_attention = f"The conversion rate shifted {cr_metric.percentage_points_change:+.1f} percentage points, so we are fine-tuning mobile buttons and form ease."
 
-    acq_insight = f"{top_channel_name} was the primary acquisition driver, generating the majority of qualified visitor volume."
+    acq_insight = f"{top_channel_name} was the leading channel bringing prospective patients to the website this week."
 
     search_opp = None
     if top_kw:
-        search_opp = f"'{top_kw}' is ranking in striking distance on page 2—targeted on-page refinement can push it to page 1."
+        search_opp = f"The search term '{top_kw}' is currently ranking on page 2 of Google, and a few focused content improvements can help move it to page 1."
 
     local_insight = None
     if data.local_seo.phone_calls > 0 or data.local_seo.direction_requests > 0:
-        local_insight = f"Local profile actions produced {data.local_seo.phone_calls} direct calls and {data.local_seo.direction_requests} directions."
+        local_insight = f"Your Google Business Profile generated {data.local_seo.phone_calls} direct phone calls and {data.local_seo.direction_requests} map direction requests."
 
     actions = []
     if top_kw:
         actions.append(
             ActionItem(
-                title=f"Optimize On-Page SEO for '{top_kw}'",
-                description=f"Refine header hierarchy and body content for '{top_kw}' to capture top-5 rankings.",
+                title=f"Improve Search Rankings for '{top_kw}'",
+                description=f"Enhance service page headers and content for '{top_kw}' to attract more local search traffic.",
                 impact_area="SEO",
                 priority="High",
-                evidence="Striking-distance rank with high impression volume",
+                evidence="High search volume on page 2",
             )
         )
     actions.append(
         ActionItem(
-            title="Mobile CTA & Form Conversion Polish",
-            description="Audit landing page conversion touchpoints to maximize inquiry yield from current weekly traffic.",
+            title="Streamline Mobile Booking Touchpoints",
+            description="Audit phone and form buttons on key service pages so visitors can easily book consultations from their smartphones.",
             impact_area="Conversion",
             priority="Medium",
-            evidence=f"Current conversion rate at {cr_metric.current_value:.1f}%" if cr_metric else "Weekly engagement audit",
+            evidence=f"Current conversion rate at {cr_metric.current_value:.1f}%" if cr_metric else "Mobile engagement review",
         )
     )
 
-    return WeeklyDigestOutput(
+    out = WeeklyDigestOutput(
         biggest_win=biggest_win,
         needs_attention=needs_attention,
         acquisition_insight=acq_insight,
@@ -195,6 +264,8 @@ def fallback_weekly_briefing(data: GrowthAnalysisInput) -> WeeklyDigestOutput:
         next_actions=actions[:2],
         overall_sentiment="Growth",
     )
+    return sanitize_weekly_output(out)
+
 
 def fallback_growth_briefing(data: GrowthAnalysisInput) -> AIReportOutput:
     """Deterministic rule-based fallback if LLM API is unavailable or unconfigured."""
@@ -208,68 +279,68 @@ def fallback_growth_briefing(data: GrowthAnalysisInput) -> AIReportOutput:
     conv_val = int(conversions_metric.current_value) if conversions_metric else 0
 
     top_channel_name = data.top_channels[0].channel if data.top_channels else "Direct"
-    top_kw = data.striking_distance_keywords[0].query if data.striking_distance_keywords else "brand terms"
+    top_kw = data.striking_distance_keywords[0].query if data.striking_distance_keywords else "brand search"
 
     period_str = f"{data.period_days}-day"
-    conv_rate_label = f" ({cr_metric.current_value:.1f}% conversion rate)" if cr_metric else ""
+    conv_rate_label = f" with a {cr_metric.current_value:.1f}% inquiry rate" if cr_metric else ""
     exec_summary = [
-        f"Traffic reached {int(sessions_metric.current_value if sessions_metric else 0):,} sessions ({sess_pct} vs prior period) with {int(users_metric.current_value if users_metric else 0):,} active users.",
-        f"{top_channel_name} remains the primary acquisition channel, driving the majority of qualified visitor volume.",
-        f"High-intent conversion activity recorded {conv_val:,} key lead/engagement actions{conv_rate_label}.",
+        f"Website traffic reached {int(sessions_metric.current_value if sessions_metric else 0):,} visits ({sess_pct} vs prior period) from {int(users_metric.current_value if users_metric else 0):,} active visitors.",
+        f"{top_channel_name} was your leading source of visitors, bringing the largest share of prospective clients to the site.",
+        f"Visitors completed {conv_val:,} key inquiry and contact actions across appointment forms and phone clicks{conv_rate_label}.",
     ]
 
-    biggest_win = f"{top_channel_name} generated substantial qualified demand, supporting total site traffic of {int(sessions_metric.current_value if sessions_metric else 0):,} sessions."
-    watch_item = "Ensure mobile landing page performance and conversion CTAs remain optimized as search volume expands."
+    biggest_win = f"{top_channel_name} attracted steady interest, supporting total website traffic of {int(sessions_metric.current_value if sessions_metric else 0):,} visits."
+    watch_item = "We are continually refining mobile page speed and contact buttons to ensure every visitor has a smooth experience."
 
     traffic_insights = (
-        f"During the latest {period_str} cycle, {data.company_name} observed {int(sessions_metric.current_value if sessions_metric else 0):,} total sessions. "
-        f"The primary traffic driver was {top_channel_name}, demonstrating steady interest in core services. "
-        f"Landing page analysis indicates sustained engagement across primary service and contact touchpoints."
+        f"Over the past {period_str} cycle, {data.company_name} welcomed {int(sessions_metric.current_value if sessions_metric else 0):,} website visits. "
+        f"Most visitors arrived through {top_channel_name}, showing healthy and consistent community interest in your services. "
+        f"Visitors spent quality time exploring core service pages and contact options across the website."
     )
 
     conv_rate_str = f"{cr_metric.current_value:.1f}%" if cr_metric else "steady"
     conversion_insights = (
-        f"Total key conversions totaled {conv_val:,} actions, representing an overall conversion rate of {conv_rate_str}. "
-        f"Inquiries and lead forms continue to account for the highest proportion of high-value client intent."
+        f"A total of {conv_val:,} inquiries and key actions were recorded this period, representing an overall inquiry rate of {conv_rate_str}. "
+        f"Direct phone calls and online consultation forms continue to be the primary ways new patients get in touch."
     )
 
     seo_insights = (
-        f"Search Console analysis revealed high-potential striking-distance keyword opportunities, led by \"{top_kw}\". "
-        f"Targeting queries currently ranking on page 2 (positions 8–20) represents the highest-ROI opportunity to capture immediate organic growth."
+        f"Google Search Console data highlights great growth potential for valuable searches like '{top_kw}'. "
+        f"Because your site already ranks near page 1 for these terms, targeted content updates will help attract even more local searches."
     )
 
     local_insights = ""
     if data.local_seo.phone_calls > 0 or data.local_seo.direction_requests > 0:
         local_insights = (
-            f"Local visibility generated {data.local_seo.phone_calls} direct phone calls and {data.local_seo.direction_requests} direction requests. "
-            f"Maintaining review velocity and optimizing Google Business Profile categories will reinforce local map pack rankings."
+            f"Your Google Business Profile drove {data.local_seo.phone_calls} direct phone calls and {data.local_seo.direction_requests} map direction requests. "
+            f"Continuing to gather positive patient reviews will keep your practice prominent in local Google Maps searches."
         )
 
     action_plan = [
         ActionItem(
-            title=f"Optimize On-Page SEO for '{top_kw}'",
-            description=f"Enhance H1/H2 header structure, internal linking, and content depth targeting '{top_kw}' to push rankings from striking distance into top 3.",
+            title=f"Enhance Search Rankings for '{top_kw}'",
+            description=f"Update service page headings and helpful answers for '{top_kw}' to move rankings higher in Google search results.",
             impact_area="SEO",
             priority="High",
-            evidence=f"Striking distance query '{top_kw}'",
+            evidence=f"High-potential query '{top_kw}'",
         ),
         ActionItem(
-            title="High-Intent Conversion Path Optimization",
-            description="Streamline mobile CTA buttons and form microcopy on top landing pages to maximize conversion yield from existing traffic.",
+            title="Optimize Mobile Consultation Booking",
+            description="Make phone and contact buttons even easier to tap on smartphones to convert more website visitors into scheduled appointments.",
             impact_area="Conversion",
             priority="High",
-            evidence=f"Conversion rate optimization for {conv_val} key inquiries",
+            evidence=f"Supporting {conv_val} key consultation inquiries",
         ),
         ActionItem(
-            title="Local Map Pack Citation & Review Acceleration",
-            description="Audit local NAP citations and deploy automated review request cadence to strengthen local authority.",
+            title="Strengthen Local Google Maps Profile",
+            description="Ensure local practice details remain consistent and support regular patient review collection to maintain map prominence.",
             impact_area="Local",
             priority="Medium",
             evidence=f"Direct calls ({data.local_seo.phone_calls}) and direction requests ({data.local_seo.direction_requests})",
         ),
     ]
 
-    return AIReportOutput(
+    out = AIReportOutput(
         executive_summary=exec_summary,
         biggest_win=biggest_win,
         watch_item=watch_item,
@@ -281,6 +352,8 @@ def fallback_growth_briefing(data: GrowthAnalysisInput) -> AIReportOutput:
         deep_discoveries=[],
         overall_sentiment="Growth",
     )
+    return sanitize_report_output(out)
+
 
 class GrowthAnalyst:
     def __init__(
@@ -341,7 +414,8 @@ class GrowthAnalyst:
             elif "```" in clean_str:
                 clean_str = clean_str.split("```")[1].split("```")[0].strip()
             parsed = json.loads(clean_str)
-            return WeeklyDigestOutput(**parsed)
+            raw_output = WeeklyDigestOutput(**parsed)
+            return sanitize_weekly_output(raw_output)
         except Exception:
             return fallback_weekly_briefing(data)
 
@@ -386,9 +460,11 @@ class GrowthAnalyst:
             elif "```" in clean_str:
                 clean_str = clean_str.split("```")[1].split("```")[0].strip()
             parsed = json.loads(clean_str)
-            return AIReportOutput(**parsed)
+            raw_output = AIReportOutput(**parsed)
+            return sanitize_report_output(raw_output)
         except Exception:
             return fallback_growth_briefing(data)
 
 # Backward compatibility alias
 build_user_prompt = build_performance_user_prompt
+

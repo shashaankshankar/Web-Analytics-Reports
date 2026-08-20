@@ -127,7 +127,7 @@ def test_render_growth_email_html(sample_full_briefing):
     assert "Total Sessions" in html
     assert "1,850" in html
     assert "Biggest Win" in html
-    assert "Primary Risk / Watch Item" in html
+    assert "Area to Improve" in html
     assert "dental implants cost" in html
     assert "On-Page Content Expansion" in html
     assert "Detailed Executive PDF Report Attached" in html
@@ -149,7 +149,7 @@ def test_render_weekly_digest_html(sample_full_briefing):
     assert "Weekly Growth Digest" in html
     assert "Week at a Glance" in html
     assert "Weekly patient inquiries jumped 35%." in html
-    assert "Area Needing Attention" in html
+    assert "Area to Improve" in html
     assert "Update Mobile CTA" in html
 
 def test_render_growth_email_html_with_discoveries_and_escaping(sample_full_briefing):
@@ -174,7 +174,7 @@ def test_build_executive_pdf(sample_full_briefing):
     text = reader.pages[0].extract_text()
     assert "Acme Dental Studio" in text
     assert "EXECUTIVE SNAPSHOT" in text
-    assert "KEY CONVERSION ACTIONS" in text
+    assert "KEY INQUIRY ACTIONS" in text
 
 def test_resend_sender_validation():
     assert is_valid_email("test@example.com") is True
@@ -202,3 +202,4 @@ def test_sender_with_comma_separated_recipients():
     assert res["status"] == "simulated_unconfigured"
     assert res["to"] == ["client1@example.com", "client2@example.com"]
     assert res["idempotency_key"] == "test-key-123"
+

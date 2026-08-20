@@ -10,7 +10,7 @@
     "primary_color": "#1E3A8A",
     "secondary_color": "#3B82F6",
     "accent_color": "#F59E0B",
-    "logo_url": "https://apexdentalstudio.example.com/logo.png"
+    "logo_url": null
   },
   "recipients": {
     "client": "dr.smith@apexdentalstudio.example.com",

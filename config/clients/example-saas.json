@@ -10,7 +10,7 @@
     "primary_color": "#0F172A",
     "secondary_color": "#6366F1",
     "accent_color": "#10B981",
-    "logo_url": "https://cloudmetrics.example.com/logo.png"
+    "logo_url": null
   },
   "recipients": {
     "client": "founder@cloudmetrics.example.com",

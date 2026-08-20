@@ -6,25 +6,28 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.ai.analyst import clean_plain_text
 from app.ai.tools import MultiSourceAnalyticsToolkit
 from app.analytics.contracts import DataDiscovery, GrowthAnalysisInput
 from app.config import ClientConfig, Settings
 
 
-AGENT_SYSTEM_PROMPT = """You are an Autonomous Senior Growth & Data Intelligence Agent for digital agencies.
-Your objective is to explore multi-source client analytics (GA4 dimensions, Search Console queries, GBP local metrics) to discover non-obvious, client-specific opportunities and performance drivers that standard aggregate reporting misses.
+AGENT_SYSTEM_PROMPT = """You are an Autonomous Senior Growth & Data Intelligence Advisor for local and specialized businesses.
+Your objective is to explore multi-source client analytics (GA4 dimensions, Search Console queries, GBP local metrics) to discover non-obvious, client-specific growth opportunities.
 
-INSTRUCTIONS:
-1. Formulate hypotheses based on the client's industry and goals.
-2. Call the available tools to inspect granular data (e.g. device conversion splits, regional spikes, search query intent).
-3. Once you gather evidence, conclude your analysis by returning 2-3 high-conviction discoveries formatted as JSON matching this schema:
+COMMUNICATION & AUDIENCE GUIDELINES:
+1. Our clients are small business owners (e.g. dentists, clinic directors, local practice founders).
+2. Write in clear, natural, human-readable plain English that is easy for a non-technical owner to understand and act upon.
+3. Do NOT use markdown syntax (no asterisks like **bold**, no em-dashes like —, no raw markdown formatting). Write clean, clear sentences.
+4. Formulate hypotheses based on the client's industry and goals, then call available tools to inspect data.
+5. Conclude your analysis by returning 2-3 high-conviction discoveries formatted as JSON matching this schema:
 {
   "discoveries": [
     {
-      "title": "Concise headline summarizing the finding",
+      "title": "Clear, concise headline summarizing the opportunity in plain English",
       "source": "GA4 / Search Console / Google Business Profile",
-      "insight": "Data-backed description explaining what the granular drill-down revealed.",
-      "recommended_action": "Tactical action item the agency or client should execute."
+      "insight": "Simple, data-backed explanation of what was discovered and why it matters for business growth.",
+      "recommended_action": "Clear, practical next step to capture more customer inquiries or bookings."
     }
   ]
 }
@@ -36,22 +39,22 @@ def fallback_discoveries(client: ClientConfig, data: GrowthAnalysisInput) -> Lis
     industry_clean = client.industry.replace("_", " ")
     return [
         DataDiscovery(
-            title="Mobile Conversion Velocity Advantage",
-            source="GA4 Device Slicing",
-            insight="Mobile users account for over 60% of total sessions and drive 70%+ of direct phone calls and high-intent appointment actions.",
-            recommended_action="Deploy one-tap mobile booking and simplify sticky mobile navigation on core service landing pages.",
+            title="Mobile Visitor Booking Advantage",
+            source="GA4 Device Analytics",
+            insight="Mobile smartphone users account for the majority of website traffic and drive over 70% of direct phone calls and appointment inquiries.",
+            recommended_action="Ensure one-tap calling and consultation buttons are prominent and easy to tap across all mobile pages.",
         ),
         DataDiscovery(
-            title=f"High-Intent '{industry_clean}' Search Query Cluster",
-            source="Google Search Console Drilldown",
-            insight="Striking-distance queries containing 'cost', 'near me', and 'best' demonstrate strong CTR (>1.8%) on positions 9-14.",
-            recommended_action="Publish dedicated pricing transparency and local FAQ landing pages to capture top-3 organic rankings.",
+            title=f"High-Intent '{industry_clean}' Google Search Terms",
+            source="Google Search Console",
+            insight="Potential customers are frequently searching for local pricing and consultation terms where your site is currently ranking near the top of page 2.",
+            recommended_action="Publish clear, patient-friendly service and pricing FAQs to help elevate these rankings onto page 1.",
         ),
         DataDiscovery(
-            title="Local Map Pack Direction Request Momentum",
+            title="Local Google Maps Direction and Call Momentum",
             source="Google Business Profile",
-            insight=f"Local direction requests and call actions grew steadily, reflecting strong geographical intent around {data.company_name}.",
-            recommended_action="Accelerate Google Review generation workflows post-appointment to cement map pack dominance.",
+            insight=f"Nearby prospective patients are actively using Google Maps to find directions and call {data.company_name} directly.",
+            recommended_action="Encourage satisfied patients to leave positive Google reviews to maintain top visibility in local map results.",
         ),
     ]
 
@@ -100,7 +103,7 @@ class ExploratoryGrowthAgent:
             f"Industry: {client.industry}\n"
             f"Monthly Focus: {focus}\n"
             f"Analysis Period: {analytics_input.period_start} to {analytics_input.period_end}\n\n"
-            f"Please explore the client's GA4 dimensions, Search Console queries, and GBP local metrics to find 2-3 valuable hidden patterns or opportunities."
+            f"Please explore the client's GA4 dimensions, Search Console queries, and GBP local metrics to find 2-3 valuable hidden patterns or opportunities. Write in plain, natural English for a small business owner."
         )
 
         messages: List[Dict[str, Any]] = [
@@ -163,10 +166,22 @@ class ExploratoryGrowthAgent:
                             clean_content = clean_content.split("```")[1].split("```")[0].strip()
 
                         parsed = json.loads(clean_content)
+                        discoveries_list = []
                         if isinstance(parsed, dict) and "discoveries" in parsed:
-                            return [DataDiscovery(**d) for d in parsed["discoveries"]]
+                            discoveries_list = parsed["discoveries"]
                         elif isinstance(parsed, list):
-                            return [DataDiscovery(**d) for d in parsed]
+                            discoveries_list = parsed
+
+                        cleaned_res = []
+                        for d in discoveries_list:
+                            cleaned_res.append(DataDiscovery(
+                                title=clean_plain_text(d.get("title", "")),
+                                source=clean_plain_text(d.get("source", "")),
+                                insight=clean_plain_text(d.get("insight", "")),
+                                recommended_action=clean_plain_text(d.get("recommended_action", "")),
+                            ))
+                        if cleaned_res:
+                            return cleaned_res
                     except Exception:
                         pass
                     break
@@ -174,3 +189,4 @@ class ExploratoryGrowthAgent:
                 return fallback_discoveries(client, analytics_input)
 
         return fallback_discoveries(client, analytics_input)
+
