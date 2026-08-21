@@ -166,4 +166,10 @@ class GA4Extractor:
             "events": events,
             "prior_events": prior_events,
             "errors": errors,
+            "row_counts": {
+                "summary": curr_summary_raw.get("row_count", 0),
+                "channels": curr_channels_raw.get("row_count", 0),
+                "pages": curr_pages_raw.get("row_count", 0),
+                "events": curr_events_raw.get("row_count", 0),
+            },
         }

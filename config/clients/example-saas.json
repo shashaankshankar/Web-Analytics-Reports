@@ -17,7 +17,10 @@
     "agency_cc": "growth@agency.example.com"
   },
   "timezone": "America/Los_Angeles",
-  "monthly_retainer_focus": "Product signup conversion rate, organic developer keyword rankings",
+  "goals": [
+    "Product signup conversion rate",
+    "Organic developer keyword rankings"
+  ],
   "reporting": {
     "weekly_digest": {"enabled": false},
     "performance_report": {"enabled": false}

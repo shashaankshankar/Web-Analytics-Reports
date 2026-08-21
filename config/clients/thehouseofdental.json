@@ -17,7 +17,10 @@
     "agency_cc": "vectorstudioteam10@gmail.com"
   },
   "timezone": "America/New_York",
-  "monthly_retainer_focus": "Local Winter Park SEO, cosmetic dentistry & restorative inquiries",
+  "goals": [
+    "Local Winter Park SEO",
+    "Cosmetic dentistry and restorative inquiries"
+  ],
   "reporting": {
     "weekly_digest": {"enabled": true, "day": "monday", "attach_pdf": false},
     "performance_report": {"enabled": true, "cadence": "28d", "attach_pdf": true, "deep_insights": false}

@@ -34,6 +34,14 @@ COMMUNICATION & AUDIENCE GUIDELINES:
 """
 
 
+def format_goals_context(goals: list[str]) -> str:
+    """Format configured client goals as readable prompt context."""
+    cleaned_goals = [goal.strip() for goal in goals if goal.strip()]
+    if not cleaned_goals:
+        return "No specific client goals are configured."
+    return "\n".join(f"{index}. {goal}" for index, goal in enumerate(cleaned_goals, start=1))
+
+
 def fallback_discoveries(client: ClientConfig, data: GrowthAnalysisInput) -> List[DataDiscovery]:
     """Deterministic heuristic discoveries when offline or without LLM API credentials."""
     industry_clean = client.industry.replace("_", " ")
@@ -97,11 +105,11 @@ class ExploratoryGrowthAgent:
         }
         tools = toolkit.get_tool_definitions()
 
-        focus = client.monthly_retainer_focus or "General Growth & Acquisition"
+        goals_context = format_goals_context(client.goals)
         initial_user_msg = (
             f"Client: {client.company_name} ({client.domain})\n"
             f"Industry: {client.industry}\n"
-            f"Monthly Focus: {focus}\n"
+            f"Goals:\n{goals_context}\n"
             f"Analysis Period: {analytics_input.period_start} to {analytics_input.period_end}\n\n"
             f"Please explore the client's GA4 dimensions, Search Console queries, and GBP local metrics to find 2-3 valuable hidden patterns or opportunities. Write in plain, natural English for a small business owner."
         )
@@ -189,4 +197,3 @@ class ExploratoryGrowthAgent:
                 return fallback_discoveries(client, analytics_input)
 
         return fallback_discoveries(client, analytics_input)
-

@@ -2,7 +2,7 @@ import json
 from unittest.mock import MagicMock
 import pytest
 
-from app.ai.agent import ExploratoryGrowthAgent, fallback_discoveries
+from app.ai.agent import ExploratoryGrowthAgent, fallback_discoveries, format_goals_context
 from app.ai.tools import MultiSourceAnalyticsToolkit
 from app.analytics.contracts import (
     DataDiscovery,
@@ -20,7 +20,7 @@ def sample_client():
         company_name="Sample Dental Clinic",
         domain="https://sample.dental",
         industry="dental",
-        monthly_retainer_focus="Cosmetic dentistry & local implants",
+        goals=["Cosmetic dentistry", "Local implant inquiries"],
     )
 
 
@@ -99,6 +99,11 @@ def test_exploratory_agent_fallback_when_no_key(sample_client, sample_input):
     assert all(isinstance(d, DataDiscovery) for d in discoveries)
 
 
+def test_format_goals_context_is_readable_and_honest_when_empty():
+    assert format_goals_context(["Local SEO", "Improve inquiries"]) == "1. Local SEO\n2. Improve inquiries"
+    assert format_goals_context([]) == "No specific client goals are configured."
+
+
 def test_exploratory_agent_tool_calling_flow(sample_client, sample_input):
     toolkit = MultiSourceAnalyticsToolkit(
         client=sample_client,
@@ -170,3 +175,8 @@ def test_exploratory_agent_tool_calling_flow(sample_client, sample_input):
     assert len(discoveries) == 1
     assert discoveries[0].title == "Mobile Conversion Dominance in Winter Park"
     assert discoveries[0].source == "GA4 Multi-Dimension Slicing"
+    initial_payload = mock_http.post.call_args_list[0].kwargs["json"]
+    initial_context = initial_payload["messages"][1]["content"]
+    assert "Goals:\n1. Cosmetic dentistry\n2. Local implant inquiries" in initial_context
+    assert "['Cosmetic dentistry', 'Local implant inquiries']" not in initial_context
+    assert "monthly_retainer_focus" not in initial_context

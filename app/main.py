@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from pydantic import BaseModel, Field
 
 from app.cli import generate_report
 from app.analytics.contracts import ReportType
 from app.config import load_client_config_by_slug, is_production_dispatch_allowed
+
+logger = logging.getLogger(__name__)
 
 # Optional lightweight web service / webhook trigger support
 try:
@@ -58,6 +61,11 @@ try:
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception:
+            logger.exception(
+                "REPORT_EVENT report_generation_failed client_slug=%s report_type=%s",
+                req.client_slug,
+                req.report_type.value,
+            )
             raise HTTPException(status_code=500, detail="Report generation failed; see protected service logs.")
 
 except ImportError:

@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Mapping, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "config" / "clients"
@@ -50,8 +50,15 @@ class ClientConfig(BaseModel):
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     recipients: dict[str, str] = Field(default_factory=dict, description="Recipient email map")
     timezone: str = Field(default="America/New_York", description="Local business timezone")
-    monthly_retainer_focus: str = Field(default="", description="Agency goals & monthly priority focus")
+    goals: list[str] = Field(default_factory=list, description="Agency goals and growth priorities")
     reporting: ReportingSettingsConfig = Field(default_factory=ReportingSettingsConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_monthly_focus(cls, data: Any) -> Any:
+        if isinstance(data, Mapping) and "monthly_retainer_focus" in data:
+            raise ValueError("monthly_retainer_focus is no longer supported; use goals instead")
+        return data
 
     @field_validator("client_id")
     @classmethod

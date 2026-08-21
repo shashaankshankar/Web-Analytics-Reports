@@ -52,7 +52,7 @@ def build_weekly_user_prompt(data: GrowthAnalysisInput) -> str:
             "company_name": data.company_name,
             "domain": data.domain,
             "industry": data.industry,
-            "monthly_retainer_focus": data.monthly_retainer_focus,
+            "goals": data.goals,
         },
         "period": {
             "current": f"{data.period_start} to {data.period_end}",
@@ -104,7 +104,7 @@ def build_performance_user_prompt(data: GrowthAnalysisInput) -> str:
             "company_name": data.company_name,
             "domain": data.domain,
             "industry": data.industry,
-            "monthly_retainer_focus": data.monthly_retainer_focus,
+            "goals": data.goals,
         },
         "period": {
             "current": f"{data.period_start} to {data.period_end}",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import sys
 import uuid
@@ -23,6 +24,8 @@ from app.delivery.weekly_digest_template import render_weekly_digest_html
 from app.sources.ga4 import GA4Extractor
 from app.sources.gbp import GoogleBusinessProfileExtractor
 from app.sources.gsc import SearchConsoleExtractor
+
+logger = logging.getLogger(__name__)
 
 def validate_pre_send_qa(
     briefing: FullGrowthBriefing,
@@ -236,6 +239,21 @@ def generate_report(
         gbp_data = gbp_ext.fetch_local_insights(
             start_date, end_date, strict=send_email and bool(client.gbp_location_id)
         )
+
+        empty_sources = []
+        ga4_counts = ga4_data.get("row_counts", {})
+        if not any(ga4_counts.get(key, 0) for key in ("summary", "channels", "pages")):
+            empty_sources.append("ga4")
+        if not gsc_queries:
+            empty_sources.append("gsc")
+        if client.gbp_location_id and gbp_data.get("average_rating") is None:
+            empty_sources.append("gbp")
+        if empty_sources:
+            logger.warning(
+                "REPORT_EVENT source_data_empty client_slug=%s sources=%s",
+                client.client_id,
+                ",".join(empty_sources),
+            )
 
     # 3. Deterministic Aggregation
     print("[*] Pre-processing & calculating metric deltas...")

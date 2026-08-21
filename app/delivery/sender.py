@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
 from email.utils import parseaddr
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 def is_valid_email(val: str) -> bool:
     _, addr = parseaddr(val)
@@ -103,4 +106,8 @@ class ResendEmailSender:
                 }
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8", errors="ignore")
+            logger.exception("REPORT_EVENT resend_api_error status_code=%s", error.code)
             raise RuntimeError(f"Resend API error {error.code}: {body}") from error
+        except Exception:
+            logger.exception("REPORT_EVENT resend_api_error")
+            raise

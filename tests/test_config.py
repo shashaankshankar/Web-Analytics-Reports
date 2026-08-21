@@ -11,6 +11,33 @@ def test_valid_client_config(sample_client_config_path):
     assert config.industry == "ecommerce"
     assert config.branding.primary_color == "#112233"
     assert config.recipients["client"] == "client@test.example.com"
+    assert config.goals == ["Organic product rankings", "Conversion rate optimization"]
+
+def test_client_goals_default_to_empty_list():
+    config = ClientConfig(
+        client_id="default-goals",
+        company_name="Default Goals Co",
+        domain="https://example.com",
+    )
+    assert config.goals == []
+
+def test_client_config_rejects_removed_monthly_focus():
+    with pytest.raises(ValidationError, match="monthly_retainer_focus"):
+        ClientConfig(
+            client_id="legacy-goals",
+            company_name="Legacy Goals Co",
+            domain="https://example.com",
+            monthly_retainer_focus="Legacy focus",
+        )
+
+def test_client_config_still_ignores_unrelated_extra_fields():
+    config = ClientConfig(
+        client_id="extra-fields",
+        company_name="Extra Fields Co",
+        domain="https://example.com",
+        unrelated_field="ignored",
+    )
+    assert not hasattr(config, "unrelated_field")
 
 def test_invalid_client_id():
     with pytest.raises(ValidationError):

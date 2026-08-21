@@ -1,5 +1,6 @@
 from datetime import date
 import pytest
+from pydantic import ValidationError
 from app.analytics.contracts import (
     GrowthAnalysisInput,
     MetricDelta,
@@ -16,6 +17,34 @@ from app.analytics.metrics import (
     aggregate_growth_metrics,
 )
 from app.config import ClientConfig
+
+def test_growth_analysis_input_rejects_removed_monthly_focus():
+    with pytest.raises(ValidationError, match="monthly_retainer_focus"):
+        GrowthAnalysisInput(
+            client_id="legacy-goals",
+            company_name="Legacy Goals Co",
+            domain="https://example.com",
+            industry="general",
+            period_start="2026-07-22",
+            period_end="2026-08-18",
+            comparison_start="2026-06-24",
+            comparison_end="2026-07-21",
+            monthly_retainer_focus="Legacy focus",
+        )
+
+def test_growth_analysis_input_still_ignores_unrelated_extra_fields():
+    growth_input = GrowthAnalysisInput(
+        client_id="extra-fields",
+        company_name="Extra Fields Co",
+        domain="https://example.com",
+        industry="general",
+        period_start="2026-07-22",
+        period_end="2026-08-18",
+        comparison_start="2026-06-24",
+        comparison_end="2026-07-21",
+        unrelated_field="ignored",
+    )
+    assert not hasattr(growth_input, "unrelated_field")
 
 def test_calculate_percentage_change():
     assert calculate_percentage_change(120, 100) == 20.0
@@ -90,6 +119,7 @@ def test_aggregate_growth_metrics():
         company_name="Acme Corp",
         domain="https://acme.example.com",
         industry="b2b_saas",
+        goals=["Increase qualified traffic", "Improve signup conversion"],
     )
     ga4_data = {
         "summary": {"activeUsers": 500, "sessions": 700, "engagementRate": 0.65, "bounceRate": 0.35, "conversions": 28},
@@ -135,3 +165,4 @@ def test_aggregate_growth_metrics():
     assert growth_input.top_pages[0].is_high_intent is True
     assert growth_input.local_seo.phone_calls_change == 2
     assert growth_input.local_seo.phone_calls_direction == "up"
+    assert growth_input.goals == ["Increase qualified traffic", "Improve signup conversion"]

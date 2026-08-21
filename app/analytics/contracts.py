@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, List, Mapping, Optional
+from pydantic import BaseModel, Field, model_validator
 
 
 class ReportType(str, Enum):
@@ -140,7 +140,7 @@ class GrowthAnalysisInput(BaseModel):
     period_end: str
     comparison_start: str
     comparison_end: str
-    monthly_retainer_focus: str = ""
+    goals: list[str] = Field(default_factory=list, description="Client goals and growth priorities")
 
     core_metrics: List[MetricDelta] = Field(default_factory=list)
     conversion_rate: Optional[MetricDelta] = None
@@ -153,6 +153,13 @@ class GrowthAnalysisInput(BaseModel):
     search_movers: List[SearchQueryMover] = Field(default_factory=list)
     local_seo: LocalInteractionData = Field(default_factory=LocalInteractionData)
     raw_summary_stats: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_removed_monthly_focus(cls, data: Any) -> Any:
+        if isinstance(data, Mapping) and "monthly_retainer_focus" in data:
+            raise ValueError("monthly_retainer_focus is no longer supported; use goals instead")
+        return data
 
 
 class ActionItem(BaseModel):

@@ -431,7 +431,7 @@ def aggregate_growth_metrics(
         period_end=end_date,
         comparison_start=prior_start_date,
         comparison_end=prior_end_date,
-        monthly_retainer_focus=client.monthly_retainer_focus,
+        goals=list(client.goals),
         core_metrics=core_metrics,
         conversion_rate=conversion_rate_delta,
         conversion_events=events_summary,

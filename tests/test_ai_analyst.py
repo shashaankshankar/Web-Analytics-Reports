@@ -32,7 +32,7 @@ def make_growth_input(report_type: ReportType = ReportType.PERFORMANCE_28D, peri
         period_end="2026-08-18",
         comparison_start="2026-06-24" if period_days == 28 else "2026-08-05",
         comparison_end="2026-07-21" if period_days == 28 else "2026-08-11",
-        monthly_retainer_focus="Local patient acquisition",
+        goals=["Local patient acquisition", "Improve consultation inquiries"],
         core_metrics=[
             MetricDelta(
                 metric_name="sessions",
@@ -120,6 +120,24 @@ def test_growth_analyst_fallback_when_no_api_key():
     briefing = analyst.analyze(sample_growth_input)
     assert isinstance(briefing, AIReportOutput)
     assert len(briefing.executive_summary) == 3
+
+
+def test_analyst_prompts_propagate_goals_as_json_arrays():
+    sample_growth_input = make_growth_input()
+
+    weekly_prompt = build_weekly_user_prompt(sample_growth_input)
+    weekly_dataset = weekly_prompt.split("Dataset:\n", 1)[1].split("\n\nInstructions:", 1)[0]
+    weekly_payload = json.loads(weekly_dataset)
+
+    performance_prompt = build_performance_user_prompt(sample_growth_input)
+    performance_dataset = performance_prompt.split("Dataset:\n", 1)[1].split("\n\nImportant Guidelines:", 1)[0]
+    performance_payload = json.loads(performance_dataset)
+
+    expected_goals = ["Local patient acquisition", "Improve consultation inquiries"]
+    assert weekly_payload["client_profile"]["goals"] == expected_goals
+    assert performance_payload["client_profile"]["goals"] == expected_goals
+    assert "monthly_retainer_focus" not in weekly_prompt
+    assert "monthly_retainer_focus" not in performance_prompt
 
 def test_growth_analyst_weekly_with_mock_client():
     sample_growth_input = make_growth_input(report_type=ReportType.WEEKLY, period_days=7)
