@@ -24,7 +24,9 @@ After making changes:
 
 1. Inspect the complete `git diff`.
 2. Run `pytest` to ensure all tests pass.
-3. Verify CLI runs cleanly: `python -m app.cli generate --client <slug> --mock`.
+3. Verify the supported CLI/config surface. Runtime mock reporting is removed;
+   use test-only fakes/fixtures for local tests and run a live CLI generation
+   only when real source and OpenRouter credentials are available.
 
 Do not claim success unless the relevant validation actually ran and passed.
 

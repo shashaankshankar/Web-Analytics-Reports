@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -47,9 +48,18 @@ class ClientConfig(BaseModel):
     ga4_property_id: str = Field(default="", description="Google Analytics 4 Property ID")
     gsc_site_url: str = Field(default="", description="Google Search Console Site URL")
     gbp_location_id: str = Field(default="", description="Google Business Profile Location ID")
+    gbp_account_id: str = Field(default="", description="Optional Google Business Profile account ID for managed reviews")
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     recipients: dict[str, str] = Field(default_factory=dict, description="Recipient email map")
     timezone: str = Field(default="America/New_York", description="Local business timezone")
+    site_launch_date: date | None = Field(
+        default=None,
+        description="Optional client-confirmed public website launch date; context only, not measurement eligibility.",
+    )
+    measurement_start_date: date | None = Field(
+        default=None,
+        description="First date the analytics property provides trustworthy reporting data.",
+    )
     goals: list[str] = Field(default_factory=list, description="Agency goals and growth priorities")
     reporting: ReportingSettingsConfig = Field(default_factory=ReportingSettingsConfig)
 
@@ -75,6 +85,18 @@ class ClientConfig(BaseModel):
         if v and not v.startswith(("http://", "https://")):
             v = f"https://{v}"
         return v
+
+    @field_validator("site_launch_date", "measurement_start_date", mode="before")
+    @classmethod
+    def validate_iso_date(cls, v: Any) -> Any:
+        if v is None or isinstance(v, date):
+            return v
+        if not isinstance(v, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v.strip()):
+            raise ValueError("Date fields must use ISO date format YYYY-MM-DD.")
+        try:
+            return date.fromisoformat(v.strip())
+        except ValueError as exc:
+            raise ValueError("Date fields must contain a valid calendar date in YYYY-MM-DD format.") from exc
 
 def load_client_config(client_slug_or_path: str | Path, config_dir: Path | None = None) -> ClientConfig:
     """Load a client configuration by slug from config/clients/<slug>.json or from a direct file path."""

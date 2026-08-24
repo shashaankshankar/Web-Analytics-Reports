@@ -13,6 +13,29 @@ def test_valid_client_config(sample_client_config_path):
     assert config.recipients["client"] == "client@test.example.com"
     assert config.goals == ["Organic product rankings", "Conversion rate optimization"]
 
+
+def test_measurement_and_launch_dates_use_strict_iso_dates():
+    config = ClientConfig(
+        client_id="dated-client",
+        company_name="Dated Client",
+        domain="https://example.com",
+        site_launch_date="2026-08-10",
+        measurement_start_date="2026-08-12",
+    )
+    assert config.site_launch_date.isoformat() == "2026-08-10"
+    assert config.measurement_start_date.isoformat() == "2026-08-12"
+
+
+@pytest.mark.parametrize("field", ["site_launch_date", "measurement_start_date"])
+def test_client_config_rejects_non_iso_or_invalid_dates(field):
+    with pytest.raises(ValidationError, match="ISO date"):
+        ClientConfig(
+            client_id="invalid-date-client",
+            company_name="Invalid Date Client",
+            domain="https://example.com",
+            **{field: "08/12/2026"},
+        )
+
 def test_client_goals_default_to_empty_list():
     config = ClientConfig(
         client_id="default-goals",

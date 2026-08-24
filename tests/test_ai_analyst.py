@@ -1,15 +1,15 @@
 import json
-from unittest.mock import MagicMock
+
 import pytest
+from unittest.mock import MagicMock
+
 from app.ai.analyst import (
+    AnalysisUnavailableError,
     GrowthAnalyst,
-    fallback_growth_briefing,
-    fallback_weekly_briefing,
-    build_weekly_user_prompt,
     build_performance_user_prompt,
+    build_weekly_user_prompt,
 )
 from app.analytics.contracts import (
-    AIReportOutput,
     ChannelPerformance,
     GrowthAnalysisInput,
     LocalInteractionData,
@@ -17,8 +17,8 @@ from app.analytics.contracts import (
     PagePerformance,
     ReportType,
     StrikingDistanceKeyword,
-    WeeklyDigestOutput,
 )
+
 
 def make_growth_input(report_type: ReportType = ReportType.PERFORMANCE_28D, period_days: int = 28):
     return GrowthAnalysisInput(
@@ -94,32 +94,10 @@ def make_growth_input(report_type: ReportType = ReportType.PERFORMANCE_28D, peri
         ),
     )
 
-def test_fallback_growth_briefing():
-    sample_growth_input = make_growth_input()
-    briefing = fallback_growth_briefing(sample_growth_input)
-    assert isinstance(briefing, AIReportOutput)
-    assert len(briefing.executive_summary) == 3
-    assert "1,200" in briefing.executive_summary[0]
-    assert "Organic Search" in briefing.executive_summary[1]
-    assert briefing.biggest_win != ""
-    assert len(briefing.agency_action_plan) >= 2
-    assert briefing.overall_sentiment == "Growth"
 
-def test_fallback_weekly_briefing():
-    sample_growth_input = make_growth_input(report_type=ReportType.WEEKLY, period_days=7)
-    weekly = fallback_weekly_briefing(sample_growth_input)
-    assert isinstance(weekly, WeeklyDigestOutput)
-    assert "1,200" in weekly.biggest_win
-    assert "Organic Search" in weekly.acquisition_insight
-    assert len(weekly.next_actions) <= 2
-    assert weekly.overall_sentiment == "Growth"
-
-def test_growth_analyst_fallback_when_no_api_key():
-    sample_growth_input = make_growth_input()
-    analyst = GrowthAnalyst(api_key="")
-    briefing = analyst.analyze(sample_growth_input)
-    assert isinstance(briefing, AIReportOutput)
-    assert len(briefing.executive_summary) == 3
+def test_growth_analyst_refuses_to_fabricate_when_provider_unavailable():
+    with pytest.raises(AnalysisUnavailableError, match="credentials are unavailable"):
+        GrowthAnalyst(api_key="").analyze(make_growth_input())
 
 
 def test_analyst_prompts_propagate_goals_as_json_arrays():
@@ -138,8 +116,66 @@ def test_analyst_prompts_propagate_goals_as_json_arrays():
     assert performance_payload["client_profile"]["goals"] == expected_goals
     assert "monthly_retainer_focus" not in weekly_prompt
     assert "monthly_retainer_focus" not in performance_prompt
+    assert "raw_summary_stats" in performance_payload
+    assert "Key Conversions" in build_weekly_user_prompt(sample_growth_input)
+    assert "small sample" in build_performance_user_prompt(sample_growth_input).lower()
 
-def test_growth_analyst_weekly_with_mock_client():
+
+def test_baseline_performance_prompt_suppresses_prior_period_and_names_observed_window():
+    payload = make_growth_input().model_dump()
+    payload.update(
+        {
+            "report_mode": "initial_baseline",
+            "period_start": "2026-08-12",
+            "period_end": "2026-08-20",
+            "measurement_start_date": "2026-08-12",
+            "observed_days": 9,
+            "comparison_suppressed": True,
+            "comparison_suppression_reason": "The comparison period is before measurement began.",
+        }
+    )
+    baseline_input = GrowthAnalysisInput(**payload)
+    prompt = build_performance_user_prompt(baseline_input)
+    dataset = json.loads(prompt.split("Dataset:\n", 1)[1].split("\n\nImportant Guidelines:", 1)[0])
+    assert dataset["period"]["mode"] == "initial_baseline"
+    assert dataset["period"]["prior"] is None
+    assert "initial measurement baseline" in prompt.lower()
+    assert "do not mention prior periods" in prompt.lower()
+
+
+def test_baseline_analyst_rejects_movement_language():
+    payload = make_growth_input().model_dump()
+    payload.update(
+        {
+            "report_mode": "initial_baseline",
+            "period_start": "2026-08-12",
+            "period_end": "2026-08-20",
+            "measurement_start_date": "2026-08-12",
+            "observed_days": 9,
+            "comparison_suppressed": True,
+        }
+    )
+    baseline_input = GrowthAnalysisInput(**payload)
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": json.dumps({
+            "executive_summary": ["Sessions increased during the observation window.", "Current channels are available.", "Current events are available."],
+            "biggest_win": "Current data is available.",
+            "watch_item": None,
+            "traffic_and_inflow_insights": "Current traffic is available.",
+            "conversion_insights": "Current events are available.",
+            "seo_and_content_opportunities": "Current search data is available.",
+            "local_seo_insights": "GBP action metrics are unavailable.",
+            "agency_action_plan": [],
+            "overall_sentiment": "Moderate",
+        })}}]
+    }
+    with pytest.raises(AnalysisUnavailableError, match="comparison or movement"):
+        GrowthAnalyst(api_key="sk-test", http_client=MagicMock(post=MagicMock(return_value=mock_response))).analyze(baseline_input)
+
+
+def test_growth_analyst_weekly_with_provider_response():
     sample_growth_input = make_growth_input(report_type=ReportType.WEEKLY, period_days=7)
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -148,15 +184,16 @@ def test_growth_analyst_weekly_with_mock_client():
             {
                 "message": {
                     "content": json.dumps({
-                        "biggest_win": "Organic sessions grew 20% to 1,200.",
+                        "biggest_win": "The configured acquisition snapshot is available.",
                         "needs_attention": None,
-                        "acquisition_insight": "Search remains the primary qualified driver.",
-                        "search_opportunity": "Target dentist near me to capture top-3 map pack.",
-                        "local_insight": "Direct calls rose to 25.",
+                        "acquisition_insight": "Search remains the primary configured channel.",
+                        "conversion_insight": "Recorded customer actions are available in the current snapshot.",
+                        "search_opportunity": None,
+                        "local_insight": "GBP action metrics are unavailable from this connector.",
                         "next_actions": [
-                            {"title": "Header optimization", "description": "Update H2 tags.", "impact_area": "SEO", "priority": "High", "evidence": "Pos 11.2 rank"}
+                            {"title": "Header optimization", "description": "Update H2 tags.", "impact_area": "SEO", "priority": "High", "evidence": "Configured page data"}
                         ],
-                        "overall_sentiment": "Growth"
+                        "overall_sentiment": "Growth",
                     })
                 }
             }
@@ -164,10 +201,14 @@ def test_growth_analyst_weekly_with_mock_client():
     }
     mock_http = MagicMock()
     mock_http.post.return_value = mock_response
-    analyst = GrowthAnalyst(api_key="sk-test-key", http_client=mock_http)
-    weekly = analyst.analyze_weekly(sample_growth_input)
-    assert weekly.biggest_win == "Organic sessions grew 20% to 1,200."
+    weekly = GrowthAnalyst(api_key="sk-test-key", http_client=mock_http).analyze_weekly(sample_growth_input)
+    assert weekly.biggest_win == "The configured acquisition snapshot is available."
     assert len(weekly.next_actions) == 1
+    response_format = mock_http.post.call_args.kwargs["json"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["name"] == "weekly_digest"
+
 
 def test_growth_analyst_openrouter_payload():
     sample_growth_input = make_growth_input()
@@ -188,7 +229,7 @@ def test_growth_analyst_openrouter_payload():
                         "agency_action_plan": [
                             {"title": "Action 1", "description": "Desc", "impact_area": "SEO", "priority": "High", "evidence": "Ev"}
                         ],
-                        "overall_sentiment": "Growth"
+                        "overall_sentiment": "Growth",
                     })
                 }
             }
@@ -211,3 +252,7 @@ def test_growth_analyst_openrouter_payload():
     assert kwargs["headers"]["Authorization"] == "Bearer sk-or-v1-test"
     assert kwargs["json"]["model"] == "openai/gpt-5.6-luna"
     assert kwargs["json"]["reasoning"] == {"effort": "medium"}
+    response_format = kwargs["json"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["name"] == "performance_report"

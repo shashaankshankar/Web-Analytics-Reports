@@ -32,10 +32,9 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
     pill_text = "#0A0A0B" if is_light_color(pill_bg) else "#FFFFFF"
 
     analytics = briefing.analytics
-    insights: WeeklyDigestOutput = briefing.weekly_insights or WeeklyDigestOutput(
-        biggest_win="Performance remained stable across key indicators this week.",
-        acquisition_insight="Core traffic channels supported steady user engagement.",
-    )
+    if briefing.weekly_insights is None:
+        raise ValueError("Weekly insights are unavailable; refusing to render substitute content.")
+    insights: WeeklyDigestOutput = briefing.weekly_insights
 
     # 1. KPI Cards (Select top 4 metrics for 2x2 grid)
     kpi_metrics = [m for m in analytics.core_metrics if m.metric_name in ("sessions", "conversion_rate", "conversions", "active_users")][:4]
@@ -76,6 +75,15 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
         </div>
         """
 
+    conversion_html = ""
+    if insights.conversion_insight:
+        conversion_html = f"""
+        <div style="background: #FFFFFF; border: 1px solid #E0E3E5; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 18px 20px; margin-bottom: 14px;">
+          <span style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #515F74; font-weight: 700; display: block; margin-bottom: 4px;">Customer Inquiries &amp; Key Actions</span>
+          <p style="margin: 0; font-family: {FONT_FAMILY_MAIN}; font-size: 14px; color: #191C1E; line-height: 1.5;">{html.escape(insights.conversion_insight)}</p>
+        </div>
+        """
+
     search_opp_html = ""
     if insights.search_opportunity:
         search_opp_html = f"""
@@ -94,14 +102,33 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
         </div>
         """
 
+    acquisition_html = ""
+    if insights.acquisition_insight:
+        acquisition_html = f"""
+        <div style="background: #FFFFFF; border: 1px solid #E0E3E5; border-radius: 2px; padding: 16px 18px; margin-bottom: 14px;">
+          <span style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #515F74; font-weight: 700; display: block; margin-bottom: 4px;">Visitor Acquisition</span>
+          <p style="margin: 0; font-family: {FONT_FAMILY_MAIN}; font-size: 13.5px; color: #45464D; line-height: 1.5;">{html.escape(insights.acquisition_insight)}</p>
+        </div>
+        """
+
+    baseline_note = ""
+    if briefing.report_mode.value == "initial_baseline":
+        baseline_note = f"""
+          <tr>
+            <td style="padding: 0 24px 20px 24px;">
+              <div style="background: #FFF8E7; border: 1px solid #E6C978; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 14px 16px; color: #45464D; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; line-height: 1.55;">
+                This is an Initial Measurement Baseline covering observed data from {html.escape(briefing.observation_window_start or analytics.period_start)} through {html.escape(briefing.observation_window_end or analytics.period_end)}. A complete earlier comparison was not available, so this digest shows current activity only and is not a week-over-week change report.
+              </div>
+            </td>
+          </tr>
+        """
+
     # 3. Next Actions (Strategic Action Plan)
     actions_html = ""
     num_acts = len(insights.next_actions[:2])
     for idx, act in enumerate(insights.next_actions[:2]):
         is_last = (idx == num_acts - 1)
         actions_html += render_action_card(act, primary_color, accent_color, is_last=is_last, responsive_mobile=True)
-    if not actions_html:
-        actions_html = f'<div style="padding: 16px; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: #515F74;">Continue standard optimization schedule.</div>'
 
     logo_markup = f'<img class="weekly-brand-logo" src="{html.escape(logo_url)}" alt="{client_name}" height="52" style="height: 52px; width: auto; max-width: 260px; max-height: 56px; display: block; border: 0;" />' if logo_url else f'<span class="weekly-brand-logo" style="font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 700; color: {header_text_color}; letter-spacing: -0.01em;">{client_name}</span>'
 
@@ -207,6 +234,8 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
             </td>
           </tr>
 
+          {baseline_note}
+
           <!-- Section: 7-Day Performance Cards -->
           <tr>
             <td style="padding: 24px 20px 16px 20px;">
@@ -229,6 +258,8 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
             <td style="padding: 20px 24px 16px 24px;">
               <h2 style="margin: 0 0 14px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 18px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Key Insights &amp; Updates</h2>
               {biggest_win_html}
+              {acquisition_html}
+              {conversion_html}
               {needs_attention_html}
               {search_opp_html}
               {local_html}

@@ -12,12 +12,20 @@ Set these through Secret Manager or Cloud Run environment configuration:
 - `OPENROUTER_API_KEY`
 - `RESEND_API_KEY`
 - `RESEND_FROM_EMAIL`
+- `GBP_OAUTH_CREDENTIALS_JSON` (Secret Manager-backed JSON containing the
+  authorized GBP user's OAuth `client_id`, `client_secret`, `refresh_token`,
+  and optional `token_uri`)
+- `GBP_ACCOUNT_ID` is optional. Prefer `gbp_account_id` in the client JSON when
+  known; otherwise the adapter resolves the managed `accounts/<id>` and
+  `locations/<id>` resources by matching the configured public Place ID after
+  OAuth access is available.
 - `REPORT_DELIVERY_ENABLED=true`
 - `REPORT_ALLOWED_CLIENTS=thehouseofdental`
 
-Use the Cloud Run service account's Application Default Credentials for GA4,
-Search Console, and any approved GBP access. Do not upload a service-account
-key file to the image or repository.
+Use the Cloud Run service account's Application Default Credentials for GA4 and
+Search Console. Private GBP profile, Performance, managed Reviews, and optional
+Business Calls data use the authorized user's OAuth bundle. Do not upload a
+service-account key file to the image or repository.
 
 ## Build and deploy
 
@@ -50,8 +58,7 @@ The service accepts `POST /reports/generate` with JSON such as:
 {
   "client_slug": "thehouseofdental",
   "report_type": "weekly",
-  "send_email": true,
-  "mock_data": false
+  "send_email": true
 }
 ```
 
@@ -69,7 +76,7 @@ gcloud scheduler jobs create http thehouseofdental-weekly \
   --uri="https://SERVICE_URL/reports/generate" \
   --http-method=POST \
   --headers="Content-Type=application/json" \
-  --message-body='{"client_slug":"thehouseofdental","report_type":"weekly","send_email":true,"mock_data":false}' \
+  --message-body='{"client_slug":"thehouseofdental","report_type":"weekly","send_email":true}' \
   --oidc-service-account-email=scheduler@PROJECT_ID.iam.gserviceaccount.com \
   --oidc-token-audience="https://SERVICE_URL"
 
@@ -80,18 +87,33 @@ gcloud scheduler jobs create http thehouseofdental-performance \
   --uri="https://SERVICE_URL/reports/generate" \
   --http-method=POST \
   --headers="Content-Type=application/json" \
-  --message-body='{"client_slug":"thehouseofdental","report_type":"performance","send_email":true,"mock_data":false}' \
+  --message-body='{"client_slug":"thehouseofdental","report_type":"performance","send_email":true}' \
   --oidc-service-account-email=scheduler@PROJECT_ID.iam.gserviceaccount.com \
   --oidc-token-audience="https://SERVICE_URL"
 ```
 
 Only add a client to `REPORT_ALLOWED_CLIENTS` after its Google permissions,
-sender-domain authorization, configured recipient, and controlled inbox test
-are independently verified. Example clients remain disabled.
+sender-domain authorization, configured client and `agency_audit` recipients,
+and controlled inbox tests are independently verified. Deep Insights should
+remain disabled in a client config until its source coverage is ready; a
+per-run API or CLI override is available for controlled validation.
+
+### Measurement start and initial baselines
+
+`site_launch_date` and `measurement_start_date` are separate client fields.
+The first is optional launch context supplied by the client. The second is the
+first date the analytics property is trusted to provide reportable data and is
+the field used by the report selector. If a performance report's prior window
+predates or overlaps that date, the run becomes an Initial Measurement Baseline:
+it queries from measurement start through the report end, suppresses all prior
+values and movement deltas, and records the requested comparison as suppressed
+metadata in the internal audit. A normal comparison requires both full windows
+to be on or after measurement start and covered by the source.
 
 ## Release evidence
 
 Provider acceptance is not inbox delivery. Record the Cloud Run revision,
 Scheduler execution, Resend message ID, and confirmed inbox receipt
-separately. Do not enable a client job based only on local tests or a mock
-render.
+separately. Do not enable a client job based only on local tests or a local
+render. A generated audit artifact is evidence of the run, not proof of inbox
+placement.
