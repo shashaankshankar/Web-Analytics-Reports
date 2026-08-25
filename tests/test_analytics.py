@@ -1,9 +1,12 @@
 from datetime import date
 import pytest
+from pydantic import ValidationError
 from app.analytics.contracts import (
     GrowthAnalysisInput,
     MetricDelta,
+    ReportMode,
     ReportType,
+    SourceAvailability,
     StrikingDistanceKeyword,
 )
 from app.analytics.metrics import (
@@ -16,6 +19,35 @@ from app.analytics.metrics import (
     aggregate_growth_metrics,
 )
 from app.config import ClientConfig
+from app.analytics.periods import ReportWindowError, select_report_window
+
+def test_growth_analysis_input_rejects_removed_monthly_focus():
+    with pytest.raises(ValidationError, match="monthly_retainer_focus"):
+        GrowthAnalysisInput(
+            client_id="legacy-goals",
+            company_name="Legacy Goals Co",
+            domain="https://example.com",
+            industry="general",
+            period_start="2026-07-22",
+            period_end="2026-08-18",
+            comparison_start="2026-06-24",
+            comparison_end="2026-07-21",
+            monthly_retainer_focus="Legacy focus",
+        )
+
+def test_growth_analysis_input_still_ignores_unrelated_extra_fields():
+    growth_input = GrowthAnalysisInput(
+        client_id="extra-fields",
+        company_name="Extra Fields Co",
+        domain="https://example.com",
+        industry="general",
+        period_start="2026-07-22",
+        period_end="2026-08-18",
+        comparison_start="2026-06-24",
+        comparison_end="2026-07-21",
+        unrelated_field="ignored",
+    )
+    assert not hasattr(growth_input, "unrelated_field")
 
 def test_calculate_percentage_change():
     assert calculate_percentage_change(120, 100) == 20.0
@@ -43,6 +75,47 @@ def test_calculate_date_ranges_7d():
     assert start == "2026-08-12"
     assert prior_end == "2026-08-11"
     assert prior_start == "2026-08-05"
+
+
+def test_report_window_fails_when_requested_current_period_predates_measurement_start():
+    with pytest.raises(ReportWindowError, match="ends before measurement_start_date"):
+        select_report_window(
+            "2026-07-22",
+            "2026-08-18",
+            "2026-06-24",
+            "2026-07-21",
+            measurement_start_date="2026-08-19",
+        )
+
+
+def test_report_window_selects_initial_baseline_for_pre_measurement_comparison():
+    plan = select_report_window(
+        "2026-07-24",
+        "2026-08-20",
+        "2026-06-26",
+        "2026-07-23",
+        measurement_start_date="2026-08-12",
+        current_covered=True,
+    )
+    assert plan.mode == ReportMode.INITIAL_BASELINE
+    assert plan.observation_start == "2026-08-12"
+    assert plan.observation_end == "2026-08-20"
+    assert plan.comparison_suppressed is True
+
+
+def test_report_window_selects_normal_comparison_after_full_post_measurement_windows():
+    plan = select_report_window(
+        "2026-08-26",
+        "2026-09-22",
+        "2026-07-29",
+        "2026-08-25",
+        measurement_start_date="2026-07-01",
+        current_covered=True,
+        comparison_covered=True,
+    )
+    assert plan.mode == ReportMode.COMPARISON
+    assert plan.observation_start == "2026-08-26"
+    assert plan.comparison_suppressed is False
 
 def test_filter_striking_distance_keywords():
     raw_queries = [
@@ -73,6 +146,37 @@ def test_calculate_search_movers():
     assert top_mover.position_change == -3.3  # position improved from 9.5 to 6.2
     assert top_mover.mover_type == "ranking_gain"
 
+
+@pytest.mark.parametrize(
+    "prior_status,prior_queries,prior_truncated",
+    [
+        (SourceAvailability.EMPTY, [], False),
+        (SourceAvailability.UNAVAILABLE, [], False),
+        (None, None, False),
+        (SourceAvailability.AVAILABLE, [], True),
+    ],
+)
+def test_search_movers_suppress_missing_empty_unavailable_or_truncated_prior(
+    prior_status, prior_queries, prior_truncated
+):
+    current = [{"query": "dentist near me", "position": 11.0, "impressions": 100, "clicks": 4}]
+    assert calculate_search_movers(
+        current,
+        prior_queries,
+        prior_status=prior_status,
+        prior_truncated=prior_truncated,
+    ) == []
+
+
+def test_search_movers_do_not_treat_absent_prior_query_as_zero_baseline():
+    current = [{"query": "new query", "position": 12.0, "impressions": 100, "clicks": 4}]
+    prior = [{"query": "different query", "position": 4.0, "impressions": 100, "clicks": 4}]
+    assert calculate_search_movers(
+        current,
+        prior,
+        prior_status=SourceAvailability.AVAILABLE,
+    ) == []
+
 def test_normalize_conversion_events():
     curr_events = {"generate_lead": 18, "phone_click": 12}
     prior_events = {"generate_lead": 15, "phone_click": 10}
@@ -84,12 +188,25 @@ def test_normalize_conversion_events():
     assert lead_ev.percentage_change == 20.0
     assert lead_ev.direction == "up"
 
+
+def test_normalize_conversion_events_keeps_prior_only_events_for_comparisons():
+    events = normalize_conversion_events(
+        {"generate_lead": 0},
+        {"generate_lead": 3, "appointment_request": 2},
+    )
+    appointment = next(event for event in events if event.event_name == "appointment_request")
+    assert appointment.current_count == 0
+    assert appointment.prior_count == 2
+    assert appointment.count_change == -2
+    assert appointment.direction == "down"
+
 def test_aggregate_growth_metrics():
     client = ClientConfig(
         client_id="acme",
         company_name="Acme Corp",
         domain="https://acme.example.com",
         industry="b2b_saas",
+        goals=["Increase qualified traffic", "Improve signup conversion"],
     )
     ga4_data = {
         "summary": {"activeUsers": 500, "sessions": 700, "engagementRate": 0.65, "bounceRate": 0.35, "conversions": 28},
@@ -135,3 +252,157 @@ def test_aggregate_growth_metrics():
     assert growth_input.top_pages[0].is_high_intent is True
     assert growth_input.local_seo.phone_calls_change == 2
     assert growth_input.local_seo.phone_calls_direction == "up"
+    assert growth_input.goals == ["Increase qualified traffic", "Improve signup conversion"]
+
+
+def test_aggregate_growth_metrics_includes_gbp_profile_performance_keywords_reviews_and_calls():
+    client = ClientConfig(
+        client_id="gbp-contract",
+        company_name="GBP Contract Co",
+        domain="https://gbp-contract.example.com",
+    )
+    growth_input = aggregate_growth_metrics(
+        client=client,
+        start_date="2026-07-22",
+        end_date="2026-08-18",
+        prior_start_date="2026-06-24",
+        prior_end_date="2026-07-21",
+        ga4_data={
+            "summary": {"activeUsers": 1, "sessions": 2, "engagementRate": 0.5, "conversions": 1},
+            "prior_summary": {"activeUsers": 1, "sessions": 1, "engagementRate": 0.5, "conversions": 1},
+        },
+        gsc_queries=[],
+        gbp_data={
+            "profile_status": "available",
+            "profile_summary": {
+                "title": "GBP Contract Co",
+                "primary_phone": "+1 555 0100",
+                "address": {"locality": "Winter Park"},
+                "regular_hours": {"periods": []},
+                "primary_category": {"displayName": "Dentist"},
+                "services": [{"structuredServiceItem": {"description": "Whitening"}}],
+            },
+            "performance_status": "available",
+            "performance_metrics": {
+                "CALL_CLICKS": {"total": 5, "series": []},
+                "BUSINESS_CONVERSATIONS": {"total": 3, "series": []},
+            },
+            "prior_performance_metrics": {
+                "CALL_CLICKS": {"total": 2, "series": []},
+                "BUSINESS_CONVERSATIONS": {"total": 4, "series": []},
+            },
+            "available_performance_metrics": ["BUSINESS_CONVERSATIONS", "CALL_CLICKS"],
+            "search_keywords_status": "available",
+            "monthly_search_keywords": [{
+                "search_keyword": "dentist winter park",
+                "insights_value": 22,
+                "insights_value_type": "value",
+            }],
+            "reviews_status": "available",
+            "reviews": [{"review_id": "r1", "reply_status": "NOT_REPLIED", "comment": "Review"}],
+            "review_inventory_complete": True,
+            "review_response_summary": {
+                "review_count": 1,
+                "unreplied_count": 1,
+                "reply_coverage_percent": 0.0,
+                "complete": True,
+            },
+            "business_calls_status": "available",
+            "business_calls": {"aggregate_metrics": {"answered_calls": 7, "missed_calls": 2}},
+            "answered_calls": 7,
+            "prior_answered_calls": 5,
+            "missed_calls": 2,
+            "prior_missed_calls": 3,
+        },
+    )
+
+    assert growth_input.local_seo.profile["primary_phone"] == "+1 555 0100"
+    assert {metric.metric_name for metric in growth_input.local_seo.performance_metric_deltas} == {
+        "gbp_business_conversations",
+        "gbp_call_clicks",
+    }
+    clicks = next(metric for metric in growth_input.local_seo.performance_metric_deltas if metric.metric_name == "gbp_call_clicks")
+    assert clicks.current_value == 5
+    assert clicks.prior_value == 2
+    assert clicks.absolute_change == 3
+    assert growth_input.local_seo.answered_calls_change == 2
+    assert growth_input.local_seo.missed_calls_change == -1
+    assert growth_input.local_seo.monthly_search_keywords[0]["search_keyword"] == "dentist winter park"
+    assert growth_input.local_seo.review_inventory_complete is True
+    assert growth_input.local_seo.review_response_summary["unreplied_count"] == 1
+    assert growth_input.local_seo.business_calls["aggregate_metrics"]["answered_calls"] == 7
+
+
+def test_aggregate_growth_metrics_preserves_unavailable_search_comparison():
+    client = ClientConfig(
+        client_id="search-state",
+        company_name="Search State Co",
+        domain="https://search-state.example.com",
+    )
+    growth_input = aggregate_growth_metrics(
+        client=client,
+        start_date="2026-07-22",
+        end_date="2026-08-18",
+        prior_start_date="2026-06-24",
+        prior_end_date="2026-07-21",
+        ga4_data={
+            "summary": {"activeUsers": 1, "sessions": 2, "engagementRate": 0.5, "bounceRate": 0.5, "conversions": 1},
+            "prior_summary": {"activeUsers": 1, "sessions": 1, "engagementRate": 0.5, "bounceRate": 0.5, "conversions": 1},
+        },
+        gsc_queries=[{"query": "dentist near me", "position": 11.0, "impressions": 100, "clicks": 4, "ctr": 0.04}],
+        prior_gsc_queries=None,
+        prior_gsc_status=SourceAvailability.UNAVAILABLE,
+        gbp_data={},
+    )
+    assert growth_input.search_comparison_status == SourceAvailability.UNAVAILABLE
+    assert growth_input.search_movers == []
+    assert growth_input.search_comparison_diagnostics
+
+
+def test_aggregate_growth_metrics_initial_baseline_has_no_prior_values_or_deltas():
+    client = ClientConfig(
+        client_id="baseline-client",
+        company_name="Baseline Client",
+        domain="https://baseline.example.com",
+        measurement_start_date="2026-08-12",
+    )
+    growth_input = aggregate_growth_metrics(
+        client=client,
+        start_date="2026-08-12",
+        end_date="2026-08-20",
+        prior_start_date="2026-06-26",
+        prior_end_date="2026-07-23",
+        ga4_data={
+            "summary": {
+                "activeUsers": 11,
+                "sessions": 19,
+                "engagementRate": 0.5,
+                "bounceRate": 0.5,
+                "conversions": 2,
+            },
+            "prior_summary": {},
+            "channels": [{"channel": "Organic Search", "sessions": 10, "activeUsers": 8, "conversions": 1}],
+            "pages": [{"pagePath": "/", "sessions": 19, "activeUsers": 11}],
+            "events": {"appointment_request": 2},
+            "prior_events": {},
+        },
+        gsc_queries=[{"query": "dentist winter park", "position": 11.0, "impressions": 20, "clicks": 2, "ctr": 0.1}],
+        prior_gsc_queries=None,
+        gbp_data={},
+        report_mode=ReportMode.INITIAL_BASELINE,
+        measurement_start_date="2026-08-12",
+        comparison_suppressed=True,
+        comparison_suppression_reason="The comparison period is before measurement began.",
+    )
+    assert growth_input.report_mode == ReportMode.INITIAL_BASELINE
+    assert all(metric.prior_value is None and metric.absolute_change is None for metric in growth_input.core_metrics)
+    assert growth_input.top_channels[0].prior_sessions is None
+    assert growth_input.top_channels[0].session_change is None
+    assert growth_input.top_pages[0].prior_sessions is None
+    assert growth_input.top_pages[0].session_change is None
+    assert growth_input.conversion_events[0].prior_count is None
+    assert growth_input.conversion_events[0].count_change is None
+    assert growth_input.page_gainers == []
+    assert growth_input.page_decliners == []
+    assert growth_input.search_movers == []
+    assert growth_input.comparison_suppressed is True

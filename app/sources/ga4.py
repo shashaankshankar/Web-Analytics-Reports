@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import DateRange, Dimension, Metric, RunReportRequest
 
+from app.analytics.contracts import SourceAvailability
+
 
 class GA4Extractor:
+    """Read-only GA4 adapter with explicit query state and period provenance."""
+
+    source_name = "ga4"
+
     def __init__(self, property_id: str, client: Optional[BetaAnalyticsDataClient] = None):
         self.property_id = str(property_id).replace("properties/", "")
         self._client = client
@@ -20,7 +24,7 @@ class GA4Extractor:
         return self._client
 
     def is_configured(self) -> bool:
-        return bool(self.property_id and self.property_id.strip() and self.property_id != "mock")
+        return bool(self.property_id and self.property_id.strip())
 
     def run_report(
         self,
@@ -32,8 +36,27 @@ class GA4Extractor:
         comparison_start_date: Optional[str] = None,
         comparison_end_date: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Run one GA4 query without hiding empty, unavailable, or error states."""
+        result: Dict[str, Any] = {
+            "source": self.source_name,
+            "status": SourceAvailability.UNAVAILABLE.value,
+            "start_date": start_date,
+            "end_date": end_date,
+            "request": {
+                "dimensions": list(dimensions),
+                "metrics": list(metrics),
+                "limit": limit,
+            },
+            "rows": [],
+            "row_count": 0,
+        }
+        if comparison_start_date and comparison_end_date:
+            result["comparison_start_date"] = comparison_start_date
+            result["comparison_end_date"] = comparison_end_date
+
         if not self.is_configured():
-            return {"rows": [], "row_count": 0}
+            result["reason"] = "GA4 property is not configured."
+            return result
 
         date_ranges = [DateRange(start_date=start_date, end_date=end_date)]
         if comparison_start_date and comparison_end_date:
@@ -48,9 +71,11 @@ class GA4Extractor:
                 limit=limit,
             )
             response = self.client.run_report(request=request)
-        except Exception as e:
-            return {"rows": [], "row_count": 0, "error": str(e)}
-        
+        except Exception as exc:
+            result["status"] = SourceAvailability.ERROR.value
+            result["reason"] = f"GA4 request failed: {type(exc).__name__}."
+            return result
+
         rows = [
             {
                 "dimensions": [dim.value for dim in row.dimension_values],
@@ -58,112 +83,215 @@ class GA4Extractor:
             }
             for row in response.rows
         ]
-        return {"rows": rows, "row_count": response.row_count}
+        result["rows"] = rows
+        result["row_count"] = int(response.row_count)
+        result["status"] = (
+            SourceAvailability.AVAILABLE.value if rows else SourceAvailability.EMPTY.value
+        )
+        if not rows:
+            result["reason"] = "GA4 returned no rows for the requested period and query."
+        return result
 
     def fetch_metrics_and_channels(
         self,
         start_date: str,
         end_date: str,
-        prior_start_date: str,
-        prior_end_date: str,
+        prior_start_date: Optional[str] = None,
+        prior_end_date: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Fetch summary metrics, channels, landing pages, and key conversion events."""
+        """Fetch the report inputs required by the deterministic aggregator."""
+        comparison_enabled = bool(prior_start_date and prior_end_date)
         if not self.is_configured():
             return {
-                "summary": {"activeUsers": 0, "sessions": 0, "engagementRate": 0.0, "conversions": 0},
-                "prior_summary": {"activeUsers": 0, "sessions": 0, "engagementRate": 0.0, "conversions": 0},
+                "source": self.source_name,
+                "status": SourceAvailability.UNAVAILABLE.value,
+                "reason": "GA4 property is not configured.",
+                "summary": {},
+                "prior_summary": {},
                 "channels": [],
                 "pages": [],
                 "events": {},
                 "prior_events": {},
+                "errors": [],
+                "row_counts": {},
+                "query_statuses": {},
             }
 
-        # 1. Summary core metrics
         metrics_list = ["activeUsers", "sessions", "engagementRate", "bounceRate", "conversions"]
-        curr_summary_raw = self.run_report(start_date, end_date, [], metrics_list)
-        prior_summary_raw = self.run_report(prior_start_date, prior_end_date, [], metrics_list)
+        current_queries = {
+            "summary": self.run_report(start_date, end_date, [], metrics_list),
+            "channels": self.run_report(
+                start_date,
+                end_date,
+                ["sessionDefaultChannelGroup"],
+                ["sessions", "activeUsers", "conversions"],
+            ),
+            "pages": self.run_report(
+                start_date,
+                end_date,
+                ["landingPagePlusQueryString"],
+                ["sessions", "activeUsers", "eventCount"],
+                limit=50,
+            ),
+            "events": self.run_report(start_date, end_date, ["eventName"], ["eventCount"]),
+        }
+        prior_queries = (
+            {
+                "summary": self.run_report(prior_start_date, prior_end_date, [], metrics_list),
+                "channels": self.run_report(
+                    prior_start_date,
+                    prior_end_date,
+                    ["sessionDefaultChannelGroup"],
+                    ["sessions", "activeUsers", "conversions"],
+                ),
+                "pages": self.run_report(
+                    prior_start_date,
+                    prior_end_date,
+                    ["landingPagePlusQueryString"],
+                    ["sessions"],
+                    limit=50,
+                ),
+                "events": self.run_report(prior_start_date, prior_end_date, ["eventName"], ["eventCount"]),
+            }
+            if comparison_enabled
+            else {}
+        )
 
         def parse_summary(raw: Dict[str, Any]) -> Dict[str, float]:
-            if not raw["rows"]:
-                return {"activeUsers": 0, "sessions": 0, "engagementRate": 0.0, "bounceRate": 0.0, "conversions": 0}
-            vals = raw["rows"][0]["metrics"]
+            if raw.get("status") != SourceAvailability.AVAILABLE.value or not raw.get("rows"):
+                return {}
+            values = raw["rows"][0].get("metrics", [])
             return {
-                "activeUsers": float(vals[0]) if len(vals) > 0 else 0,
-                "sessions": float(vals[1]) if len(vals) > 1 else 0,
-                "engagementRate": float(vals[2]) if len(vals) > 2 else 0.0,
-                "bounceRate": float(vals[3]) if len(vals) > 3 else 0.0,
-                "conversions": float(vals[4]) if len(vals) > 4 else 0,
+                "activeUsers": float(values[0]) if len(values) > 0 else 0.0,
+                "sessions": float(values[1]) if len(values) > 1 else 0.0,
+                "engagementRate": float(values[2]) if len(values) > 2 else 0.0,
+                "bounceRate": float(values[3]) if len(values) > 3 else 0.0,
+                "conversions": float(values[4]) if len(values) > 4 else 0.0,
             }
 
-        # 2. Acquisition channels
-        curr_channels_raw = self.run_report(start_date, end_date, ["sessionDefaultChannelGroup"], ["sessions", "activeUsers", "conversions"])
-        prior_channels_raw = self.run_report(prior_start_date, prior_end_date, ["sessionDefaultChannelGroup"], ["sessions", "activeUsers", "conversions"])
+        current_summary = current_queries["summary"]
+        current_channels = current_queries["channels"]
+        current_pages = current_queries["pages"]
+        current_events = current_queries["events"]
+        prior_summary = prior_queries.get("summary")
+        prior_channels = prior_queries.get("channels")
+        prior_pages = prior_queries.get("pages")
+        prior_events = prior_queries.get("events")
 
         prior_channel_map = {
-            r["dimensions"][0] or "(not set)": {
-                "sessions": int(float(r["metrics"][0])),
-                "activeUsers": int(float(r["metrics"][1])),
-                "conversions": int(float(r["metrics"][2])) if len(r["metrics"]) > 2 else 0,
+            row.get("dimensions", [""])[0] or "(not set)": {
+                "sessions": int(float(row.get("metrics", [0])[0])),
+                "activeUsers": int(float(row.get("metrics", [0, 0])[1])),
+                "conversions": int(float(row.get("metrics", [0, 0, 0])[2])),
             }
-            for r in prior_channels_raw.get("rows", [])
+            for row in (prior_channels or {}).get("rows", [])
         }
-
         channels = []
-        for r in curr_channels_raw.get("rows", []):
-            ch_name = r["dimensions"][0] or "(not set)"
-            sessions = int(float(r["metrics"][0]))
-            users = int(float(r["metrics"][1]))
-            conversions = int(float(r["metrics"][2])) if len(r["metrics"]) > 2 else 0
-            prior_info = prior_channel_map.get(ch_name, {"sessions": 0, "activeUsers": 0, "conversions": 0})
+        for row in current_channels.get("rows", []):
+            dimensions = row.get("dimensions", [])
+            metrics = row.get("metrics", [])
+            channel = dimensions[0] if dimensions else "(not set)"
+            sessions = int(float(metrics[0])) if metrics else 0
+            active_users = int(float(metrics[1])) if len(metrics) > 1 else 0
+            conversions = int(float(metrics[2])) if len(metrics) > 2 else 0
+            prior_info = prior_channel_map.get(channel)
             channels.append({
-                "channel": ch_name,
+                "channel": channel,
                 "sessions": sessions,
-                "activeUsers": users,
+                "activeUsers": active_users,
                 "conversions": conversions,
-                "priorSessions": prior_info["sessions"],
-                "sessionChange": sessions - prior_info["sessions"],
+                "priorSessions": prior_info["sessions"] if prior_info else None,
+                "sessionChange": sessions - prior_info["sessions"] if prior_info else None,
             })
 
-        # 3. Landing pages
-        curr_pages_raw = self.run_report(start_date, end_date, ["landingPagePlusQueryString"], ["sessions", "activeUsers", "eventCount"], limit=50)
-        prior_pages_raw = self.run_report(prior_start_date, prior_end_date, ["landingPagePlusQueryString"], ["sessions"], limit=50)
-        prior_pages_map = {r["dimensions"][0]: int(float(r["metrics"][0])) for r in prior_pages_raw.get("rows", [])}
-
+        prior_pages_map = {
+            row.get("dimensions", [""])[0]: int(float(row.get("metrics", [0])[0]))
+            for row in (prior_pages or {}).get("rows", [])
+        }
         pages = []
-        for r in curr_pages_raw.get("rows", []):
-            raw_path = r["dimensions"][0] or "/"
+        for row in current_pages.get("rows", []):
+            dimensions = row.get("dimensions", [])
+            metrics = row.get("metrics", [])
+            raw_path = dimensions[0] if dimensions else "/"
             clean_path = raw_path.split("?")[0].split("#")[0] or "/"
-            sessions = int(float(r["metrics"][0]))
-            users = int(float(r["metrics"][1]))
-            prior_sess = prior_pages_map.get(raw_path, 0)
+            sessions = int(float(metrics[0])) if metrics else 0
+            active_users = int(float(metrics[1])) if len(metrics) > 1 else 0
+            prior_sessions = prior_pages_map.get(raw_path)
             pages.append({
                 "pagePath": clean_path,
                 "sessions": sessions,
-                "activeUsers": users,
-                "priorSessions": prior_sess,
-                "sessionChange": sessions - prior_sess,
+                "activeUsers": active_users,
+                "priorSessions": prior_sessions,
+                "sessionChange": sessions - prior_sessions if prior_sessions is not None else None,
             })
 
-        # 4. Events count (e.g. generate_lead, form_submit, phone_click, etc.)
-        curr_events_raw = self.run_report(start_date, end_date, ["eventName"], ["eventCount"])
-        prior_events_raw = self.run_report(prior_start_date, prior_end_date, ["eventName"], ["eventCount"])
+        events = {
+            row.get("dimensions", [""])[0]: int(float(row.get("metrics", [0])[0]))
+            for row in current_events.get("rows", [])
+            if row.get("dimensions")
+        }
+        prior_events_map = {
+            row.get("dimensions", [""])[0]: int(float(row.get("metrics", [0])[0]))
+            for row in (prior_events or {}).get("rows", [])
+            if row.get("dimensions")
+        }
 
         errors = [
-            raw.get("error")
-            for raw in (curr_summary_raw, prior_summary_raw, curr_channels_raw, prior_channels_raw,
-                        curr_pages_raw, prior_pages_raw, curr_events_raw, prior_events_raw)
-            if raw.get("error")
+            raw.get("reason", "GA4 query failed")
+            for raw in list(current_queries.values()) + list(prior_queries.values())
+            if raw.get("status") == SourceAvailability.ERROR.value
         ]
+        query_statuses = {
+            name: {
+                "current": current_queries[name].get("status"),
+                "prior": prior_queries[name].get("status") if name in prior_queries else None,
+                "current_reason": current_queries[name].get("reason"),
+                "prior_reason": prior_queries[name].get("reason") if name in prior_queries else None,
+            }
+            for name in current_queries
+        }
 
-        events = {r["dimensions"][0]: int(float(r["metrics"][0])) for r in curr_events_raw.get("rows", [])}
-        prior_events = {r["dimensions"][0]: int(float(r["metrics"][0])) for r in prior_events_raw.get("rows", [])}
+        if errors:
+            overall_status = SourceAvailability.ERROR.value
+            reason = "One or more GA4 queries failed."
+        elif current_summary.get("status") != SourceAvailability.AVAILABLE.value:
+            overall_status = current_summary.get("status", SourceAvailability.EMPTY.value)
+            reason = "GA4 did not return a current summary row."
+        elif comparison_enabled and (prior_summary is None or prior_summary.get("status") != SourceAvailability.AVAILABLE.value):
+            overall_status = (prior_summary or {}).get("status", SourceAvailability.EMPTY.value)
+            reason = "GA4 did not return a complete prior summary row."
+        else:
+            overall_status = SourceAvailability.AVAILABLE.value
+            reason = None if comparison_enabled else "GA4 current observation returned without a comparison period."
 
         return {
-            "summary": parse_summary(curr_summary_raw),
-            "prior_summary": parse_summary(prior_summary_raw),
+            "source": self.source_name,
+            "status": overall_status,
+            "reason": reason,
+            "summary": parse_summary(current_summary),
+            "prior_summary": parse_summary(prior_summary or {}),
             "channels": channels,
             "pages": pages,
             "events": events,
-            "prior_events": prior_events,
+            "prior_events": prior_events_map,
             "errors": errors,
+            "row_counts": {
+                name: {
+                    "current": current_queries[name].get("row_count", 0),
+                    "prior": prior_queries[name].get("row_count", 0) if name in prior_queries else None,
+                }
+                for name in current_queries
+            },
+            "query_statuses": query_statuses,
+            "periods": {
+                "current": {"start_date": start_date, "end_date": end_date},
+                "prior": (
+                    {"start_date": prior_start_date, "end_date": prior_end_date}
+                    if comparison_enabled
+                    else None
+                ),
+            },
+            "current_status": current_summary.get("status"),
+            "prior_status": prior_summary.get("status") if prior_summary else None,
+            "comparison_enabled": comparison_enabled,
         }

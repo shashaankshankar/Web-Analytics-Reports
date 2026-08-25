@@ -22,7 +22,10 @@ def sample_client_config_path(tmp_path):
             "agency_cc": "agency@growth.example.com"
         },
         "timezone": "America/New_York",
-        "monthly_retainer_focus": "Organic product rankings and conversion rate optimization"
+        "goals": [
+            "Organic product rankings",
+            "Conversion rate optimization"
+        ]
     }"""
     cfg_file = tmp_path / "test-client.json"
     cfg_file.write_text(config_content, encoding="utf-8")

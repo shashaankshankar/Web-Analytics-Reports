@@ -53,6 +53,10 @@ def render_kpi_card(metric: MetricDelta, primary_color: str = '#000000', accent_
         pct_str = f'{metric.percentage_points_change:+.1f}% pts'
     elif metric.percentage_change is not None:
         pct_str = f'{metric.percentage_change:+.1f}%'
+    elif metric.prior_value is None:
+        arrow = ''
+        badge_color = '#515F74'
+        pct_str = 'baseline'
     else:
         pct_str = 'stable'
 
@@ -78,8 +82,6 @@ def render_action_card(
     title = html.escape(action.title)
     desc = html.escape(action.description)
     raw_priority = (action.priority or '').strip().lower()
-    evidence = html.escape(action.evidence) if action.evidence else ''
-
     border_bottom = 'border-bottom: 1px solid rgba(198, 198, 205, 0.3);' if not is_last else ''
 
     if raw_priority == 'high':
@@ -91,8 +93,6 @@ def render_action_card(
     else:
         priority_label = 'Standard Optimization'
         p_badge = 'background: #E0E3E5; color: #45464D;'
-
-    evidence_html = f'<div style="margin-top: 4px; font-size: 11px; color: #515F74; font-family: {FONT_FAMILY_MAIN};"><span style="font-weight: 600;">Context:</span> {evidence}</div>' if evidence else ''
 
     copy_class = 'weekly-action-copy' if responsive_mobile else ''
     badge_class = 'weekly-action-badge' if responsive_mobile else ''
@@ -108,7 +108,6 @@ def render_action_card(
           <td class="{copy_class}" style="vertical-align: middle;">
             <div style="font-family: {FONT_FAMILY_MAIN}; color: #191C1E; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; margin-bottom: 2px;">{title}</div>
             <div style="font-family: {FONT_FAMILY_MAIN}; color: #515F74; font-size: 13px; line-height: 1.45;">{desc}</div>
-            {evidence_html}
           </td>
           <td class="{badge_class}" style="text-align: right; vertical-align: middle; white-space: nowrap; padding-left: 12px;">
             <span style="{p_badge} padding: 3px 8px; border-radius: 2px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; font-family: {FONT_FAMILY_MAIN}; display: inline-block;">{priority_label}</span>

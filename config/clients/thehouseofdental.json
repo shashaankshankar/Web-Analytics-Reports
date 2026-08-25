@@ -6,6 +6,7 @@
   "ga4_property_id": "549721844",
   "gsc_site_url": "https://thehouseofdentalwp.com/",
   "gbp_location_id": "places/ChIJM7fB_p1v54gR35t3HRaGH_Q",
+  "gbp_account_id": "",
   "branding": {
     "primary_color": "#0A0A0B",
     "secondary_color": "#F7F4EE",
@@ -14,10 +15,15 @@
   },
   "recipients": {
     "client": "office@thehouseofdentalwp.com",
-    "agency_cc": "vectorstudioteam10@gmail.com"
+    "agency_cc": "vectorstudioteam10@gmail.com",
+    "agency_audit": "vectorstudioteam10@gmail.com"
   },
   "timezone": "America/New_York",
-  "monthly_retainer_focus": "Local Winter Park SEO, cosmetic dentistry & restorative inquiries",
+  "measurement_start_date": "2026-08-12",
+  "goals": [
+    "Local Winter Park SEO",
+    "Cosmetic dentistry and restorative inquiries"
+  ],
   "reporting": {
     "weekly_digest": {"enabled": true, "day": "monday", "attach_pdf": false},
     "performance_report": {"enabled": true, "cadence": "28d", "attach_pdf": true, "deep_insights": false}

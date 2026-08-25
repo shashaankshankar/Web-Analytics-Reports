@@ -1,6 +1,6 @@
 from __future__ import annotations
 import html
-from app.analytics.contracts import FullGrowthBriefing, ReportType
+from app.analytics.contracts import FullGrowthBriefing, ReportMode, ReportType
 from app.delivery.email_components import (
     COLOR_BG,
     COLOR_ON_SURFACE,
@@ -14,6 +14,18 @@ from app.delivery.email_components import (
     render_action_card,
     render_kpi_card,
 )
+from app.delivery.discovery_copy import build_client_discovery_copies
+from app.delivery.gbp_reporting import calls_rows, keyword_rows, performance_rows, profile_rows, review_rows
+
+
+def _gbp_report_number(value):
+    if value is None:
+        return "Not available"
+    try:
+        number = float(value)
+        return f"{int(number):,}" if number.is_integer() else f"{number:,.1f}"
+    except (TypeError, ValueError):
+        return html.escape(str(value))
 
 def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
     """Render a publication-grade, editorial executive performance briefing email incorporating client branding."""
@@ -32,7 +44,13 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
 
     analytics = briefing.analytics
     insights = briefing.insights
-    report_name = "Monthly Intelligence Briefing" if briefing.report_type == ReportType.PERFORMANCE_28D else f"{analytics.period_days}-Day Performance Report"
+    report_name = (
+        "Initial Measurement Baseline"
+        if briefing.report_mode == ReportMode.INITIAL_BASELINE
+        else "28-Day Performance Report"
+        if briefing.report_type == ReportType.PERFORMANCE_28D
+        else f"{analytics.period_days}-Day Performance Report"
+    )
 
     # 1. Metric Cards Grid
     metrics_cards_html = ""
@@ -83,21 +101,25 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
     conv_rows_html = ""
     for ce in analytics.conversion_events[:4]:
         ev_name = html.escape(ce.display_name)
-        pct_str = f"{ce.percentage_change:+.1f}%" if ce.percentage_change is not None else "-"
+        pct_str = f"{ce.percentage_change:+.1f}%" if ce.percentage_change is not None else "baseline"
         if ce.direction == "up":
             dir_icon = "&#8593;"
             color_style = "color: #16A34A;"
         elif ce.direction == "down":
             dir_icon = "&#8595;"
             color_style = "color: #BA1A1A;"
+        elif ce.prior_count is None:
+            dir_icon = ""
+            color_style = "color: #515F74;"
         else:
             dir_icon = "&rarr;"
             color_style = "color: #515F74;"
+        prior_display = f"{ce.prior_count:,}" if ce.prior_count is not None else "Not available"
         conv_rows_html += f"""
         <tr style="border-bottom: 1px solid rgba(198, 198, 205, 0.3);">
           <td style="padding: 12px 14px; font-family: {FONT_FAMILY_MAIN}; font-weight: 600; color: #191C1E; font-size: 13.5px;">{ev_name}</td>
           <td style="padding: 12px 14px; text-align: center; color: #191C1E; font-size: 13.5px; font-weight: 600; font-family: {FONT_FAMILY_MAIN};">{ce.current_count:,}</td>
-          <td style="padding: 12px 14px; text-align: center; color: #515F74; font-size: 13px; font-family: {FONT_FAMILY_MAIN};">{ce.prior_count:,}</td>
+          <td style="padding: 12px 14px; text-align: center; color: #515F74; font-size: 13px; font-family: {FONT_FAMILY_MAIN};">{prior_display}</td>
           <td style="padding: 12px 14px; text-align: right; {color_style} font-weight: 600; font-size: 13px; font-family: {FONT_FAMILY_MAIN};">{dir_icon} {pct_str}</td>
         </tr>
         """
@@ -110,15 +132,15 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
         <!-- Section: Key Inquiries & Actions -->
         <tr>
           <td style="padding: 24px 32px;">
-            <h2 style="margin: 0 0 14px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Customer Inquiries &amp; Key Actions</h2>
+              <h2 style="margin: 0 0 14px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Customer Inquiries &amp; Key Actions</h2>
             {conv_commentary}
             <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #FFFFFF; border: 1px solid rgba(198, 198, 205, 0.4); border-radius: 2px; overflow: hidden;">
               <thead>
                 <tr style="background-color: #F7F9FB; border-bottom: 1px solid rgba(198, 198, 205, 0.4);">
                   <th style="padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Action / Goal</th>
                   <th style="padding: 10px 14px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">This Period</th>
-                  <th style="padding: 10px 14px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Prior Period</th>
-                  <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Change</th>
+                  <th style="padding: 10px 14px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">{("Prior Period" if briefing.report_mode == ReportMode.COMPARISON else "Comparison")}</th>
+                  <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">{("Change" if briefing.report_mode == ReportMode.COMPARISON else "Status")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -134,7 +156,7 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
         </tr>
         """
 
-    # 5. Striking Distance Keywords Rows
+    # 5. LLM-authored SEO narrative and striking-distance keyword rows
     kw_rows_html = ""
     for kw in analytics.striking_distance_keywords[:5]:
         kw_query = html.escape(kw.query)
@@ -154,33 +176,73 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
           </td>
         </tr>
         """
-    if not kw_rows_html:
-        kw_rows_html = '<tr><td colspan="4" style="padding: 16px; text-align: center; color: #515F74; font-size: 13px; font-family: ' + FONT_FAMILY_MAIN + ';">No high-opportunity search terms found for this cycle.</td></tr>'
+    seo_insights_escaped = html.escape(insights.seo_and_content_opportunities) if insights.seo_and_content_opportunities else ""
+    keyword_table_html = ""
+    if kw_rows_html:
+        keyword_table_html = f"""
+              <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #FFFFFF; border: 1px solid rgba(198, 198, 205, 0.4); border-radius: 2px; overflow: hidden;">
+                <thead>
+                  <tr style="background-color: #F7F9FB; border-bottom: 1px solid rgba(198, 198, 205, 0.4);">
+                    <th style="padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Search Term</th>
+                    <th style="padding: 10px 14px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Search Views</th>
+                    <th style="padding: 10px 14px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Google Rank</th>
+                    <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: {accent_color}; font-family: {FONT_FAMILY_MAIN};">Opportunity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                {kw_rows_html}
+              </tbody>
+            </table>
+        """
 
-    # 6. Autonomous Deep Discoveries
+    search_body_parts = []
+    if seo_insights_escaped:
+        search_body_parts.append(seo_insights_escaped)
+    if keyword_table_html:
+        search_body_parts.append(f'<div style="margin-top: 18px;">{keyword_table_html}</div>')
+    search_body_html = (
+        f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 14px; color: #45464D; line-height: 1.6; background: #F7F9FB; border: 1px solid #E0E3E5; border-radius: 2px; padding: 18px 20px;">'
+        f'{"".join(search_body_parts)}</div>'
+        if search_body_parts
+        else ""
+    )
+    search_heading = "High-Opportunity Google Searches" if kw_rows_html else "Search &amp; Content Topics to Validate"
+    search_section = f"""<!-- Section: Search Opportunities -->
+          <tr>
+            <td style="padding: 24px 32px;">
+              <h2 style="margin: 0 0 12px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 600; color: {primary_color}; line-height: 1.3;">{search_heading}</h2>
+              {search_body_html}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 0 32px;">
+              <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
+            </td>
+          </tr>""" if search_body_html else ""
+
+    # 6. Client-facing opportunities derived from accepted deterministic findings
     discoveries_html = ""
-    if insights.deep_discoveries:
-        for disc in insights.deep_discoveries:
-            disc_title = html.escape(disc.title)
-            disc_source = html.escape(disc.source)
-            disc_insight = html.escape(disc.insight)
-            disc_rec = html.escape(disc.recommended_action)
-            discoveries_html += f"""
-            <div style="background: #FFFFFF; border: 1px solid #E0E3E5; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 18px 20px; margin-bottom: 16px;">
-              <table role="presentation" style="width: 100%; border-collapse: collapse; margin-bottom: 8px;">
-                <tr>
-                  <td style="vertical-align: middle;">
-                    <span style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #515F74; font-weight: 700; display: block; margin-bottom: 4px;">{disc_source}</span>
-                    <h3 style="margin: 0; font-family: {FONT_FAMILY_MAIN}; color: #191C1E; font-size: 16px; font-weight: 700; line-height: 1.3;">{disc_title}</h3>
-                  </td>
-                </tr>
-              </table>
-              <p style="margin: 0 0 12px 0; color: #45464D; font-size: 13.5px; line-height: 1.55; font-family: {FONT_FAMILY_MAIN};">{disc_insight}</p>
-              <div style="font-size: 12.5px; color: #191C1E; background: #F7F9FB; border: 1px dashed #C6C6CD; border-radius: 2px; padding: 10px 14px; font-family: {FONT_FAMILY_MAIN};">
-                <span style="color: {accent_color}; font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em;">Next Step:</span> {disc_rec}
-              </div>
-            </div>
-            """
+    client_discovery_copies = build_client_discovery_copies(
+        insights.deep_discoveries,
+        audit=briefing.exploration_audit,
+        client_id=analytics.client_id,
+        period_start=analytics.period_start,
+        period_end=analytics.period_end,
+    )
+
+    for client_copy in client_discovery_copies:
+        disc_title = html.escape(client_copy.title.upper())
+        disc_noticed = html.escape(client_copy.what_we_noticed)
+        disc_rec = html.escape(client_copy.recommended_next_step)
+        discoveries_html += f"""
+        <div style="background: #FFFFFF; border: 1px solid #E0E3E5; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 14px 16px; margin-bottom: 10px;">
+          <h3 style="margin: 0 0 8px 0; font-family: {FONT_FAMILY_MAIN}; color: #191C1E; font-size: 15px; font-weight: 700; line-height: 1.35;">{disc_title}</h3>
+          <p style="margin: 0 0 10px 0; color: #45464D; font-size: 13px; line-height: 1.5; font-family: {FONT_FAMILY_MAIN};"><strong>What we noticed:</strong> {disc_noticed}</p>
+          <div style="font-size: 12.5px; color: #191C1E; background: #F7F9FB; border: 1px solid #E0E3E5; border-radius: 2px; padding: 9px 12px; font-family: {FONT_FAMILY_MAIN}; line-height: 1.5;">
+            <span style="color: {accent_color}; font-weight: 700; text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.05em;">Recommended next step:</span> {disc_rec}
+          </div>
+        </div>
+        """
 
     # 7. Prioritized Agency Action Plan
     action_items_html = ""
@@ -193,25 +255,129 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
     traffic_insights_escaped = html.escape(insights.traffic_and_inflow_insights)
     local_insights_escaped = html.escape(insights.local_seo_insights) if insights.local_seo_insights else ""
 
-    discoveries_section = f"""<!-- Section: Key Opportunities & Discoveries -->
+    # Deterministic GBP evidence: the AI narrative can interpret these facts,
+    # but the report also preserves the exact observed source values.
+    local = analytics.local_seo
+    profile_detail_rows = "".join(
+        f'<tr><td style="padding: 7px 10px; font-weight: 600; color: #515F74;">{html.escape(label)}</td>'
+        f'<td style="padding: 7px 10px; color: #191C1E;">{html.escape(value)}</td></tr>'
+        for label, value in profile_rows(local)
+    )
+    profile_detail_html = (
+        f'<h3 style="margin: 16px 0 8px; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: {primary_color};">Profile details</h3>'
+        f'<table role="presentation" style="width: 100%; border-collapse: collapse; border: 1px solid #E0E3E5;">{profile_detail_rows}</table>'
+        if profile_detail_rows else ""
+    )
+    performance_detail_rows = "".join(
+        f'<tr><td style="padding: 8px 10px; color: #191C1E;">{html.escape(row["label"])}</td>'
+        f'<td style="padding: 8px 10px; text-align: right;">{_gbp_report_number(row["current"])}</td>'
+        f'<td style="padding: 8px 10px; text-align: right; color: #515F74;">{_gbp_report_number(row["prior"])}</td>'
+        f'<td style="padding: 8px 10px; text-align: right; color: #515F74;">'
+        f'{("baseline" if row["prior"] is None else (f"{row["change"]:+.1f}%" if row["change"] is not None else "No % baseline"))}</td></tr>'
+        for row in performance_rows(local)
+    )
+    performance_detail_html = (
+        f'<h3 style="margin: 16px 0 8px; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: {primary_color};">GBP Performance metrics</h3>'
+        '<table role="presentation" style="width: 100%; border-collapse: collapse; border: 1px solid #E0E3E5;">'
+        '<tr style="background: #F7F9FB; color: #515F74; font-size: 10px; text-transform: uppercase;">'
+        '<th style="padding: 8px 10px; text-align: left;">Metric</th><th style="padding: 8px 10px; text-align: right;">This period</th>'
+        '<th style="padding: 8px 10px; text-align: right;">Prior</th><th style="padding: 8px 10px; text-align: right;">Change</th></tr>'
+        f'{performance_detail_rows}</table>'
+        if performance_detail_rows else ""
+    )
+    keyword_detail_rows = "".join(
+        f'<tr><td style="padding: 7px 10px; color: #191C1E;">{html.escape(row["keyword"])}</td>'
+        f'<td style="padding: 7px 10px; text-align: right; color: #515F74;">{html.escape(row["value"])}</td></tr>'
+        for row in keyword_rows(local)
+    )
+    keyword_detail_html = (
+        f'<h3 style="margin: 16px 0 8px; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: {primary_color};">Monthly GBP search keywords</h3>'
+        '<table role="presentation" style="width: 100%; border-collapse: collapse; border: 1px solid #E0E3E5;">'
+        '<tr style="background: #F7F9FB; color: #515F74; font-size: 10px; text-transform: uppercase;">'
+        '<th style="padding: 8px 10px; text-align: left;">Keyword</th><th style="padding: 8px 10px; text-align: right;">Reported value</th></tr>'
+        f'{keyword_detail_rows}</table>'
+        if keyword_detail_rows else ""
+    )
+    review_detail_rows = "".join(
+        f'<tr><td style="padding: 7px 10px;">{html.escape(row["rating"])}</td>'
+        f'<td style="padding: 7px 10px;">{html.escape(row["reply_status"])}</td>'
+        f'<td style="padding: 7px 10px; color: #515F74;">{html.escape(row["updated"])}</td>'
+        f'<td style="padding: 7px 10px; color: #45464D;">{html.escape(row["comment"])}</td></tr>'
+        for row in review_rows(local)
+    )
+    review_summary = local.review_response_summary or {}
+    review_summary_text = ""
+    if review_summary:
+        complete_label = "complete inventory" if review_summary.get("complete") else "partial inventory"
+        coverage = review_summary.get("reply_coverage_percent")
+        coverage_text = f"{coverage:.1f}% replied" if coverage is not None else "reply coverage not available"
+        review_summary_text = (
+            f'{html.escape(str(review_summary.get("review_count", 0)))} reviews, '
+            f'{html.escape(str(review_summary.get("unreplied_count", 0)))} not replied, '
+            f'{html.escape(coverage_text)} ({complete_label})'
+        )
+    review_detail_html = (
+        f'<h3 style="margin: 16px 0 8px; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: {primary_color};">Managed reviews and reply status</h3>'
+        f'<p style="margin: 0 0 8px; color: #515F74; font-size: 12px;">{review_summary_text}</p>'
+        '<table role="presentation" style="width: 100%; border-collapse: collapse; border: 1px solid #E0E3E5;">'
+        '<tr style="background: #F7F9FB; color: #515F74; font-size: 10px; text-transform: uppercase;">'
+        '<th style="padding: 8px 10px; text-align: left;">Rating</th><th style="padding: 8px 10px; text-align: left;">Reply</th>'
+        '<th style="padding: 8px 10px; text-align: left;">Updated</th><th style="padding: 8px 10px; text-align: left;">Recent comment</th></tr>'
+        f'{review_detail_rows}</table>'
+        if review_detail_rows else ""
+    )
+    calls_detail = calls_rows(local)
+    calls_detail_html = (
+        f'<h3 style="margin: 16px 0 8px; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: {primary_color};">Business Calls insights</h3>'
+        + " ".join(f'<span style="margin-right: 18px;"><strong>{html.escape(label)}:</strong> {html.escape(value)}</span>' for label, value in calls_detail)
+        if calls_detail else ""
+    )
+    gbp_details = "".join((profile_detail_html, performance_detail_html, keyword_detail_html, review_detail_html, calls_detail_html))
+    gbp_evidence_html = (
+        f'<div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #E0E3E5;">{gbp_details}</div>'
+        if gbp_details else ""
+    )
+
+    deep_insights_enabled = bool(briefing.exploration_audit and briefing.exploration_audit.enabled)
+    unavailable_discoveries_html = f"""
+            <div style="background: #F7F9FB; border: 1px solid #E0E3E5; border-radius: 2px; padding: 16px 18px; color: #515F74; font-family: {FONT_FAMILY_MAIN}; font-size: 13.5px; line-height: 1.55;">
+              No additional opportunities were identified from this period, and no recommendations were added.
+            </div>
+            """
+    discoveries_body = discoveries_html or unavailable_discoveries_html
+    discoveries_intro = "These are opportunities identified from the current reporting period. Each item includes a practical next step for the practice."
+    discoveries_section = f"""<!-- Section: Where We're Focusing Next -->
           <tr>
             <td style="padding: 24px 32px;">
-              <h2 style="margin: 0 0 16px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Key Opportunities &amp; Discoveries</h2>
-              {discoveries_html}
+              <h2 style="margin: 0 0 8px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Where We're Focusing Next</h2>
+              <p style="margin: 0 0 14px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 13.5px; color: #515F74; line-height: 1.5;">{discoveries_intro}</p>
+              {discoveries_body}
             </td>
           </tr>
           <tr>
             <td style="padding: 0 32px;">
               <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
             </td>
-          </tr>""" if discoveries_html else ""
+          </tr>""" if deep_insights_enabled else ""
+
+    baseline_note = ""
+    if briefing.report_mode == ReportMode.INITIAL_BASELINE:
+        baseline_note = f"""
+          <tr>
+            <td style="padding: 0 32px 24px 32px;">
+              <div style="background: #FFF8E7; border: 1px solid #E6C978; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 16px 18px; color: #45464D; font-family: {FONT_FAMILY_MAIN}; font-size: 13.5px; line-height: 1.55;">
+                This is an Initial Measurement Baseline covering observed data from {html.escape(briefing.observation_window_start or analytics.period_start)} through {html.escape(briefing.observation_window_end or analytics.period_end)}. The analytics property did not provide a full earlier comparison window, so no growth deltas or prior-period values are shown. A normal comparison report begins after a complete later measurement window is available.
+              </div>
+            </td>
+          </tr>
+        """
 
     local_section = f"""<!-- Section: Local Reputation & Maps -->
           <tr>
             <td style="padding: 24px 32px;">
               <h2 style="margin: 0 0 12px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Local Reputation &amp; Maps</h2>
               <div style="font-family: {FONT_FAMILY_MAIN}; font-size: 14px; color: #45464D; line-height: 1.6; background: #FFFFFF; border: 1px solid #E0E3E5; border-radius: 2px; padding: 18px 20px;">
-                {local_insights_escaped}
+                {local_insights_escaped}{gbp_evidence_html}
               </div>
             </td>
           </tr>
@@ -219,7 +385,7 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
             <td style="padding: 0 32px;">
               <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
             </td>
-          </tr>""" if local_insights_escaped else ""
+          </tr>""" if (local_insights_escaped or gbp_evidence_html) else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -276,6 +442,8 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
               <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
             </td>
           </tr>
+
+          {baseline_note}
 
           <!-- Section: Executive Overview -->
           <tr>
@@ -334,33 +502,7 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
             </td>
           </tr>
 
-          <!-- Section: Striking Distance Search Opportunities -->
-          <tr>
-            <td style="padding: 24px 32px;">
-              <h2 style="margin: 0 0 8px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 600; color: {primary_color}; line-height: 1.3;">High-Opportunity Google Searches</h2>
-              <p style="margin: 0 0 14px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: #515F74;">Key searches where your website currently ranks on page 2 and can reach page 1 with targeted content updates:</p>
-              <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #FFFFFF; border: 1px solid rgba(198, 198, 205, 0.4); border-radius: 2px; overflow: hidden;">
-                <thead>
-                  <tr style="background-color: #F7F9FB; border-bottom: 1px solid rgba(198, 198, 205, 0.4);">
-                    <th style="padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Search Term</th>
-                    <th style="padding: 10px 14px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Search Views</th>
-                    <th style="padding: 10px 14px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #515F74; font-family: {FONT_FAMILY_MAIN};">Google Rank</th>
-                    <th style="padding: 10px 14px; text-align: right; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: {accent_color}; font-family: {FONT_FAMILY_MAIN};">Opportunity</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {kw_rows_html}
-                </tbody>
-              </table>
-            </td>
-          </tr>
-
-          <!-- Editorial Divider -->
-          <tr>
-            <td style="padding: 0 32px;">
-              <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
-            </td>
-          </tr>
+          {search_section}
 
           {discoveries_section}
           {local_section}

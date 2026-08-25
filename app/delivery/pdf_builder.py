@@ -24,7 +24,9 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from app.analytics.contracts import FullGrowthBriefing, ReportType
+from app.analytics.contracts import FullGrowthBriefing, ReportMode, ReportType
+from app.delivery.discovery_copy import build_client_discovery_copies
+from app.delivery.gbp_reporting import calls_rows, keyword_rows as gbp_keyword_rows, performance_rows, profile_rows, review_rows
 
 
 def _register_fonts():
@@ -93,6 +95,16 @@ def format_client_friendly_priority(priority_str: str) -> str:
     return 'Standard Optimization'
 
 
+def _gbp_pdf_number(value) -> str:
+    if value is None:
+        return 'Not available'
+    try:
+        number = float(value)
+        return f'{int(number):,}' if number.is_integer() else f'{number:,.1f}'
+    except (TypeError, ValueError):
+        return escape(str(value))
+
+
 def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
     """Generate a publication-grade, editorial executive PDF with simple, client-friendly language."""
     buffer = BytesIO()
@@ -114,7 +126,13 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
     GREEN_TEXT = colors.HexColor('#15803D')
     RED_TEXT = colors.HexColor('#B91C1C')
 
-    report_title = 'Monthly Intelligence Briefing' if briefing.report_type == ReportType.PERFORMANCE_28D else 'Weekly Growth Digest'
+    report_title = (
+        'Initial Measurement Baseline'
+        if briefing.report_mode == ReportMode.INITIAL_BASELINE
+        else '28-Day Performance Report'
+        if briefing.report_type == ReportType.PERFORMANCE_28D
+        else 'Weekly Growth Digest'
+    )
 
     styles = getSampleStyleSheet()
 
@@ -164,7 +182,9 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         canvas.line(doc.leftMargin, 0.4 * inch, LETTER[0] - doc.rightMargin, 0.4 * inch)
         canvas.setFont(FONT_SANS, 7.5)
         canvas.setFillColor(TEXT_SECONDARY)
-        canvas.drawString(doc.leftMargin, 0.26 * inch, f'© {datetime.now().year} Executive Insights • {briefing.company_name}')
+        # Helvetica's built-in encoding can turn Unicode punctuation into control
+        # characters in extracted PDFs; keep the footer portable and readable.
+        canvas.drawString(doc.leftMargin, 0.26 * inch, f'(c) {datetime.now().year} Executive Insights | {briefing.company_name}')
         canvas.drawRightString(LETTER[0] - doc.rightMargin, 0.26 * inch, f'Page {doc.page}')
         canvas.restoreState()
 
@@ -176,6 +196,25 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
     story.append(Paragraph(escape(report_title), styles['MainDisplayTitle']))
     story.append(Paragraph(escape(briefing.period_label), styles['PeriodSubtitle']))
     story.append(HRFlowable(width='100%', thickness=1, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=7))
+    if briefing.report_mode == ReportMode.INITIAL_BASELINE:
+        baseline_note = (
+            f"Initial Measurement Baseline: observed data from "
+            f"{briefing.observation_window_start or briefing.analytics.period_start} through "
+            f"{briefing.observation_window_end or briefing.analytics.period_end}. "
+            "The earlier comparison window is suppressed because it does not represent a full trustworthy measurement period. "
+            "Current values are shown without prior-period values or growth deltas."
+        )
+        t_baseline = Table([[Paragraph(escape(baseline_note), styles['BodyMd'])]], colWidths=[7.6 * inch])
+        t_baseline.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF8E7')),
+            ('BOX', (0, 0), (-1, -1), 0.75, colors.HexColor('#E6C978')),
+            ('LINEBEFORE', (0, 0), (0, -1), 3.5, ACCENT),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        story.append(KeepTogether([t_baseline, Spacer(1, 6)]))
 
     # 2. Executive Snapshot Section
     story.append(Paragraph('EXECUTIVE SNAPSHOT', styles['SectionHeaderCaps']))
@@ -221,9 +260,26 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         ]))
         story.append(KeepTogether([t_win, Spacer(1, 6)]))
 
+    if briefing.insights.watch_item:
+        watch_p = Paragraph(f'<b>AREA TO IMPROVE:</b> {escape(briefing.insights.watch_item)}', styles['WinCalloutText'])
+        t_watch = Table([[watch_p]], colWidths=[7.6 * inch])
+        t_watch.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), BG_SURFACE_LOW),
+            ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+            ('LINEBEFORE', (0, 0), (0, -1), 3.5, RED_TEXT),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        story.append(KeepTogether([t_watch, Spacer(1, 6)]))
+
     # 3. Core Growth Metrics Section
     head_left = Paragraph('Core Growth Metrics', styles['HeadlineSm'])
-    head_right = Paragraph('vs. Previous Period', styles['ThStat'])
+    head_right = Paragraph(
+        'vs. Previous Period' if briefing.report_mode == ReportMode.COMPARISON else 'Current Observation Only',
+        styles['ThStat'],
+    )
     t_metrics_head = Table([[head_left, head_right]], colWidths=[5.0 * inch, 2.6 * inch])
     t_metrics_head.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -246,8 +302,10 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
                 pct_s = f'{m.percentage_points_change:+.1f}% pts'
             elif m.percentage_change is not None:
                 pct_s = f'{m.percentage_change:+.1f}%'
+            elif m.prior_value is None:
+                pct_s = 'baseline'
             else:
-                pct_s = '0.0%'
+                pct_s = 'stable'
 
             if m.direction == 'up':
                 arrow = '↑ '
@@ -255,6 +313,9 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             elif m.direction == 'down':
                 arrow = '↓ '
                 delta_style = styles['MetricDeltaRed']
+            elif m.prior_value is None:
+                arrow = ''
+                delta_style = styles['MetricDeltaNeutral']
             else:
                 arrow = '→ '
                 delta_style = styles['MetricDeltaNeutral']
@@ -288,17 +349,20 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         conv_rows = [[
             Paragraph('Action / Goal', styles['ThAction']),
             Paragraph('This Period', styles['ThStat']),
-            Paragraph('Prior Period', styles['ThStat']),
-            Paragraph('Change', styles['ThStat']),
+            Paragraph('Prior Period' if briefing.report_mode == ReportMode.COMPARISON else 'Comparison', styles['ThStat']),
+            Paragraph('Change' if briefing.report_mode == ReportMode.COMPARISON else 'Status', styles['ThStat']),
         ]]
         for ce in briefing.analytics.conversion_events[:5]:
-            pct_str = f'{ce.percentage_change:+.1f}%' if ce.percentage_change is not None else '-'
+            pct_str = f'{ce.percentage_change:+.1f}%' if ce.percentage_change is not None else 'baseline'
             if ce.direction == 'up':
                 dir_style = styles['TdStatGreen']
                 dir_icon = '↑ '
             elif ce.direction == 'down':
                 dir_style = styles['TdStatRed']
                 dir_icon = '↓ '
+            elif ce.prior_count is None:
+                dir_style = styles['TdStat']
+                dir_icon = ''
             else:
                 dir_style = styles['TdStat']
                 dir_icon = '→ '
@@ -306,7 +370,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             conv_rows.append([
                 Paragraph(escape(ce.display_name), styles['TdAction']),
                 Paragraph(f'{ce.current_count:,}', styles['TdStat']),
-                Paragraph(f'{ce.prior_count:,}', styles['TdStat']),
+                Paragraph(f'{ce.prior_count:,}' if ce.prior_count is not None else 'Not available', styles['TdStat']),
                 Paragraph(f'{dir_icon}{pct_str}', dir_style),
             ])
 
@@ -325,6 +389,9 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         story.append(Paragraph('KEY INQUIRY ACTIONS &amp; ENGAGEMENT', styles['SectionHeaderCaps']))
         story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
         story.append(KeepTogether([t_conv, Spacer(1, 6)]))
+        if briefing.insights.conversion_insights.strip():
+            story.append(Paragraph(escape(briefing.insights.conversion_insights), styles['BodyMd']))
+            story.append(Spacer(1, 5))
 
     # 5. Traffic & Visitor Inflow Insights Narrative
     story.append(Paragraph('VISITOR INFLOW &amp; POPULAR PAGES', styles['SectionHeaderCaps']))
@@ -332,49 +399,238 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
     story.append(Paragraph(escape(briefing.insights.traffic_and_inflow_insights), styles['BodyMd']))
     story.append(Spacer(1, 5))
 
-    # 6. High-Impact Discoveries & Search Growth
-    discoveries = briefing.insights.deep_discoveries
-    story.append(Paragraph('Key Opportunities &amp; Discoveries', styles['HeadlineSm']))
-    story.append(Spacer(1, 3))
+    # 6. Search opportunity narrative and deterministic supporting rows
+    seo_insights = briefing.insights.seo_and_content_opportunities.strip()
+    keywords = briefing.analytics.striking_distance_keywords[:5]
+    if seo_insights or keywords:
+        search_heading = 'SEARCH OPPORTUNITIES' if keywords else 'SEARCH &amp; CONTENT TOPICS TO VALIDATE'
+        story.append(Paragraph(search_heading, styles['SectionHeaderCaps']))
+        story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
+        if seo_insights:
+            story.append(Paragraph(escape(seo_insights), styles['BodyMd']))
+            story.append(Spacer(1, 4))
+        if keywords:
+            keyword_rows = [[
+                Paragraph('Search Term', styles['ThAction']),
+                Paragraph('Search Views', styles['ThStat']),
+                Paragraph('Google Rank', styles['ThStat']),
+                Paragraph('Opportunity', styles['ThStat']),
+            ]]
+            for keyword in keywords:
+                keyword_rows.append([
+                    Paragraph(escape(keyword.query), styles['TdAction']),
+                    Paragraph(f'{keyword.impressions:,}', styles['TdStat']),
+                    Paragraph(f'{keyword.position:.1f}', styles['TdStat']),
+                    Paragraph(f'{keyword.opportunity_score:.0f}', styles['TdStatAccent']),
+                ])
+            t_keywords = Table(keyword_rows, colWidths=[3.4 * inch, 1.4 * inch, 1.4 * inch, 1.4 * inch], repeatRows=1)
+            t_keywords.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), BG_SURFACE_LOW),
+                ('LINEBELOW', (0, 0), (-1, 0), 0.75, BORDER_OUTLINE_30),
+                ('LINEBELOW', (0, 1), (-1, -1), 0.5, BORDER_OUTLINE_30),
+                ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            story.append(KeepTogether([t_keywords, Spacer(1, 5)]))
 
-    disc_items = []
-    if discoveries:
-        for disc in discoveries:
-            disc_items.append((disc.title, disc.insight, disc.recommended_action))
-    else:
-        if briefing.analytics.striking_distance_keywords:
-            top_k = briefing.analytics.striking_distance_keywords[0]
-            disc_items.append(('High-Potential Search Terms', f'Google search activity highlights strong interest for "{top_k.query}", where your website currently ranks on page 2 with {top_k.impressions:,} search impressions.', 'Add helpful customer FAQs and service details to move this search into page 1 rankings.'))
-        if briefing.insights.seo_and_content_opportunities:
-            disc_items.append(('Search & Content Growth', briefing.insights.seo_and_content_opportunities, 'Publish dedicated customer answers and service overviews.'))
-        if briefing.insights.local_seo_insights:
-            disc_items.append(('Local Reputation & Maps', briefing.insights.local_seo_insights, 'Continue collecting 5-star Google reviews.'))
+    # 7. Local discovery narrative
+    local_insights = briefing.insights.local_seo_insights.strip()
+    if local_insights:
+        story.append(Paragraph('LOCAL REPUTATION &amp; MAPS', styles['SectionHeaderCaps']))
+        story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
+        story.append(Paragraph(escape(local_insights), styles['BodyMd']))
+        story.append(Spacer(1, 5))
 
-    for d_title, d_insight, d_rec in disc_items[:4]:
-        rec_part = f'<br/><font color="{PRIMARY.hexval()}"><b>Next Step:</b></font> {escape(d_rec)}' if d_rec else ''
-        disc_box = [
-            Paragraph(f'<b>{escape(d_title)}</b>', styles['DiscoveryTitle']),
-            Spacer(1, 2),
-            Paragraph(f'{escape(d_insight)}{rec_part}', styles['DiscoveryDesc']),
+    # 8. Deterministic GBP evidence block. This keeps exact source values in
+    # the client artifact even when the narrative wording changes.
+    local = briefing.analytics.local_seo
+    gbp_profile = profile_rows(local)
+    gbp_performance = performance_rows(local)
+    gbp_keywords = gbp_keyword_rows(local)
+    gbp_reviews = review_rows(local)
+    gbp_calls = calls_rows(local)
+    if gbp_profile or gbp_performance or gbp_keywords or gbp_reviews or gbp_calls:
+        story.append(Paragraph('GOOGLE BUSINESS PROFILE EVIDENCE', styles['SectionHeaderCaps']))
+        story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
+        if gbp_profile:
+            profile_table = [[Paragraph(escape(label), styles['ThAction']), Paragraph(escape(value), styles['TdAction'])]
+                             for label, value in gbp_profile]
+            t_profile = Table(profile_table, colWidths=[1.5 * inch, 6.1 * inch])
+            t_profile.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), BG_SURFACE_LOW),
+                ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+                ('LINEBELOW', (0, 0), (-1, -1), 0.5, BORDER_OUTLINE_30),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            story.append(Paragraph('PROFILE DETAILS', styles['HeadlineSm']))
+            story.append(KeepTogether([t_profile, Spacer(1, 5)]))
+        if gbp_performance:
+            performance_table = [[
+                Paragraph('Metric', styles['ThAction']),
+                Paragraph('This Period', styles['ThStat']),
+                Paragraph('Prior', styles['ThStat']),
+                Paragraph('Change', styles['ThStat']),
+            ]]
+            for row in gbp_performance:
+                change = (
+                    'baseline'
+                    if row['prior'] is None
+                    else f"{row['change']:+.1f}%" if row['change'] is not None else 'No % baseline'
+                )
+                performance_table.append([
+                    Paragraph(escape(row['label']), styles['TdAction']),
+                    Paragraph(_gbp_pdf_number(row['current']), styles['TdStat']),
+                    Paragraph(_gbp_pdf_number(row['prior']), styles['TdStat']),
+                    Paragraph(escape(change), styles['TdStat']),
+                ])
+            t_performance = Table(performance_table, colWidths=[3.4 * inch, 1.4 * inch, 1.4 * inch, 1.4 * inch], repeatRows=1)
+            t_performance.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), BG_SURFACE_LOW),
+                ('LINEBELOW', (0, 0), (-1, 0), 0.75, BORDER_OUTLINE_30),
+                ('LINEBELOW', (0, 1), (-1, -1), 0.5, BORDER_OUTLINE_30),
+                ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            story.append(Paragraph('PERFORMANCE METRICS', styles['HeadlineSm']))
+            story.append(KeepTogether([t_performance, Spacer(1, 5)]))
+        if gbp_keywords:
+            keyword_table = [[Paragraph('Monthly Search Keyword', styles['ThAction']), Paragraph('Reported Value', styles['ThStat'])]]
+            keyword_table.extend([
+                [Paragraph(escape(row['keyword']), styles['TdAction']), Paragraph(escape(row['value']), styles['TdStat'])]
+                for row in gbp_keywords
+            ])
+            t_keywords_gbp = Table(keyword_table, colWidths=[5.2 * inch, 2.4 * inch], repeatRows=1)
+            t_keywords_gbp.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), BG_SURFACE_LOW),
+                ('LINEBELOW', (0, 0), (-1, 0), 0.75, BORDER_OUTLINE_30),
+                ('LINEBELOW', (0, 1), (-1, -1), 0.5, BORDER_OUTLINE_30),
+                ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            story.append(Paragraph('MONTHLY GBP SEARCH KEYWORDS', styles['HeadlineSm']))
+            story.append(KeepTogether([t_keywords_gbp, Spacer(1, 5)]))
+        if gbp_reviews:
+            review_table = [[
+                Paragraph('Rating', styles['ThAction']),
+                Paragraph('Reply', styles['ThAction']),
+                Paragraph('Updated', styles['ThAction']),
+                Paragraph('Recent Comment', styles['ThAction']),
+            ]]
+            review_table.extend([
+                [Paragraph(escape(row['rating']), styles['TdAction']),
+                 Paragraph(escape(row['reply_status']), styles['TdAction']),
+                 Paragraph(escape(row['updated']), styles['TdAction']),
+                 Paragraph(escape(row['comment']), styles['TdAction'])]
+                for row in gbp_reviews
+            ])
+            t_reviews = Table(review_table, colWidths=[0.7 * inch, 1.1 * inch, 1.0 * inch, 4.8 * inch], repeatRows=1)
+            t_reviews.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), BG_SURFACE_LOW),
+                ('LINEBELOW', (0, 0), (-1, 0), 0.75, BORDER_OUTLINE_30),
+                ('LINEBELOW', (0, 1), (-1, -1), 0.5, BORDER_OUTLINE_30),
+                ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 5),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+            ]))
+            review_summary = local.review_response_summary or {}
+            coverage = review_summary.get('reply_coverage_percent')
+            summary = (
+                f"{review_summary.get('review_count', len(local.reviews))} reviews; "
+                f"{review_summary.get('unreplied_count', 0)} not replied; "
+                f"{coverage:.1f}% reply coverage" if coverage is not None
+                else f"{review_summary.get('review_count', len(local.reviews))} reviews; reply coverage not available"
+            )
+            story.append(Paragraph('MANAGED REVIEWS &amp; REPLY STATUS', styles['HeadlineSm']))
+            story.append(Paragraph(escape(summary), styles['BodyMd']))
+            story.append(KeepTogether([t_reviews, Spacer(1, 5)]))
+        if gbp_calls:
+            calls_text = ' | '.join(f'{label}: {value}' for label, value in gbp_calls)
+            story.append(Paragraph('BUSINESS CALLS INSIGHTS', styles['HeadlineSm']))
+            story.append(Paragraph(escape(calls_text), styles['BodyMd']))
+            story.append(Spacer(1, 5))
+
+    # 9. Client-facing opportunities derived from accepted deterministic findings
+    deep_insights_enabled = bool(briefing.exploration_audit and briefing.exploration_audit.enabled)
+    if deep_insights_enabled:
+        client_discoveries = build_client_discovery_copies(
+            briefing.insights.deep_discoveries,
+            audit=briefing.exploration_audit,
+            client_id=briefing.analytics.client_id,
+            period_start=briefing.analytics.period_start,
+            period_end=briefing.analytics.period_end,
+        )
+
+        discovery_header = [
+            Paragraph("WHERE WE'RE FOCUSING NEXT", styles['SectionHeaderCaps']),
+            HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4),
+            Paragraph(
+                'These are opportunities identified from the current reporting period. Each item includes a practical next step for the practice.',
+                styles['BodyMd'],
+            ),
+            Spacer(1, 3),
         ]
-        t_disc = Table([[disc_box]], colWidths=[7.6 * inch])
-        t_disc.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.white),
-            ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
-            ('LINEBEFORE', (0, 0), (0, -1), 3.5, PRIMARY),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 8),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ]))
-        story.append(KeepTogether([t_disc, Spacer(1, 4)]))
-    story.append(Spacer(1, 4))
+        if client_discoveries:
+            for index, client_copy in enumerate(client_discoveries):
+                disc_box = [
+                    Paragraph(f'<b>{escape(client_copy.title.upper())}</b>', styles['DiscoveryTitle']),
+                    Spacer(1, 2),
+                    Paragraph(
+                        f'<b>What we noticed:</b> {escape(client_copy.what_we_noticed)}<br/>'
+                        f'<b>Recommended next step:</b> {escape(client_copy.recommended_next_step)}',
+                        styles['DiscoveryDesc'],
+                    ),
+                ]
+                t_disc = Table([[disc_box]], colWidths=[7.6 * inch])
+                t_disc.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+                    ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+                    ('LINEBEFORE', (0, 0), (0, -1), 3.5, PRIMARY),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ]))
+                story.append(KeepTogether(
+                    (discovery_header if index == 0 else []) + [t_disc, Spacer(1, 4)]
+                ))
+        else:
+            note = Table([[Paragraph(
+                'No additional opportunities were identified from this period, and no recommendations were added.',
+                styles['DiscoveryDesc'],
+            )]], colWidths=[7.6 * inch])
+            note.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), BG_SURFACE_LOW),
+                ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            story.append(KeepTogether(discovery_header + [note, Spacer(1, 4)]))
 
-    # 7. Practice Growth Action Plan
+    # 9. Practice Growth Action Plan
     story.append(Paragraph('RECOMMENDED NEXT ACTIONS', styles['SectionHeaderCaps']))
     story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
     for item in briefing.insights.agency_action_plan:
-        ev_text = f'<br/><font color="{EYEBROW_COLOR.hexval()}"><b>Context:</b> {escape(item.evidence)}</font>' if item.evidence else ''
         badge_label = format_client_friendly_priority(item.priority)
         head_table = Table([[
             Paragraph(f'<b>{escape(item.title)}</b>', styles['ActionPlanTitle']),
@@ -389,7 +645,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         ]))
         action_box = [
             head_table,
-            Paragraph(f'{escape(item.description)}{ev_text}', styles['ActionPlanDesc']),
+            Paragraph(escape(item.description), styles['ActionPlanDesc']),
         ]
         t_act = Table([[action_box]], colWidths=[7.6 * inch])
         t_act.setStyle(TableStyle([
@@ -404,4 +660,3 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
 
     document.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
     return buffer.getvalue()
-

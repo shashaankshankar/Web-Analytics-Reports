@@ -11,6 +11,56 @@ def test_valid_client_config(sample_client_config_path):
     assert config.industry == "ecommerce"
     assert config.branding.primary_color == "#112233"
     assert config.recipients["client"] == "client@test.example.com"
+    assert config.goals == ["Organic product rankings", "Conversion rate optimization"]
+
+
+def test_measurement_and_launch_dates_use_strict_iso_dates():
+    config = ClientConfig(
+        client_id="dated-client",
+        company_name="Dated Client",
+        domain="https://example.com",
+        site_launch_date="2026-08-10",
+        measurement_start_date="2026-08-12",
+    )
+    assert config.site_launch_date.isoformat() == "2026-08-10"
+    assert config.measurement_start_date.isoformat() == "2026-08-12"
+
+
+@pytest.mark.parametrize("field", ["site_launch_date", "measurement_start_date"])
+def test_client_config_rejects_non_iso_or_invalid_dates(field):
+    with pytest.raises(ValidationError, match="ISO date"):
+        ClientConfig(
+            client_id="invalid-date-client",
+            company_name="Invalid Date Client",
+            domain="https://example.com",
+            **{field: "08/12/2026"},
+        )
+
+def test_client_goals_default_to_empty_list():
+    config = ClientConfig(
+        client_id="default-goals",
+        company_name="Default Goals Co",
+        domain="https://example.com",
+    )
+    assert config.goals == []
+
+def test_client_config_rejects_removed_monthly_focus():
+    with pytest.raises(ValidationError, match="monthly_retainer_focus"):
+        ClientConfig(
+            client_id="legacy-goals",
+            company_name="Legacy Goals Co",
+            domain="https://example.com",
+            monthly_retainer_focus="Legacy focus",
+        )
+
+def test_client_config_still_ignores_unrelated_extra_fields():
+    config = ClientConfig(
+        client_id="extra-fields",
+        company_name="Extra Fields Co",
+        domain="https://example.com",
+        unrelated_field="ignored",
+    )
+    assert not hasattr(config, "unrelated_field")
 
 def test_invalid_client_id():
     with pytest.raises(ValidationError):

@@ -8,11 +8,17 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 
 from app.config import Settings
+from app.ai.structured_output import (
+    PERFORMANCE_REPORT_SCHEMA,
+    WEEKLY_DIGEST_SCHEMA,
+    parse_response_json,
+    response_format,
+)
 from app.analytics.contracts import (
-    ActionItem,
     AIReportOutput,
     DataDiscovery,
     GrowthAnalysisInput,
+    ReportMode,
     ReportType,
     WeeklyDigestOutput,
 )
@@ -25,8 +31,25 @@ YOUR AUDIENCE & TONE:
 3. Avoid technical jargon (do NOT say 'slicing', 'dimension clusters', 'raw event counts', 'funnel contraction', 'data state final'). Translate metrics into real-world business outcomes: phone calls, consultation requests, appointment inquiries, and website visitors.
 4. CRITICAL FORMATTING RULE: Do NOT use markdown syntax (NO asterisks like **bold**, NO em-dashes like —, NO markdown bullets, NO hashtags). Write natural, clean sentences.
 5. Ground every observation in the provided data. Do not invent numbers or metrics.
-6. Return ONLY a valid JSON object matching the requested schema.
+6. If a source status is empty, unavailable, or error, say that the source is unavailable and do not infer a result from it.
+7. If report_mode is initial_baseline, use current observation data only. Do not state or imply a prior value, comparison, trend, movement, increase, decrease, or growth change.
+8. Treat ratings, review totals, and review excerpts as observed profile context. Do not turn them into claims of reputation strength, patient satisfaction, social proof, or future attraction unless the supplied data directly supports that wording.
+9. With small samples, prefer neutral descriptions of the observed actions and qualify uncertainty instead of calling activity strong, encouraging, meaningful, or representative.
+10. Return ONLY a valid JSON object matching the requested schema.
 """
+
+
+_BASELINE_MOVEMENT_PATTERN = re.compile(
+    r"\b(?:compared|versus|vs\.?|period[- ]over[- ]period|week[- ]over[- ]week|"
+    r"month[- ]over[- ]month|increased|decreased|declined|rose|fell|grew|dropped|spiked|"
+    r"higher|lower|trend|trending|gained|lost|"
+    r"(?:change|changes|changed)\s+(?:in|from|to|by)\b)",
+    re.IGNORECASE,
+)
+
+
+class AnalysisUnavailableError(RuntimeError):
+    """Raised when a real OpenRouter synthesis cannot be completed."""
 
 
 def clean_plain_text(text: Optional[str]) -> str:
@@ -46,26 +69,50 @@ def clean_plain_text(text: Optional[str]) -> str:
     return t
 
 
+def _local_seo_prompt_payload(data: GrowthAnalysisInput) -> dict[str, Any]:
+    """Keep the report prompt useful while retaining the complete source contract."""
+    local = data.local_seo.model_dump()
+    reviews = list(local.get("reviews") or [])
+    local["reviews_total_in_contract"] = len(reviews)
+    local["reviews_truncated_for_prompt"] = len(reviews) > 10
+    local["reviews"] = reviews[:10]
+    keywords = list(local.get("monthly_search_keywords") or [])
+    local["monthly_search_keywords_total_in_contract"] = len(keywords)
+    local["monthly_search_keywords"] = keywords[:50]
+    prior_keywords = list(local.get("prior_monthly_search_keywords") or [])
+    local["prior_monthly_search_keywords"] = prior_keywords[:50]
+    return local
+
+
 def build_weekly_user_prompt(data: GrowthAnalysisInput) -> str:
     payload = {
         "client_profile": {
             "company_name": data.company_name,
             "domain": data.domain,
             "industry": data.industry,
-            "monthly_retainer_focus": data.monthly_retainer_focus,
+            "goals": data.goals,
         },
         "period": {
+            "mode": data.report_mode.value,
             "current": f"{data.period_start} to {data.period_end}",
-            "prior": f"{data.comparison_start} to {data.comparison_end}",
+            "prior": (
+                f"{data.comparison_start} to {data.comparison_end}"
+                if data.report_mode == ReportMode.COMPARISON
+                else None
+            ),
             "days": data.period_days,
+            "observed_days": data.observed_days,
+            "measurement_start_date": data.measurement_start_date,
+            "comparison_suppressed": data.comparison_suppressed,
+            "comparison_suppression_reason": data.comparison_suppression_reason,
         },
         "core_metrics": [m.model_dump() for m in data.core_metrics],
         "top_channels": [c.model_dump() for c in data.top_channels[:4]],
         "top_pages": [p.model_dump() for p in data.top_pages[:4]],
         "striking_distance_keywords": [k.model_dump() for k in data.striking_distance_keywords[:3]],
         "search_movers": [m.model_dump() for m in data.search_movers[:3]],
-        "local_seo": data.local_seo.model_dump(),
-        "conversion_events": [e.model_dump() for e in data.conversion_events[:4]],
+        "local_seo": _local_seo_prompt_payload(data),
+        "conversion_events": [e.model_dump() for e in data.conversion_events[:8]],
     }
     schema_str = json.dumps(payload, indent=2)
     return f"""Analyze this 7-day weekly growth dataset for {data.company_name} ({data.domain}) and produce a concise, warm, executive weekly digest for the business owner.
@@ -76,12 +123,21 @@ Dataset:
 Instructions:
 - Write in natural, easy-to-read sentences without technical jargon or markdown formatting (no asterisks, no em-dashes).
 - Highlight key wins in patient/customer activity, website visitors, and local search visibility.
+- Treat Key Conversions as the subset of events currently configured as conversions in GA4. Recorded customer actions can be nonzero even when Key Conversions is zero; never describe zero key conversions as zero customer activity.
+- Write conversion_insight as 1-2 plain-English sentences that name the recorded customer/contact actions and their counts when present, and explain the difference between recorded actions and configured key conversions when that distinction matters.
+- Engagement rate is the share of sessions GA4 classifies as engaged. With a small sample or an initial baseline, call it an early signal rather than proof of meaningful interest or a trend.
+- With a small initial sample, describe observed actions neutrally rather than calling them strong, encouraging, or representative. Treat ratings and review totals as profile context, not proof of reputation, satisfaction, or future patient growth.
+- Treat the supplied GBP profile as observed NAP, hours, category, and service-listing data. Do not claim the listing is accurate, complete, or currently live unless the profile status says available.
+- Use only supplied GBP Performance totals and daily series. Distinguish Maps/Search impressions, calls, directions, website clicks, bookings, food actions, and conversations; never turn an impression or click into a confirmed patient or appointment outcome.
+- Monthly GBP search-keyword rows can contain an exact value or a privacy threshold. Never restate a threshold as an exact count. Managed review reply status is an operational observation, not proof of patient satisfaction.
+- If striking_distance_keywords is empty, set search_opportunity to null. Do not invent a confirmed search opportunity or treat suggested topics as validated demand.
 
 Respond in JSON with the exact following schema:
 {{
   "biggest_win": "One clear, encouraging sentence highlighting the single best positive achievement this week.",
   "needs_attention": "One constructive sentence on an area to improve or monitor, or null if everything is performing smoothly.",
   "acquisition_insight": "1-2 plain-English sentences summarizing how new and returning visitors found the business this week.",
+  "conversion_insight": "1-2 plain-English sentences naming recorded customer/contact actions and their counts, while distinguishing those events from configured Key Conversions when needed.",
   "search_opportunity": "1-2 sentences in simple terms about a high-value Google search topic we are close to ranking for, or null if not applicable.",
   "local_insight": "1-2 sentences on local Google Maps activity, phone calls, or directions, or null if unconfigured.",
   "next_actions": [
@@ -104,12 +160,21 @@ def build_performance_user_prompt(data: GrowthAnalysisInput) -> str:
             "company_name": data.company_name,
             "domain": data.domain,
             "industry": data.industry,
-            "monthly_retainer_focus": data.monthly_retainer_focus,
+            "goals": data.goals,
         },
         "period": {
+            "mode": data.report_mode.value,
             "current": f"{data.period_start} to {data.period_end}",
-            "prior": f"{data.comparison_start} to {data.comparison_end}",
+            "prior": (
+                f"{data.comparison_start} to {data.comparison_end}"
+                if data.report_mode == ReportMode.COMPARISON
+                else None
+            ),
             "days": data.period_days,
+            "observed_days": data.observed_days,
+            "measurement_start_date": data.measurement_start_date,
+            "comparison_suppressed": data.comparison_suppressed,
+            "comparison_suppression_reason": data.comparison_suppression_reason,
         },
         "core_metrics": [m.model_dump() for m in data.core_metrics],
         "conversion_rate": data.conversion_rate.model_dump() if data.conversion_rate else None,
@@ -120,11 +185,31 @@ def build_performance_user_prompt(data: GrowthAnalysisInput) -> str:
         "page_decliners": [p.model_dump() for p in data.page_decliners],
         "striking_distance_keywords": [k.model_dump() for k in data.striking_distance_keywords],
         "search_movers": [m.model_dump() for m in data.search_movers],
-        "local_seo": data.local_seo.model_dump(),
+        "local_seo": _local_seo_prompt_payload(data),
         "raw_summary_stats": data.raw_summary_stats,
     }
     schema_str = json.dumps(payload, indent=2)
-    return f"""Analyze this 28-day performance dataset for {data.company_name} ({data.domain}) and produce an executive growth briefing for the practice owner.
+    dataset_name = (
+        "initial measurement baseline dataset"
+        if data.report_mode == ReportMode.INITIAL_BASELINE
+        else "28-day performance dataset"
+    )
+    baseline_guidance = (
+        "- This is an initial measurement baseline. Describe only the observed current window. Do not mention prior periods or make movement, trend, increase, decrease, or growth-change claims. Do not use comparison language such as trend, higher, lower, compared, versus, or movement.\n"
+        if data.report_mode == ReportMode.INITIAL_BASELINE
+        else ""
+    )
+    traffic_detail = (
+        "2 short, conversational paragraphs explaining where visitors came from and which service pages were most popular."
+        if data.report_mode == ReportMode.INITIAL_BASELINE
+        else "2 short, conversational paragraphs explaining where visitors came from, how traffic trended, and which service pages were most popular."
+    )
+    seo_detail = (
+        "2 short paragraphs explaining the exact supplied Google search terms, their current visibility, and the helpful content or page improvement that follows from those terms. Do not call a term high opportunity unless it appears in the supplied striking_distance_keywords list."
+        if data.striking_distance_keywords
+        else "1-2 short paragraphs stating that no confirmed ranking opportunity was supplied in the current Search Console snapshot. If possible content topics are mentioned, label them as hypotheses to validate rather than terms customers are already using."
+    )
+    return f"""Analyze this {dataset_name} for {data.company_name} ({data.domain}) and produce an executive growth briefing for the practice owner.
 
 Dataset:
 {schema_str}
@@ -133,6 +218,16 @@ Important Guidelines:
 - Write in natural, warm, professional English tailored for a busy business owner.
 - Do NOT use markdown formatting (no asterisks like **bold**, no em-dashes like —, no raw markdown symbols). Write clean sentences.
 - Clearly translate data into business value: patient inquiries, phone calls, website traffic, and Google search rankings.
+- Key Conversions are the subset of GA4 events currently marked as conversions. The conversion_events list contains recorded events and may be nonzero even when Key Conversions is zero. Do not call every recorded event a completed appointment, call, sale, or revenue outcome.
+- Explain Engagement Rate in plain English as the share of sessions GA4 classifies as engaged. With a small sample or initial baseline, describe it as an early signal and avoid claiming it proves meaningful interest.
+- Treat ratings, review totals, and review excerpts as observed profile context. Do not call them strong reputation or social proof, claim patient satisfaction, or imply they will attract inquiries unless the supplied data directly supports that wording.
+- Treat the supplied GBP profile as observed NAP, hours, category, and service-listing data. Do not claim the listing is accurate, complete, or currently live unless the profile status says available.
+- Use only supplied GBP Performance totals and daily series. Distinguish Maps/Search impressions, calls, directions, website clicks, bookings, food actions, and conversations; never turn an impression or click into a confirmed patient or appointment outcome.
+- Monthly GBP search-keyword rows can contain an exact value or a privacy threshold. Never restate a threshold as an exact count. Managed review reply status is an operational observation, not proof of patient satisfaction.
+- With a small initial sample, use neutral language for observed actions rather than calling activity strong, encouraging, meaningful, or representative.
+- Only describe a search term as a confirmed opportunity when it appears in striking_distance_keywords. If that list is empty, say that no confirmed ranking opportunity was supplied and frame any possible content topics as hypotheses to validate, not as terms customers are already using.
+- Keep recommendations evidence-backed and bounded. Do not imply that a content or tracking change will guarantee more inquiries.
+{baseline_guidance}- If a source is unavailable, state that limitation plainly and do not infer a value.
 
 Respond in JSON with the exact following schema:
 {{
@@ -143,9 +238,9 @@ Respond in JSON with the exact following schema:
   ],
   "biggest_win": "One encouraging sentence celebrating the single biggest positive result achieved during this cycle.",
   "watch_item": "One clear, practical observation on an area we are actively refining or monitoring to maximize results.",
-  "traffic_and_inflow_insights": "2 short, conversational paragraphs explaining where visitors came from, how traffic trended, and which service pages were most popular.",
+  "traffic_and_inflow_insights": "{traffic_detail}",
   "conversion_insights": "1-2 short paragraphs detailing inquiries, phone calls, and appointment requests in clear terms.",
-  "seo_and_content_opportunities": "2 short paragraphs highlighting valuable Google search terms that potential customers are using and where adding helpful service content will attract more inquiries.",
+  "seo_and_content_opportunities": "{seo_detail}",
   "local_seo_insights": "1-2 short paragraphs on Google Maps visibility, local reviews, and direct patient phone calls.",
   "agency_action_plan": [
     {{
@@ -167,6 +262,7 @@ def sanitize_weekly_output(output: WeeklyDigestOutput) -> WeeklyDigestOutput:
     if output.needs_attention:
         output.needs_attention = clean_plain_text(output.needs_attention)
     output.acquisition_insight = clean_plain_text(output.acquisition_insight)
+    output.conversion_insight = clean_plain_text(output.conversion_insight)
     if output.search_opportunity:
         output.search_opportunity = clean_plain_text(output.search_opportunity)
     if output.local_insight:
@@ -194,168 +290,39 @@ def sanitize_report_output(output: AIReportOutput) -> AIReportOutput:
         act.description = clean_plain_text(act.description)
         if act.evidence:
             act.evidence = clean_plain_text(act.evidence)
-    for disc in output.deep_discoveries:
-        disc.title = clean_plain_text(disc.title)
-        disc.insight = clean_plain_text(disc.insight)
-        disc.recommended_action = clean_plain_text(disc.recommended_action)
+    # Deep-insight cards are authored and normalized by the exploratory agent,
+    # then independently verified. Do not rewrite their model-authored fields
+    # in the general report sanitizer.
     return output
 
 
-def fallback_weekly_briefing(data: GrowthAnalysisInput) -> WeeklyDigestOutput:
-    """Deterministic rule-based fallback for 7-day weekly digest."""
-    sessions_metric = next((m for m in data.core_metrics if m.metric_name == "sessions"), None)
-    conv_metric = next((m for m in data.core_metrics if m.metric_name == "conversions"), None)
-    cr_metric = data.conversion_rate or next((m for m in data.core_metrics if m.metric_name == "conversion_rate"), None)
-
-    sess_pct = f"{sessions_metric.percentage_change:+.1f}%" if (sessions_metric and sessions_metric.percentage_change is not None) else "stable"
-    top_channel_name = data.top_channels[0].channel if data.top_channels else "Organic Search"
-    top_kw = data.striking_distance_keywords[0].query if data.striking_distance_keywords else None
-
-    if sessions_metric and (sessions_metric.percentage_change or 0) > 0:
-        biggest_win = f"Weekly sessions reached {int(sessions_metric.current_value):,} ({sess_pct} compared to the prior 7 days), driven by steady {top_channel_name} interest."
-    elif conv_metric and conv_metric.current_value > 0:
-        biggest_win = f"Patient engagement was strong, generating {int(conv_metric.current_value)} direct inquiries this week."
-    else:
-        biggest_win = f"Maintained consistent baseline visibility with {int(sessions_metric.current_value if sessions_metric else 0):,} total website visits."
-
-    needs_attention = None
-    if sessions_metric and (sessions_metric.percentage_change or 0) < -10.0:
-        needs_attention = f"Total visits saw a temporary dip of {sess_pct} compared to the previous week, which we are addressing through channel adjustments."
-    elif cr_metric and (cr_metric.percentage_points_change or 0) < -0.5:
-        needs_attention = f"The conversion rate shifted {cr_metric.percentage_points_change:+.1f} percentage points, so we are fine-tuning mobile buttons and form ease."
-
-    acq_insight = f"{top_channel_name} was the leading channel bringing prospective patients to the website this week."
-
-    search_opp = None
-    if top_kw:
-        search_opp = f"The search term '{top_kw}' is currently ranking on page 2 of Google, and a few focused content improvements can help move it to page 1."
-
-    local_insight = None
-    if data.local_seo.phone_calls > 0 or data.local_seo.direction_requests > 0:
-        local_insight = f"Your Google Business Profile generated {data.local_seo.phone_calls} direct phone calls and {data.local_seo.direction_requests} map direction requests."
-
-    actions = []
-    if top_kw:
-        actions.append(
-            ActionItem(
-                title=f"Improve Search Rankings for '{top_kw}'",
-                description=f"Enhance service page headers and content for '{top_kw}' to attract more local search traffic.",
-                impact_area="SEO",
-                priority="High",
-                evidence="High search volume on page 2",
-            )
-        )
-    actions.append(
-        ActionItem(
-            title="Streamline Mobile Booking Touchpoints",
-            description="Audit phone and form buttons on key service pages so visitors can easily book consultations from their smartphones.",
-            impact_area="Conversion",
-            priority="Medium",
-            evidence=f"Current conversion rate at {cr_metric.current_value:.1f}%" if cr_metric else "Mobile engagement review",
-        )
-    )
-
-    out = WeeklyDigestOutput(
-        biggest_win=biggest_win,
-        needs_attention=needs_attention,
-        acquisition_insight=acq_insight,
-        search_opportunity=search_opp,
-        local_insight=local_insight,
-        next_actions=actions[:2],
-        overall_sentiment="Growth",
-    )
-    return sanitize_weekly_output(out)
-
-
-def fallback_growth_briefing(data: GrowthAnalysisInput) -> AIReportOutput:
-    """Deterministic rule-based fallback if LLM API is unavailable or unconfigured."""
-    sessions_metric = next((m for m in data.core_metrics if m.metric_name == "sessions"), None)
-    users_metric = next((m for m in data.core_metrics if m.metric_name == "active_users"), None)
-    conversions_metric = next((m for m in data.core_metrics if m.metric_name == "conversions"), None)
-    cr_metric = data.conversion_rate or next((m for m in data.core_metrics if m.metric_name == "conversion_rate"), None)
-
-    sess_pct = f"{sessions_metric.percentage_change:+.1f}%" if (sessions_metric and sessions_metric.percentage_change is not None) else "stable"
-    users_pct = f"{users_metric.percentage_change:+.1f}%" if (users_metric and users_metric.percentage_change is not None) else "stable"
-    conv_val = int(conversions_metric.current_value) if conversions_metric else 0
-
-    top_channel_name = data.top_channels[0].channel if data.top_channels else "Direct"
-    top_kw = data.striking_distance_keywords[0].query if data.striking_distance_keywords else "brand search"
-
-    period_str = f"{data.period_days}-day"
-    conv_rate_label = f" with a {cr_metric.current_value:.1f}% inquiry rate" if cr_metric else ""
-    exec_summary = [
-        f"Website traffic reached {int(sessions_metric.current_value if sessions_metric else 0):,} visits ({sess_pct} vs prior period) from {int(users_metric.current_value if users_metric else 0):,} active visitors.",
-        f"{top_channel_name} was your leading source of visitors, bringing the largest share of prospective clients to the site.",
-        f"Visitors completed {conv_val:,} key inquiry and contact actions across appointment forms and phone clicks{conv_rate_label}.",
+def validate_baseline_report_output(output: AIReportOutput) -> AIReportOutput:
+    """Fail closed if the general analyst reintroduces comparison language in a baseline."""
+    fields = [
+        *output.executive_summary,
+        output.biggest_win,
+        output.watch_item or "",
+        output.traffic_and_inflow_insights,
+        output.conversion_insights,
+        output.seo_and_content_opportunities,
+        output.local_seo_insights,
+        *[item.title for item in output.agency_action_plan],
+        *[item.description for item in output.agency_action_plan],
+        *[item.evidence for item in output.agency_action_plan],
     ]
-
-    biggest_win = f"{top_channel_name} attracted steady interest, supporting total website traffic of {int(sessions_metric.current_value if sessions_metric else 0):,} visits."
-    watch_item = "We are continually refining mobile page speed and contact buttons to ensure every visitor has a smooth experience."
-
-    traffic_insights = (
-        f"Over the past {period_str} cycle, {data.company_name} welcomed {int(sessions_metric.current_value if sessions_metric else 0):,} website visits. "
-        f"Most visitors arrived through {top_channel_name}, showing healthy and consistent community interest in your services. "
-        f"Visitors spent quality time exploring core service pages and contact options across the website."
+    matched_terms = sorted(
+        {
+            match.group(0).lower()
+            for text in fields
+            for match in _BASELINE_MOVEMENT_PATTERN.finditer(text or "")
+        }
     )
-
-    conv_rate_str = f"{cr_metric.current_value:.1f}%" if cr_metric else "steady"
-    conversion_insights = (
-        f"A total of {conv_val:,} inquiries and key actions were recorded this period, representing an overall inquiry rate of {conv_rate_str}. "
-        f"Direct phone calls and online consultation forms continue to be the primary ways new patients get in touch."
-    )
-
-    seo_insights = (
-        f"Google Search Console data highlights great growth potential for valuable searches like '{top_kw}'. "
-        f"Because your site already ranks near page 1 for these terms, targeted content updates will help attract even more local searches."
-    )
-
-    local_insights = ""
-    if data.local_seo.phone_calls > 0 or data.local_seo.direction_requests > 0:
-        local_insights = (
-            f"Your Google Business Profile drove {data.local_seo.phone_calls} direct phone calls and {data.local_seo.direction_requests} map direction requests. "
-            f"Continuing to gather positive patient reviews will keep your practice prominent in local Google Maps searches."
+    if matched_terms:
+        raise AnalysisUnavailableError(
+            "OpenRouter baseline synthesis contained comparison or movement language: "
+            + ", ".join(matched_terms)
         )
-
-    action_plan = [
-        ActionItem(
-            title=f"Enhance Search Rankings for '{top_kw}'",
-            description=f"Update service page headings and helpful answers for '{top_kw}' to move rankings higher in Google search results.",
-            impact_area="SEO",
-            priority="High",
-            evidence=f"High-potential query '{top_kw}'",
-        ),
-        ActionItem(
-            title="Optimize Mobile Consultation Booking",
-            description="Make phone and contact buttons even easier to tap on smartphones to convert more website visitors into scheduled appointments.",
-            impact_area="Conversion",
-            priority="High",
-            evidence=f"Supporting {conv_val} key consultation inquiries",
-        ),
-    ]
-    if data.local_seo.phone_calls > 0 or data.local_seo.direction_requests > 0 or data.local_seo.total_reviews_count is not None:
-        action_plan.append(
-            ActionItem(
-                title="Strengthen Local Google Maps Profile",
-                description="Ensure local practice details remain consistent and support regular patient review collection to maintain map prominence.",
-                impact_area="Local",
-                priority="Medium",
-                evidence=f"Verified local profile signals; calls ({data.local_seo.phone_calls}) and directions ({data.local_seo.direction_requests}) where available",
-            )
-        )
-
-    out = AIReportOutput(
-        executive_summary=exec_summary,
-        biggest_win=biggest_win,
-        watch_item=watch_item,
-        traffic_and_inflow_insights=traffic_insights,
-        conversion_insights=conversion_insights,
-        seo_and_content_opportunities=seo_insights,
-        local_seo_insights=local_insights,
-        agency_action_plan=action_plan,
-        deep_discoveries=[],
-        overall_sentiment="Growth",
-    )
-    return sanitize_report_output(out)
+    return output
 
 
 class GrowthAnalyst:
@@ -375,13 +342,11 @@ class GrowthAnalyst:
         self.reasoning_mode = reasoning_mode or settings.llm_reasoning_mode
         self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
         self.http_client = http_client
-        self.used_fallback = False
 
     def analyze_weekly(self, data: GrowthAnalysisInput) -> WeeklyDigestOutput:
         """Synthesize 7-day metrics into a concise WeeklyDigestOutput."""
         if not self.api_key or self.api_key.strip() == "":
-            self.used_fallback = True
-            return fallback_weekly_briefing(data)
+            raise AnalysisUnavailableError("OpenRouter credentials are unavailable.")
 
         prompt = build_weekly_user_prompt(data)
         headers = {
@@ -395,7 +360,7 @@ class GrowthAnalyst:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.2,
-            "response_format": {"type": "json_object"},
+            "response_format": response_format("weekly_digest", WEEKLY_DIGEST_SCHEMA),
         }
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
@@ -409,28 +374,22 @@ class GrowthAnalyst:
                     response = client.post(endpoint, headers=headers, json=payload)
 
             if response.status_code != 200:
-                self.used_fallback = True
-                return fallback_weekly_briefing(data)
+                raise AnalysisUnavailableError(f"OpenRouter returned HTTP {response.status_code}.")
 
-            res_json = response.json()
-            content_str = res_json["choices"][0]["message"]["content"]
-            clean_str = content_str.strip()
-            if "```json" in clean_str:
-                clean_str = clean_str.split("```json")[1].split("```")[0].strip()
-            elif "```" in clean_str:
-                clean_str = clean_str.split("```")[1].split("```")[0].strip()
-            parsed = json.loads(clean_str)
+            parsed = parse_response_json(response.json(), "OpenRouter weekly synthesis")
             raw_output = WeeklyDigestOutput(**parsed)
             return sanitize_weekly_output(raw_output)
-        except Exception:
-            self.used_fallback = True
-            return fallback_weekly_briefing(data)
+        except AnalysisUnavailableError:
+            raise
+        except Exception as exc:
+            raise AnalysisUnavailableError(
+                f"OpenRouter weekly synthesis failed: {type(exc).__name__}."
+            ) from exc
 
     def analyze(self, data: GrowthAnalysisInput) -> AIReportOutput:
         """Synthesize structured growth metrics into executive AI briefing."""
         if not self.api_key or self.api_key.strip() == "":
-            self.used_fallback = True
-            return fallback_growth_briefing(data)
+            raise AnalysisUnavailableError("OpenRouter credentials are unavailable.")
 
         prompt = build_performance_user_prompt(data)
         headers = {
@@ -443,8 +402,8 @@ class GrowthAnalyst:
                 {"role": "system", "content": GROWTH_ANALYST_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.3,
-            "response_format": {"type": "json_object"},
+            "temperature": 0 if data.report_mode == ReportMode.INITIAL_BASELINE else 0.3,
+            "response_format": response_format("performance_report", PERFORMANCE_REPORT_SCHEMA),
         }
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
@@ -458,22 +417,22 @@ class GrowthAnalyst:
                     response = client.post(endpoint, headers=headers, json=payload)
 
             if response.status_code != 200:
-                self.used_fallback = True
-                return fallback_growth_briefing(data)
+                raise AnalysisUnavailableError(f"OpenRouter returned HTTP {response.status_code}.")
 
-            res_json = response.json()
-            content_str = res_json["choices"][0]["message"]["content"]
-            clean_str = content_str.strip()
-            if "```json" in clean_str:
-                clean_str = clean_str.split("```json")[1].split("```")[0].strip()
-            elif "```" in clean_str:
-                clean_str = clean_str.split("```")[1].split("```")[0].strip()
-            parsed = json.loads(clean_str)
+            parsed = parse_response_json(response.json(), "OpenRouter performance synthesis")
             raw_output = AIReportOutput(**parsed)
-            return sanitize_report_output(raw_output)
-        except Exception:
-            self.used_fallback = True
-            return fallback_growth_briefing(data)
+            sanitized = sanitize_report_output(raw_output)
+            return (
+                validate_baseline_report_output(sanitized)
+                if data.report_mode == ReportMode.INITIAL_BASELINE
+                else sanitized
+            )
+        except AnalysisUnavailableError:
+            raise
+        except Exception as exc:
+            raise AnalysisUnavailableError(
+                f"OpenRouter performance synthesis failed: {type(exc).__name__}."
+            ) from exc
 
 # Backward compatibility alias
 build_user_prompt = build_performance_user_prompt

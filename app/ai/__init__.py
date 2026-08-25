@@ -1,3 +1,3 @@
-from app.ai.analyst import GrowthAnalyst, fallback_growth_briefing
+from app.ai.analyst import AnalysisUnavailableError, GrowthAnalyst
 
-__all__ = ["GrowthAnalyst", "fallback_growth_briefing"]
+__all__ = ["AnalysisUnavailableError", "GrowthAnalyst"]
