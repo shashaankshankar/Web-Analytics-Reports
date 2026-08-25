@@ -22,6 +22,7 @@ def oauth_settings() -> OAuthSettings:
         client_secret="client-secret",
         redirect_uri="https://callback.example.test/oauth/google/callback",
         secret_id="GBP_OAUTH_CREDENTIALS_JSON",
+        expected_place_id="ChIJtarget",
         project_id="project-id",
     )
 
@@ -85,6 +86,7 @@ def test_callback_stores_bundle_without_returning_secrets():
     response = GBPAuthFlow(
         settings_factory=oauth_settings,
         exchange=exchange,
+        verify=lambda settings, bundle: None,
         store_factory=lambda settings: FakeStore(),
     ).callback(
         code="one-time-code",
@@ -98,6 +100,34 @@ def test_callback_stores_bundle_without_returning_secrets():
     assert "refresh-token" not in response.body.decode()
     assert "client-secret" not in response.body.decode()
     assert stored[0]["refresh_token"] == "refresh-token"
+
+
+def test_callback_does_not_store_bundle_when_location_verification_fails():
+    stored = False
+
+    class FakeStore:
+        def add_version(self, bundle):
+            nonlocal stored
+            stored = True
+
+    def verify(settings, bundle):
+        raise GBPAuthError("The authorized Google account cannot access the configured GBP location.")
+
+    response = GBPAuthFlow(
+        settings_factory=oauth_settings,
+        exchange=lambda settings, code: {"refresh_token": "refresh-token"},
+        verify=verify,
+        store_factory=lambda settings: FakeStore(),
+    ).callback(
+        code="one-time-code",
+        state="same-state",
+        cookie_state="same-state",
+        error=None,
+    )
+
+    assert response.status_code == 502
+    assert stored is False
+    assert "cannot access" in response.body.decode().lower()
 
 
 def test_exchange_requires_a_refresh_token():

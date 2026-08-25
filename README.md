@@ -60,12 +60,17 @@ known; it is required for the managed Reviews endpoint unless the connector
 can resolve it. Private GBP source fields remain unavailable until OAuth and
 manager access are independently verified.
 
+The Google Cloud project also needs approved Google Business Profile Basic API
+Access. Enabling the APIs alone can leave the project at quota zero, which
+returns HTTP 429 when the connector tries to enumerate managed locations.
+
 The OAuth connection uses a separate callback-only service. Start it at
 `https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/start`
 after the callback service and Secret Manager bindings in
 [DEPLOYMENT.md](DEPLOYMENT.md) are ready. Do not reuse an authorization code
 from a failed callback or expose OAuth credentials in the browser, repository,
-or logs.
+or logs. The callback verifies the manager account can access the configured
+client Place ID before storing the refresh credential.
 
 For each real client, keep two dates distinct when they are known:
 

@@ -15,8 +15,8 @@ Set these through Secret Manager or Cloud Run environment configuration:
 - `GBP_OAUTH_CREDENTIALS_JSON` (Secret Manager-backed JSON containing the
   authorized GBP user's OAuth `client_id`, `client_secret`, `refresh_token`,
   and optional `token_uri`)
-- `GBP_OAUTH_CLIENT_ID`, `GBP_OAUTH_REDIRECT_URI`, and `GBP_OAUTH_SECRET_ID`
-  configure the callback-only OAuth service. Inject
+- `GBP_OAUTH_CLIENT_ID`, `GBP_OAUTH_REDIRECT_URI`, `GBP_OAUTH_SECRET_ID`, and
+  `GBP_OAUTH_EXPECTED_PLACE_ID` configure the callback-only OAuth service. Inject
   `GBP_OAUTH_CLIENT_SECRET` from Secret Manager; never place the client secret
   in the image, repository, browser, or logs.
 - `GBP_ACCOUNT_ID` is optional. Prefer `gbp_account_id` in the client JSON when
@@ -30,6 +30,14 @@ Use the Cloud Run service account's Application Default Credentials for GA4 and
 Search Console. Private GBP profile, Performance, managed Reviews, and optional
 Business Calls data use the authorized user's OAuth bundle. Do not upload a
 service-account key file to the image or repository.
+
+Before the first live GBP call, the Google Cloud project must have approved
+Business Profile API access. Enabling the individual APIs is not sufficient:
+Google can leave the Account Management or Performance quota at zero until the
+Basic API Access application is approved. Check the project's GBP quota before
+repeating OAuth authorization; a 429 with no effective quota is an access gate,
+not a transient rate spike. Submit the application through Google's
+[Business Profile API access form](https://support.google.com/business/contact/api_default).
 
 ## GBP OAuth callback service
 
@@ -51,6 +59,11 @@ Provision these secrets before deploying the callback service:
   the callback service adds the first version after Google returns a refresh
   token. The reporting service reads this secret after that version exists.
 
+The callback verifies that the authorized user can enumerate the configured
+`GBP_OAUTH_EXPECTED_PLACE_ID` through the private Business Profile APIs before
+adding a credential version. This prevents an unrelated Google account from
+rotating the shared reporting credential through the public redirect endpoint.
+
 The callback service account needs only `roles/secretmanager.secretAccessor`
 on `GBP_OAUTH_CLIENT_SECRET` and
 `roles/secretmanager.secretVersionAdder` on
@@ -68,8 +81,8 @@ gcloud run deploy measurement-oauth-callback \
   --allow-unauthenticated \
   --service-account=gbp-oauth-callback@PROJECT_ID.iam.gserviceaccount.com \
   --command=uvicorn \
-  --args=app.oauth_main:app,--host=0.0.0.0,--port=8080 \
-  --set-env-vars=GBP_OAUTH_CLIENT_ID=OAUTH_CLIENT_ID,GBP_OAUTH_REDIRECT_URI=https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/callback,GBP_OAUTH_SECRET_ID=GBP_OAUTH_CREDENTIALS_JSON,GCP_PROJECT_ID=PROJECT_ID \
+  --args=app.oauth_main:app,--host=0.0.0.0,--port=8080,--no-access-log \
+  --set-env-vars=GBP_OAUTH_CLIENT_ID=OAUTH_CLIENT_ID,GBP_OAUTH_REDIRECT_URI=https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/callback,GBP_OAUTH_SECRET_ID=GBP_OAUTH_CREDENTIALS_JSON,GBP_OAUTH_EXPECTED_PLACE_ID=PUBLIC_PLACE_ID,GCP_PROJECT_ID=PROJECT_ID \
   --set-secrets=GBP_OAUTH_CLIENT_SECRET=GBP_OAUTH_CLIENT_SECRET:latest
 ```
 
@@ -87,10 +100,11 @@ with this additional binding:
 --set-secrets=OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest,RESEND_FROM_EMAIL=RESEND_FROM_EMAIL:latest,GBP_OAUTH_CREDENTIALS_JSON=GBP_OAUTH_CREDENTIALS_JSON:latest
 ```
 
-The callback rejects missing or mismatched state cookies, does not log Google
-response bodies, discards the short-lived access token, and stores only the
-refreshable OAuth bundle. The authorization code from the failed 404 attempt
-must not be reused; start a new flow after deploying the callback service.
+The callback rejects missing or mismatched state cookies, verifies access to
+the expected location, does not log Google response bodies, discards the
+short-lived access token, and stores only the refreshable OAuth bundle. The
+authorization code from the failed 404 attempt must not be reused; start a
+new flow after deploying the callback service.
 
 ## Build and deploy
 

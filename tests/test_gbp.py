@@ -85,6 +85,18 @@ def test_oauth_bundle_uses_business_manage_scope(monkeypatch):
     assert credentials.scopes == GBP_SCOPES
 
 
+def test_gbp_does_not_fall_back_to_adc_without_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("GBP_OAUTH_CREDENTIALS_JSON", raising=False)
+    monkeypatch.delenv("GBP_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GBP_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("GBP_OAUTH_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("GBP_ALLOW_ADC_FALLBACK", raising=False)
+
+    extractor = GoogleBusinessProfileExtractor("locations/123")
+
+    assert extractor.get_token() == ""
+
+
 def test_private_gbp_profile_keywords_reviews_and_calls_are_normalized_and_paginated():
     requested_urls: list[str] = []
 

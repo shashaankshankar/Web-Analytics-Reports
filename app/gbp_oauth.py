@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,7 +19,7 @@ from google.auth.transport.requests import AuthorizedSession
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from fastapi import APIRouter
 from fastapi import Request as FastAPIRequest
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class OAuthSettings:
     secret_id: str
     token_uri: str = GOOGLE_TOKEN_URI
     project_id: Optional[str] = None
+    expected_place_id: str = ""
 
     @classmethod
     def from_env(cls) -> "OAuthSettings":
@@ -54,6 +56,7 @@ class OAuthSettings:
             client_secret=os.getenv("GBP_OAUTH_CLIENT_SECRET", "").strip(),
             redirect_uri=os.getenv("GBP_OAUTH_REDIRECT_URI", DEFAULT_REDIRECT_URI).strip(),
             secret_id=os.getenv("GBP_OAUTH_SECRET_ID", "GBP_OAUTH_CREDENTIALS_JSON").strip(),
+            expected_place_id=os.getenv("GBP_OAUTH_EXPECTED_PLACE_ID", "").strip(),
             token_uri=os.getenv("GBP_OAUTH_TOKEN_URI", GOOGLE_TOKEN_URI).strip(),
             project_id=(
                 os.getenv("GCP_PROJECT_ID", "").strip()
@@ -69,6 +72,8 @@ class OAuthSettings:
             raise GBPAuthError("GBP OAuth redirect URI must use HTTPS.")
         if not self.secret_id:
             raise GBPAuthError("GBP OAuth Secret Manager target is not configured.")
+        if not self.expected_place_id:
+            raise GBPAuthError("GBP OAuth expected GBP Place ID is not configured.")
 
 
 def _post_form(url: str, form: Mapping[str, str]) -> dict[str, Any]:
@@ -84,7 +89,21 @@ def _post_form(url: str, form: Mapping[str, str]) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+    except urllib.error.HTTPError as exc:
+        logger.warning(
+            "GBP OAuth provider request failed grant_type=%s status=%s",
+            form.get("grant_type", "unknown"),
+            exc.code,
+        )
+        # Provider response bodies can contain sensitive account or token
+        # material. Keep them out of logs and user-facing diagnostics.
+        raise GBPAuthError("Google authorization-code exchange failed.") from exc
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        logger.warning(
+            "GBP OAuth provider request failed grant_type=%s error=%s",
+            form.get("grant_type", "unknown"),
+            type(exc).__name__,
+        )
         # Provider response bodies can contain sensitive account or token
         # material. Keep them out of logs and user-facing diagnostics.
         raise GBPAuthError("Google authorization-code exchange failed.") from exc
@@ -130,6 +149,130 @@ def exchange_authorization_code(
         "refresh_token": refresh_token,
         "token_uri": settings.token_uri,
     }
+
+
+def _get_json(url: str, access_token: str) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+        },
+        method="GET",
+    )
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 2:
+                time.sleep(2**attempt)
+                continue
+            logger.warning(
+                "GBP access verification API request failed api=%s status=%s",
+                urllib.parse.urlsplit(url).hostname or "unknown",
+                exc.code,
+            )
+            # Keep account and location details out of the callback response/logs.
+            raise GBPAuthError("Google Business Profile access verification failed.") from exc
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            logger.warning(
+                "GBP access verification API request failed api=%s error=%s",
+                urllib.parse.urlsplit(url).hostname or "unknown",
+                type(exc).__name__,
+            )
+            # Keep account and location details out of the callback response/logs.
+            raise GBPAuthError("Google Business Profile access verification failed.") from exc
+        break
+    if not isinstance(payload, dict):
+        raise GBPAuthError("Google Business Profile access verification returned an invalid response.")
+    return payload
+
+
+def verify_gbp_access(settings: OAuthSettings, bundle: Mapping[str, str]) -> None:
+    """Verify the refresh credential can access the configured client location.
+
+    The callback is intentionally public so Google can redirect to it. A valid
+    OAuth state cookie alone must not be enough to rotate the shared worker
+    credential, so the credential is accepted only after the authorized user
+    can enumerate the configured public Place ID through the private GBP APIs.
+    """
+    settings.validate()
+    token_response = _post_form(
+        settings.token_uri,
+        {
+            "client_id": str(bundle.get("client_id") or settings.client_id),
+            "client_secret": str(bundle.get("client_secret") or settings.client_secret),
+            "refresh_token": str(bundle.get("refresh_token") or ""),
+            "grant_type": "refresh_token",
+        },
+    )
+    access_token = str(token_response.get("access_token") or "").strip()
+    if not access_token:
+        raise GBPAuthError("Google did not return an access token for GBP verification.")
+
+    expected_place_id = settings.expected_place_id.removeprefix("places/")
+    account_page_token: Optional[str] = None
+    seen_account_tokens: set[str] = set()
+    accounts_url = "https://mybusinessaccountmanagement.googleapis.com/v1/accounts"
+    while True:
+        query: list[tuple[str, str]] = [("pageSize", "20")]
+        if account_page_token:
+            if account_page_token in seen_account_tokens:
+                raise GBPAuthError("Google returned invalid GBP account pagination.")
+            seen_account_tokens.add(account_page_token)
+            query.append(("pageToken", account_page_token))
+        accounts = _get_json(
+            f"{accounts_url}?{urllib.parse.urlencode(query)}",
+            access_token,
+        )
+        for account in accounts.get("accounts", []) or []:
+            account_name = str(account.get("name") or "").strip()
+            if not account_name:
+                continue
+            location_page_token: Optional[str] = None
+            seen_location_tokens: set[str] = set()
+            locations_url = (
+                "https://mybusinessbusinessinformation.googleapis.com/v1/"
+                f"{account_name}/locations"
+            )
+            while True:
+                location_query: list[tuple[str, str]] = [
+                    ("readMask", "name,metadata"),
+                    ("pageSize", "100"),
+                ]
+                if location_page_token:
+                    if location_page_token in seen_location_tokens:
+                        raise GBPAuthError("Google returned invalid GBP location pagination.")
+                    seen_location_tokens.add(location_page_token)
+                    location_query.append(("pageToken", location_page_token))
+                locations = _get_json(
+                    f"{locations_url}?{urllib.parse.urlencode(location_query)}",
+                    access_token,
+                )
+                for location in locations.get("locations", []) or []:
+                    metadata = location.get("metadata") or {}
+                    place_id = str(
+                        metadata.get("placeId") or metadata.get("place_id") or ""
+                    ).strip()
+                    if place_id == expected_place_id:
+                        return
+                location_page_token = str(
+                    locations.get("nextPageToken")
+                    or locations.get("next_page_token")
+                    or ""
+                ).strip() or None
+                if not location_page_token:
+                    break
+        account_page_token = str(
+            accounts.get("nextPageToken") or accounts.get("next_page_token") or ""
+        ).strip() or None
+        if not account_page_token:
+            break
+
+    raise GBPAuthError(
+        "The authorized Google account cannot access the configured GBP location."
+    )
 
 
 class SecretManagerOAuthStore:
@@ -185,10 +328,12 @@ class GBPAuthFlow:
         self,
         settings_factory: Callable[[], OAuthSettings] = OAuthSettings.from_env,
         exchange: Callable[[OAuthSettings, str], dict[str, str]] = exchange_authorization_code,
+        verify: Callable[[OAuthSettings, Mapping[str, str]], None] = verify_gbp_access,
         store_factory: Callable[[OAuthSettings], SecretManagerOAuthStore] = SecretManagerOAuthStore,
     ):
         self.settings_factory = settings_factory
         self.exchange = exchange
+        self.verify = verify
         self.store_factory = store_factory
 
     def start(self) -> RedirectResponse:
@@ -246,6 +391,7 @@ class GBPAuthFlow:
         try:
             settings = self.settings_factory()
             bundle = self.exchange(settings, code or "")
+            self.verify(settings, bundle)
             self.store_factory(settings).add_version(bundle)
         except GBPAuthError as exc:
             logger.warning("GBP OAuth callback failed: %s", exc)
@@ -268,11 +414,24 @@ class GBPAuthFlow:
 def _html_result(title: str, message: str, status_code: int) -> HTMLResponse:
     safe_title = html.escape(title)
     safe_message = html.escape(message)
+    nonce = secrets.token_urlsafe(16)
     return HTMLResponse(
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         f"<title>{safe_title}</title></head><body>"
-        f"<h1>{safe_title}</h1><p>{safe_message}</p></body></html>",
+        f"<h1>{safe_title}</h1><p>{safe_message}</p>"
+        f"<script nonce='{nonce}'>history.replaceState(null, '', '/oauth/google/callback');</script>"
+        "</body></html>",
         status_code=status_code,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": (
+                "default-src 'none'; "
+                f"script-src 'nonce-{nonce}'; "
+                "base-uri 'none'; frame-ancestors 'none'"
+            ),
+        },
     )
 
 
@@ -280,7 +439,7 @@ def create_oauth_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/oauth/google/start")
-    def start_google_oauth() -> RedirectResponse | HTMLResponse:
+    def start_google_oauth() -> Response:
         try:
             return GBPAuthFlow().start()
         except GBPAuthError as exc:

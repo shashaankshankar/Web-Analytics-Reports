@@ -21,6 +21,7 @@ GBP_OAUTH_CREDENTIALS_ENV = "GBP_OAUTH_CREDENTIALS_JSON"
 GBP_OAUTH_CLIENT_ID_ENV = "GBP_OAUTH_CLIENT_ID"
 GBP_OAUTH_CLIENT_SECRET_ENV = "GBP_OAUTH_CLIENT_SECRET"
 GBP_OAUTH_REFRESH_TOKEN_ENV = "GBP_OAUTH_REFRESH_TOKEN"
+GBP_ALLOW_ADC_FALLBACK_ENV = "GBP_ALLOW_ADC_FALLBACK"
 
 GBP_ACCOUNT_MANAGEMENT_BASE_URL = "https://mybusinessaccountmanagement.googleapis.com/v1"
 GBP_BUSINESS_INFORMATION_BASE_URL = "https://mybusinessbusinessinformation.googleapis.com/v1"
@@ -142,8 +143,15 @@ class GoogleBusinessProfileExtractor:
             except Exception:
                 return ""
 
-        # Keep ADC as a local-development compatibility path. It is not a
-        # substitute for the user OAuth bundle in production.
+        # ADC is opt-in for local development only. Production must fail
+        # closed when the user OAuth bundle is absent or malformed rather than
+        # silently changing the Google principal used for private GBP calls.
+        if os.getenv(GBP_ALLOW_ADC_FALLBACK_ENV, "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+        }:
+            return ""
         try:
             credentials, _ = google.auth.default(scopes=GBP_SCOPES)
             credentials.refresh(GoogleAuthRequest())
