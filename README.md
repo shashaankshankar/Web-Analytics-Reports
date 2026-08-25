@@ -60,6 +60,13 @@ known; it is required for the managed Reviews endpoint unless the connector
 can resolve it. Private GBP source fields remain unavailable until OAuth and
 manager access are independently verified.
 
+The OAuth connection uses a separate callback-only service. Start it at
+`https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/start`
+after the callback service and Secret Manager bindings in
+[DEPLOYMENT.md](DEPLOYMENT.md) are ready. Do not reuse an authorization code
+from a failed callback or expose OAuth credentials in the browser, repository,
+or logs.
+
 For each real client, keep two dates distinct when they are known:
 
 - `site_launch_date` is optional client-confirmed context about when the public website launched. It does not decide whether analytics data is reportable.

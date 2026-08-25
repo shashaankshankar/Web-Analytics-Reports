@@ -15,6 +15,10 @@ Set these through Secret Manager or Cloud Run environment configuration:
 - `GBP_OAUTH_CREDENTIALS_JSON` (Secret Manager-backed JSON containing the
   authorized GBP user's OAuth `client_id`, `client_secret`, `refresh_token`,
   and optional `token_uri`)
+- `GBP_OAUTH_CLIENT_ID`, `GBP_OAUTH_REDIRECT_URI`, and `GBP_OAUTH_SECRET_ID`
+  configure the callback-only OAuth service. Inject
+  `GBP_OAUTH_CLIENT_SECRET` from Secret Manager; never place the client secret
+  in the image, repository, browser, or logs.
 - `GBP_ACCOUNT_ID` is optional. Prefer `gbp_account_id` in the client JSON when
   known; otherwise the adapter resolves the managed `accounts/<id>` and
   `locations/<id>` resources by matching the configured public Place ID after
@@ -27,6 +31,67 @@ Search Console. Private GBP profile, Performance, managed Reviews, and optional
 Business Calls data use the authorized user's OAuth bundle. Do not upload a
 service-account key file to the image or repository.
 
+## GBP OAuth callback service
+
+The OAuth callback is a separate, callback-only Cloud Run service. Keep the
+reporting service private; do not make `/reports/generate` publicly reachable
+just to receive the Google redirect.
+
+The Google OAuth web client must contain this exact redirect URI:
+
+```text
+https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/callback
+```
+
+Provision these secrets before deploying the callback service:
+
+- `GBP_OAUTH_CLIENT_SECRET`: the current secret for the Google OAuth web
+  client. Add it without printing it or placing it in source control.
+- `GBP_OAUTH_CREDENTIALS_JSON`: create the secret before the first callback;
+  the callback service adds the first version after Google returns a refresh
+  token. The reporting service reads this secret after that version exists.
+
+The callback service account needs only `roles/secretmanager.secretAccessor`
+on `GBP_OAUTH_CLIENT_SECRET` and
+`roles/secretmanager.secretVersionAdder` on
+`GBP_OAUTH_CREDENTIALS_JSON`. The reporting service account needs
+`roles/secretmanager.secretAccessor` on `GBP_OAUTH_CREDENTIALS_JSON`.
+
+Deploy the callback-only service with the project-specific service account and
+secret bindings:
+
+```bash
+gcloud run deploy measurement-oauth-callback \
+  --source . \
+  --project=PROJECT_ID \
+  --region=us-central1 \
+  --allow-unauthenticated \
+  --service-account=gbp-oauth-callback@PROJECT_ID.iam.gserviceaccount.com \
+  --command=uvicorn \
+  --args=app.oauth_main:app,--host=0.0.0.0,--port=8080 \
+  --set-env-vars=GBP_OAUTH_CLIENT_ID=OAUTH_CLIENT_ID,GBP_OAUTH_REDIRECT_URI=https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/callback,GBP_OAUTH_SECRET_ID=GBP_OAUTH_CREDENTIALS_JSON,GCP_PROJECT_ID=PROJECT_ID \
+  --set-secrets=GBP_OAUTH_CLIENT_SECRET=GBP_OAUTH_CLIENT_SECRET:latest
+```
+
+Start a fresh authorization at:
+
+```text
+https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/start
+```
+
+After the callback displays its success page, grant the reporting service
+access to `GBP_OAUTH_CREDENTIALS_JSON` and deploy the private reporting service
+with this additional binding:
+
+```bash
+--set-secrets=OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest,RESEND_FROM_EMAIL=RESEND_FROM_EMAIL:latest,GBP_OAUTH_CREDENTIALS_JSON=GBP_OAUTH_CREDENTIALS_JSON:latest
+```
+
+The callback rejects missing or mismatched state cookies, does not log Google
+response bodies, discards the short-lived access token, and stores only the
+refreshable OAuth bundle. The authorization code from the failed 404 attempt
+must not be reused; start a new flow after deploying the callback service.
+
 ## Build and deploy
 
 ```bash
@@ -36,7 +101,7 @@ gcloud run deploy client-growth-reports \
   --no-allow-unauthenticated \
   --service-account reports-runtime@PROJECT_ID.iam.gserviceaccount.com \
   --set-env-vars REPORT_DELIVERY_ENABLED=true,REPORT_ALLOWED_CLIENTS=thehouseofdental \
-  --set-secrets OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest,RESEND_FROM_EMAIL=RESEND_FROM_EMAIL:latest
+  --set-secrets OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest,RESEND_FROM_EMAIL=RESEND_FROM_EMAIL:latest,GBP_OAUTH_CREDENTIALS_JSON=GBP_OAUTH_CREDENTIALS_JSON:latest
 ```
 
 Grant the runtime service account only the Google API access required by the
