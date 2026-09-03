@@ -1,6 +1,6 @@
 from __future__ import annotations
 import html
-from app.analytics.contracts import FullGrowthBriefing, ReportMode, ReportType
+from app.analytics.contracts import FullGrowthBriefing, REPORT_SPECS, ReportMode, ReportType
 from app.delivery.email_components import (
     COLOR_BG,
     COLOR_ON_SURFACE,
@@ -12,7 +12,9 @@ from app.delivery.email_components import (
     FONT_FAMILY_SERIF,
     is_light_color,
     render_action_card,
+    render_goals_block,
     render_kpi_card,
+    select_strongest_actions,
 )
 from app.delivery.discovery_copy import build_client_discovery_copies
 from app.delivery.gbp_reporting import calls_rows, keyword_rows, performance_rows, profile_rows, review_rows
@@ -246,10 +248,16 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
 
     # 7. Prioritized Agency Action Plan
     action_items_html = ""
-    num_actions = len(insights.agency_action_plan)
-    for idx, act in enumerate(insights.agency_action_plan):
+    selected_actions = select_strongest_actions(
+        insights.agency_action_plan,
+        REPORT_SPECS[briefing.report_type].max_actions,
+    )
+    num_actions = len(selected_actions)
+    for idx, act in enumerate(selected_actions):
         is_last = (idx == num_actions - 1)
         action_items_html += render_action_card(act, primary_color, accent_color, is_last=is_last)
+
+    goals_html = render_goals_block(analytics.goals, primary_color, accent_color)
 
     logo_markup = f'<img src="{html.escape(logo_url)}" alt="{client_name}" height="52" style="height: 52px; width: auto; max-width: 260px; max-height: 56px; display: block; border: 0;" />' if logo_url else f'<span style="font-family: {FONT_FAMILY_SERIF}; font-size: 22px; font-weight: 700; color: {header_text_color}; letter-spacing: -0.01em;">{client_name}</span>'
     traffic_insights_escaped = html.escape(insights.traffic_and_inflow_insights)
@@ -454,6 +462,14 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
               </table>
               {biggest_win_block}
               {watch_item_block}
+            </td>
+          </tr>
+
+          <!-- Section: Current Goals -->
+          <tr>
+            <td style="padding: 0 32px 24px 32px;">
+              <h2 style="margin: 0 0 12px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Current Goals</h2>
+              {goals_html}
             </td>
           </tr>
 

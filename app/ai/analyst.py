@@ -131,6 +131,7 @@ Instructions:
 - Use only supplied GBP Performance totals and daily series. Distinguish Maps/Search impressions, calls, directions, website clicks, bookings, food actions, and conversations; never turn an impression or click into a confirmed patient or appointment outcome.
 - Monthly GBP search-keyword rows can contain an exact value or a privacy threshold. Never restate a threshold as an exact count. Managed review reply status is an operational observation, not proof of patient satisfaction.
 - If striking_distance_keywords is empty, set search_opportunity to null. Do not invent a confirmed search opportunity or treat suggested topics as validated demand.
+- This is a weekly monitoring digest. Do not provide recommended actions or next steps here; the monthly performance report contains the action plan.
 
 Respond in JSON with the exact following schema:
 {{
@@ -140,15 +141,6 @@ Respond in JSON with the exact following schema:
   "conversion_insight": "1-2 plain-English sentences naming recorded customer/contact actions and their counts, while distinguishing those events from configured Key Conversions when needed.",
   "search_opportunity": "1-2 sentences in simple terms about a high-value Google search topic we are close to ranking for, or null if not applicable.",
   "local_insight": "1-2 sentences on local Google Maps activity, phone calls, or directions, or null if unconfigured.",
-  "next_actions": [
-    {{
-      "title": "Clear, professional action title",
-      "description": "Simple explanation of what our team is doing this week to help grow the practice.",
-      "impact_area": "SEO / Conversion / Content / Local / Technical",
-      "priority": "High / Medium",
-      "evidence": "Specific metric or observation supporting this step"
-    }}
-  ],
   "overall_sentiment": "Growth / Moderate / Critical"
 }}
 """
@@ -227,6 +219,7 @@ Important Guidelines:
 - With a small initial sample, use neutral language for observed actions rather than calling activity strong, encouraging, meaningful, or representative.
 - Only describe a search term as a confirmed opportunity when it appears in striking_distance_keywords. If that list is empty, say that no confirmed ranking opportunity was supplied and frame any possible content topics as hypotheses to validate, not as terms customers are already using.
 - Keep recommendations evidence-backed and bounded. Do not imply that a content or tracking change will guarantee more inquiries.
+- Return no more than three recommended actions, ordered from strongest to weakest by expected business impact and supporting evidence. Mark the strongest actions as High priority.
 {baseline_guidance}- If a source is unavailable, state that limitation plainly and do not infer a value.
 
 Respond in JSON with the exact following schema:
@@ -267,11 +260,6 @@ def sanitize_weekly_output(output: WeeklyDigestOutput) -> WeeklyDigestOutput:
         output.search_opportunity = clean_plain_text(output.search_opportunity)
     if output.local_insight:
         output.local_insight = clean_plain_text(output.local_insight)
-    for act in output.next_actions:
-        act.title = clean_plain_text(act.title)
-        act.description = clean_plain_text(act.description)
-        if act.evidence:
-            act.evidence = clean_plain_text(act.evidence)
     return output
 
 

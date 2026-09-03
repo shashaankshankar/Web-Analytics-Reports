@@ -38,6 +38,8 @@ def test_render_growth_email_html(approved_full_briefing):
     assert "font-size: 14px; color: #45464D; line-height: 1.6; background: #F7F9FB" in html
     assert "Key searches where your website currently ranks on page 2" not in html
     assert "Review Configured Page Data" in html
+    assert "Current Goals" in html
+    assert "Improve qualified inquiries" in html
     assert "Detailed Executive PDF Report Attached" in html
     assert "weekly-action-copy" not in html
     assert "weekly-action-check" not in html
@@ -121,14 +123,6 @@ def test_render_weekly_digest_html(approved_full_briefing):
         conversion_insight="The current snapshot recorded one consultation inquiry; configured key conversions are reported separately.",
         search_opportunity="Review the configured search topic in the next cycle.",
         local_insight="GBP action metrics are unavailable from this connector.",
-        next_actions=[
-            ActionItem(
-                title="Review Configured Page Data",
-                description="Use available source data to prioritize the next optimization cycle.",
-                impact_area="Conversion",
-                priority="High",
-            )
-        ],
     )
     html = render_weekly_digest_html(approved_full_briefing)
     assert "Weekly Growth Digest" in html
@@ -138,9 +132,31 @@ def test_render_weekly_digest_html(approved_full_briefing):
     assert "The current snapshot recorded one consultation inquiry" in html
     assert "Customer Inquiries &amp; Key Actions" in html
     assert "Area to Improve" in html
-    assert "Review Configured Page Data" in html
+    assert "Recommended Next Actions" not in html
+    assert "Review Configured Page Data" not in html
+    assert "Current Goals" in html
+    assert "Improve qualified inquiries" in html
     assert ".weekly-brand-badge" in html
-    assert ".weekly-action-copy" in html
+
+
+def test_monthly_html_limits_recommended_actions_to_three_strongest(approved_full_briefing):
+    approved_full_briefing.insights.agency_action_plan = [
+        ActionItem(title="Medium action kept", description="Medium action description.", priority="Medium"),
+        ActionItem(title="Low action omitted", description="Low action description.", priority="Low"),
+        ActionItem(title="High action one", description="High action description.", priority="High"),
+        ActionItem(title="High action two", description="High action description.", priority="High"),
+        ActionItem(title="Medium action omitted", description="Another medium action.", priority="Medium"),
+    ]
+
+    html = render_growth_email_html(approved_full_briefing)
+
+    assert "High action one" in html
+    assert "High action two" in html
+    assert "Medium action kept" in html
+    assert "Low action omitted" not in html
+    assert "Medium action omitted" not in html
+    assert html.count("Top Priority") == 2
+    assert html.count("Recommended Next Step") == 1
 
 
 def test_weekly_baseline_caveat_is_visible(approved_full_briefing):
@@ -369,10 +385,32 @@ def test_build_executive_pdf(approved_full_briefing):
     assert "Continue monitoring the configured conversion path." in pdf_text
     assert "The current event snapshot includes the configured lead event." in pdf_text
     assert "GBP action metrics are unavailable from this connector." in pdf_text
+    assert "CURRENT GOALS" in pdf_text
+    assert "Improve qualified inquiries" in pdf_text
     assert "configured search topic" in pdf_text
     assert "Search Term" in pdf_text
     assert "Executive Insights | Test Company" in pdf_text
     assert "\x7f" not in pdf_text
+
+
+def test_monthly_pdf_limits_recommended_actions_to_three_strongest(approved_full_briefing):
+    approved_full_briefing.insights.agency_action_plan = [
+        ActionItem(title="Medium PDF action kept", description="Medium PDF action description.", priority="Medium"),
+        ActionItem(title="Low PDF action omitted", description="Low PDF action description.", priority="Low"),
+        ActionItem(title="High PDF action one", description="High PDF action description.", priority="High"),
+        ActionItem(title="High PDF action two", description="High PDF action description.", priority="High"),
+        ActionItem(title="Medium PDF action omitted", description="Another medium PDF action.", priority="Medium"),
+    ]
+
+    pdf_text = "\n".join(
+        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
+    )
+
+    assert "High PDF action one" in pdf_text
+    assert "High PDF action two" in pdf_text
+    assert "Medium PDF action kept" in pdf_text
+    assert "Low PDF action omitted" not in pdf_text
+    assert "Medium PDF action omitted" not in pdf_text
 
 
 def test_comparison_report_uses_28_day_title_and_empty_search_state(approved_full_briefing):

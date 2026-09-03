@@ -109,4 +109,5 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the private Cloud Run and authenticated
 Cloud Scheduler setup. Local runs never enable delivery. Production
 email requires `REPORT_DELIVERY_ENABLED=true` and an explicit
 `REPORT_ALLOWED_CLIENTS` allowlist; the initial allowlist should contain only
-`thehouseofdental`.
+`thehouseofdental`. Production Cloud Run deployment is gated to a clean,
+published `main` checkout by `scripts/deploy_cloud_run.sh`.

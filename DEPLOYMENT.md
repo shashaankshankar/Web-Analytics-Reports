@@ -2,8 +2,34 @@
 
 This repository is prepared for a private Google Cloud Run service invoked by
 authenticated Cloud Scheduler jobs. Deployment and external account changes
-remain operator-controlled; this document does not contain secrets or a
-project ID.
+remain operator-controlled; this document does not contain secrets.
+
+## Deployment gate
+
+Production Cloud Run deployments must use the repository wrapper:
+
+```bash
+./scripts/deploy_cloud_run.sh callback
+./scripts/deploy_cloud_run.sh reports
+```
+
+The wrapper invokes `scripts/assert_main_branch.sh` before it calls Google
+Cloud. A local deployment is rejected unless the checkout is on `main`, the
+worktree is clean, and `HEAD` is the exact commit currently published as
+`origin/main`. In Cloud Build, the provider-supplied `BRANCH_NAME` must be
+`main` and tag builds are rejected. In GitHub Actions, the ref must be exactly
+`refs/heads/main`.
+
+The wrapper is fixed to the production project and the two production services.
+Do not use a raw `gcloud run deploy` command for production; it cannot verify
+which Git branch supplied the source directory.
+
+This repository guard is not an IAM boundary. A project owner or another
+principal with direct Cloud Run deployment permission can still bypass any
+repository script. For an enforceable hosted policy, use a dedicated deployer
+service account behind a Cloud Build trigger restricted to `^main$`, and remove
+direct Cloud Run deployment permissions from human identities. Keep that IAM
+change separate from the repository guard so it can be reviewed independently.
 
 ## Runtime settings
 
@@ -70,20 +96,15 @@ on `GBP_OAUTH_CLIENT_SECRET` and
 `GBP_OAUTH_CREDENTIALS_JSON`. The reporting service account needs
 `roles/secretmanager.secretAccessor` on `GBP_OAUTH_CREDENTIALS_JSON`.
 
-Deploy the callback-only service with the project-specific service account and
-secret bindings:
+Set the non-secret OAuth identifiers in the deployment shell, then deploy the
+callback-only service through the guarded wrapper. The wrapper supplies the
+project-specific service account and secret bindings:
 
 ```bash
-gcloud run deploy measurement-oauth-callback \
-  --source . \
-  --project=PROJECT_ID \
-  --region=us-central1 \
-  --allow-unauthenticated \
-  --service-account=gbp-oauth-callback@PROJECT_ID.iam.gserviceaccount.com \
-  --command=uvicorn \
-  --args=app.oauth_main:app,--host=0.0.0.0,--port=8080,--no-access-log \
-  --set-env-vars=GBP_OAUTH_CLIENT_ID=OAUTH_CLIENT_ID,GBP_OAUTH_REDIRECT_URI=https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/callback,GBP_OAUTH_SECRET_ID=GBP_OAUTH_CREDENTIALS_JSON,GBP_OAUTH_EXPECTED_PLACE_ID=PUBLIC_PLACE_ID,GCP_PROJECT_ID=PROJECT_ID \
-  --set-secrets=GBP_OAUTH_CLIENT_SECRET=GBP_OAUTH_CLIENT_SECRET:latest
+export GCP_PROJECT_ID=web-analytics-agency-prod
+export GBP_OAUTH_CLIENT_ID=OAUTH_CLIENT_ID
+export GBP_OAUTH_EXPECTED_PLACE_ID=PUBLIC_PLACE_ID
+./scripts/deploy_cloud_run.sh callback
 ```
 
 Start a fresh authorization at:
@@ -92,12 +113,12 @@ Start a fresh authorization at:
 https://measurement-oauth-callback-ptlwmdunva-uc.a.run.app/oauth/google/start
 ```
 
-After the callback displays its success page, grant the reporting service
-access to `GBP_OAUTH_CREDENTIALS_JSON` and deploy the private reporting service
-with this additional binding:
+After the callback displays its success page and an enabled version exists,
+grant the reporting service access to `GBP_OAUTH_CREDENTIALS_JSON` and deploy
+the private reporting service through the guarded wrapper:
 
 ```bash
---set-secrets=OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest,RESEND_FROM_EMAIL=RESEND_FROM_EMAIL:latest,GBP_OAUTH_CREDENTIALS_JSON=GBP_OAUTH_CREDENTIALS_JSON:latest
+./scripts/deploy_cloud_run.sh reports --with-gbp-credentials
 ```
 
 The callback rejects missing or mismatched state cookies, verifies access to
@@ -109,14 +130,12 @@ new flow after deploying the callback service.
 ## Build and deploy
 
 ```bash
-gcloud run deploy client-growth-reports \
-  --source . \
-  --region us-east1 \
-  --no-allow-unauthenticated \
-  --service-account reports-runtime@PROJECT_ID.iam.gserviceaccount.com \
-  --set-env-vars REPORT_DELIVERY_ENABLED=true,REPORT_ALLOWED_CLIENTS=thehouseofdental \
-  --set-secrets OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest,RESEND_FROM_EMAIL=RESEND_FROM_EMAIL:latest,GBP_OAUTH_CREDENTIALS_JSON=GBP_OAUTH_CREDENTIALS_JSON:latest
+./scripts/deploy_cloud_run.sh reports
 ```
+
+Use `./scripts/deploy_cloud_run.sh reports --with-gbp-credentials` only after
+`GBP_OAUTH_CREDENTIALS_JSON` has an enabled Secret Manager version. The wrapper
+checks that condition before creating a new revision.
 
 Grant the runtime service account only the Google API access required by the
 enabled client configurations. Grant a separate Scheduler service account

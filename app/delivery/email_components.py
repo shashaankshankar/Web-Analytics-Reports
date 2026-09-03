@@ -1,6 +1,6 @@
 from __future__ import annotations
 import html
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from app.analytics.contracts import ActionItem, MetricDelta, PagePerformance, StrikingDistanceKeyword
 
 # Editorial design tokens matching the updated design language
@@ -70,6 +70,47 @@ def render_kpi_card(metric: MetricDelta, primary_color: str = '#000000', accent_
       </div>
     </div>
     '''
+
+
+def render_goals_block(
+    goals: Sequence[str],
+    primary_color: str = '#000000',
+    accent_color: str = '#C6A15B',
+) -> str:
+    """Render the configured client goals without inventing or rewriting them."""
+    cleaned_goals = [goal.strip() for goal in goals if isinstance(goal, str) and goal.strip()]
+    if cleaned_goals:
+        goal_items = ''.join(
+            f'<li style="padding: 3px 0; color: #191C1E;">{html.escape(goal)}</li>'
+            for goal in cleaned_goals
+        )
+    else:
+        goal_items = '<li style="padding: 3px 0; color: #515F74;">No specific client goals are configured.</li>'
+
+    return f'''
+    <div style="background: #F7F9FB; border: 1px solid #E0E3E5; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 14px 16px;">
+      <ol style="margin: 0; padding-left: 22px; font-family: {FONT_FAMILY_MAIN}; font-size: 13.5px; line-height: 1.5;">
+        {goal_items}
+      </ol>
+    </div>
+    '''
+
+
+_ACTION_PRIORITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
+
+
+def select_strongest_actions(actions: Sequence[ActionItem], limit: int) -> List[ActionItem]:
+    """Select the strongest actions by explicit priority, preserving provider order for ties."""
+    if limit <= 0:
+        return []
+    ranked_actions = sorted(
+        enumerate(actions),
+        key=lambda indexed_action: (
+            _ACTION_PRIORITY_ORDER.get((indexed_action[1].priority or '').strip().lower(), 3),
+            indexed_action[0],
+        ),
+    )
+    return [action for _, action in ranked_actions[:limit]]
 
 def render_action_card(
     action: ActionItem,

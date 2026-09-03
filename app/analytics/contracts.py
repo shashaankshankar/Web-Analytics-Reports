@@ -31,7 +31,7 @@ class ReportSpec(BaseModel):
     display_name: str
     default_days: int
     requires_pdf: bool = True
-    max_actions: int = 4
+    max_actions: int = 3
     enable_deep_agent_default: bool = False
 
 
@@ -41,7 +41,7 @@ REPORT_SPECS: dict[ReportType, ReportSpec] = {
         display_name="Weekly Growth Digest",
         default_days=7,
         requires_pdf=False,
-        max_actions=2,
+        max_actions=0,
         enable_deep_agent_default=False,
     ),
     ReportType.PERFORMANCE_28D: ReportSpec(
@@ -49,7 +49,7 @@ REPORT_SPECS: dict[ReportType, ReportSpec] = {
         display_name="28-Day Performance Report",
         default_days=28,
         requires_pdf=True,
-        max_actions=4,
+        max_actions=3,
         enable_deep_agent_default=False,
     ),
 }
@@ -541,7 +541,6 @@ class WeeklyDigestOutput(BaseModel):
     conversion_insight: str = Field(default="", description="Plain-English summary of recorded customer/contact actions and configured key conversions")
     search_opportunity: Optional[str] = Field(default=None, description="One striking-distance or trending search opportunity (1-2 sentences)")
     local_insight: Optional[str] = Field(default=None, description="GBP interaction movement (calls, directions) or None if unconfigured")
-    next_actions: List[ActionItem] = Field(default_factory=list, description="Max 2 concrete optimizations for the upcoming week")
     overall_sentiment: str = Field(default="Growth", description="Positive, Moderate, Critical, Growth")
 
 
@@ -554,7 +553,7 @@ class AIReportOutput(BaseModel):
     conversion_insights: str = Field(default="", description="Analysis of conversion rate, key events, and funnel effectiveness")
     seo_and_content_opportunities: str = Field(..., description="Striking-distance keyword targets and new service pages")
     local_seo_insights: str = Field(default="", description="Analysis of GBP interactions, reviews, and local discovery")
-    agency_action_plan: List[ActionItem] = Field(..., description="2-4 concrete optimizations for upcoming cycle justifying retainer")
+    agency_action_plan: List[ActionItem] = Field(..., description="Up to 3 strongest evidence-backed optimizations for the upcoming cycle")
     deep_discoveries: List[DataDiscovery] = Field(default_factory=list, description="Client-specific discoveries from exploratory multi-source agent tools")
     overall_sentiment: str = Field(default="Growth", description="Positive, Moderate, Critical, Growth")
 

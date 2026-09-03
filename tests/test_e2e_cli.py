@@ -107,6 +107,9 @@ def test_generate_report_weekly_has_no_deep_insights_section(tmp_path, patched_p
     html = (tmp_path / "test-client_weekly_briefing.html").read_text(encoding="utf-8")
     assert "Weekly Growth Digest" in html
     assert "Key Opportunities &amp; Discoveries" not in html
+    assert "Recommended Next Actions" not in html
+    assert "Current Goals" in html
+    assert "Improve qualified inquiries" in html
 
 
 def test_generate_report_explicit_explore_saves_internal_audit(tmp_path, patched_pipeline):
@@ -129,7 +132,7 @@ def test_generate_report_explicit_explore_saves_internal_audit(tmp_path, patched
 
 
 def test_generate_weekly_and_performance_baselines_do_not_overwrite_each_other(tmp_path, patched_pipeline):
-    patched_pipeline.measurement_start_date = "2026-08-12"
+    patched_pipeline.measurement_start_date = "2026-08-21"
     weekly = cli.generate_report(
         client_slug="test-client",
         report_type="weekly",

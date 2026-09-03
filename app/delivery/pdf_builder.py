@@ -24,8 +24,9 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from app.analytics.contracts import FullGrowthBriefing, ReportMode, ReportType
+from app.analytics.contracts import FullGrowthBriefing, REPORT_SPECS, ReportMode, ReportType
 from app.delivery.discovery_copy import build_client_discovery_copies
+from app.delivery.email_components import select_strongest_actions
 from app.delivery.gbp_reporting import calls_rows, keyword_rows as gbp_keyword_rows, performance_rows, profile_rows, review_rows
 
 
@@ -216,7 +217,26 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         ]))
         story.append(KeepTogether([t_baseline, Spacer(1, 6)]))
 
-    # 2. Executive Snapshot Section
+    # 2. Configured client goals
+    configured_goals = [goal.strip() for goal in briefing.analytics.goals if isinstance(goal, str) and goal.strip()]
+    goals_text = '<br/>'.join(
+        f'{index}. {escape(goal)}' for index, goal in enumerate(configured_goals, start=1)
+    ) if configured_goals else 'No specific client goals are configured.'
+    t_goals = Table([[
+        Paragraph(f'<b>CURRENT GOALS</b><br/>{goals_text}', styles['BodyMd'])
+    ]], colWidths=[7.6 * inch])
+    t_goals.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), BG_SURFACE_LOW),
+        ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+        ('LINEBEFORE', (0, 0), (0, -1), 3.5, ACCENT),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    story.append(KeepTogether([t_goals, Spacer(1, 6)]))
+
+    # 3. Executive Snapshot Section
     story.append(Paragraph('EXECUTIVE SNAPSHOT', styles['SectionHeaderCaps']))
     story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=5))
 
@@ -274,7 +294,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         ]))
         story.append(KeepTogether([t_watch, Spacer(1, 6)]))
 
-    # 3. Core Growth Metrics Section
+    # 4. Core Growth Metrics Section
     head_left = Paragraph('Core Growth Metrics', styles['HeadlineSm'])
     head_right = Paragraph(
         'vs. Previous Period' if briefing.report_mode == ReportMode.COMPARISON else 'Current Observation Only',
@@ -344,7 +364,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         ]))
         story.append(KeepTogether([t_bento, Spacer(1, 6)]))
 
-    # 4. Key Actions & Engagement Table
+    # 5. Key Actions & Engagement Table
     if briefing.analytics.conversion_events:
         conv_rows = [[
             Paragraph('Action / Goal', styles['ThAction']),
@@ -627,10 +647,14 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             ]))
             story.append(KeepTogether(discovery_header + [note, Spacer(1, 4)]))
 
-    # 9. Practice Growth Action Plan
+    # 10. Practice Growth Action Plan
     story.append(Paragraph('RECOMMENDED NEXT ACTIONS', styles['SectionHeaderCaps']))
     story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
-    for item in briefing.insights.agency_action_plan:
+    selected_actions = select_strongest_actions(
+        briefing.insights.agency_action_plan,
+        REPORT_SPECS[briefing.report_type].max_actions,
+    )
+    for item in selected_actions:
         badge_label = format_client_friendly_priority(item.priority)
         head_table = Table([[
             Paragraph(f'<b>{escape(item.title)}</b>', styles['ActionPlanTitle']),

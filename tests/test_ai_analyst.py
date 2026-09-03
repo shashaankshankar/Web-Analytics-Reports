@@ -9,6 +9,7 @@ from app.ai.analyst import (
     build_performance_user_prompt,
     build_weekly_user_prompt,
 )
+from app.ai.structured_output import PERFORMANCE_REPORT_SCHEMA, WEEKLY_DIGEST_SCHEMA
 from app.analytics.contracts import (
     ChannelPerformance,
     GrowthAnalysisInput,
@@ -119,6 +120,9 @@ def test_analyst_prompts_propagate_goals_as_json_arrays():
     assert "raw_summary_stats" in performance_payload
     assert "Key Conversions" in build_weekly_user_prompt(sample_growth_input)
     assert "small sample" in build_performance_user_prompt(sample_growth_input).lower()
+    assert "next_actions" not in WEEKLY_DIGEST_SCHEMA["properties"]
+    assert "next_actions" not in WEEKLY_DIGEST_SCHEMA["required"]
+    assert PERFORMANCE_REPORT_SCHEMA["properties"]["agency_action_plan"]["maxItems"] == 3
 
 
 def test_baseline_performance_prompt_suppresses_prior_period_and_names_observed_window():
@@ -190,9 +194,6 @@ def test_growth_analyst_weekly_with_provider_response():
                         "conversion_insight": "Recorded customer actions are available in the current snapshot.",
                         "search_opportunity": None,
                         "local_insight": "GBP action metrics are unavailable from this connector.",
-                        "next_actions": [
-                            {"title": "Header optimization", "description": "Update H2 tags.", "impact_area": "SEO", "priority": "High", "evidence": "Configured page data"}
-                        ],
                         "overall_sentiment": "Growth",
                     })
                 }
@@ -203,7 +204,7 @@ def test_growth_analyst_weekly_with_provider_response():
     mock_http.post.return_value = mock_response
     weekly = GrowthAnalyst(api_key="sk-test-key", http_client=mock_http).analyze_weekly(sample_growth_input)
     assert weekly.biggest_win == "The configured acquisition snapshot is available."
-    assert len(weekly.next_actions) == 1
+    assert "next_actions" not in weekly.model_dump()
     response_format = mock_http.post.call_args.kwargs["json"]["response_format"]
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["strict"] is True
