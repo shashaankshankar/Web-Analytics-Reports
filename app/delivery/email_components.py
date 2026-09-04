@@ -3,23 +3,35 @@ import html
 import math
 import re
 from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Sequence
-from app.analytics.contracts import ActionItem, MetricDelta, PagePerformance, SourceAvailability, StrikingDistanceKeyword
+from typing import Any, List, Optional, Sequence
+from app.analytics.contracts import ActionItem, ConversionEventSummary, MetricDelta, SourceAvailability, StrikingDistanceKeyword
 
-# Editorial design tokens matching the updated design language
-COLOR_BG = "#F7F9FB"
+# "Ledger cards" design tokens: a white page, a dark branded KPI strip, numbered
+# hairline section labels, and cream cards. Client branding supplies primary,
+# secondary, and accent; everything below is the neutral scaffolding.
+COLOR_PAGE_BG = "#EDEBE6"
 COLOR_SURFACE = "#FFFFFF"
-COLOR_SURFACE_LOW = "#F2F4F6"
-COLOR_ON_SURFACE = "#191C1E"
-COLOR_SECONDARY = "#515F74"
-COLOR_SURFACE_VARIANT = "#E0E3E5"
-COLOR_TERTIARY = "#000000"
-COLOR_OUTLINE_VARIANT = "#C6C6CD"
+COLOR_HAIRLINE = "#E6E2DA"
+COLOR_TAG_BORDER = "#C9C5BC"
+COLOR_ON_SURFACE = "#1A1A1A"
+COLOR_BODY = "#3D3D42"
+COLOR_MUTED = "#6B6B70"
+COLOR_ZERO = "#9A968E"
+COLOR_WIN = "#1E7F4F"
+COLOR_WATCH = "#B3261E"
+# Used when a client's configured secondary colour is too dark to sit behind
+# dark body text; cards must stay readable whatever the brand palette is.
+COLOR_CARD_FALLBACK = "#F7F4EE"
 
-STYLE_CARD = "background: #FFFFFF; border: 1px solid #E0E3E5; border-radius: 2px; padding: 16px 14px; text-align: left;"
-STYLE_CALLOUT = "background: #F7F9FB; border: 1px solid #E0E3E5; border-radius: 2px; padding: 14px 16px;"
-FONT_FAMILY_MAIN = "'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-FONT_FAMILY_SERIF = "'Source Serif 4', Georgia, 'Times New Roman', serif"
+# Email-safe system stacks only: no webfont request survives every client.
+FONT_FAMILY_MAIN = "'Helvetica Neue', Helvetica, Arial, sans-serif"
+FONT_FAMILY_SERIF = "Georgia, 'Times New Roman', serif"
+
+SECTION_LABEL_REPORT_DELIVERY = "Analytics Report Delivery"
+SECTION_LABEL_WEBSITE_INQUIRY = "Website Inquiry Delivery"
+
+_TABLE = 'role="presentation" cellpadding="0" cellspacing="0" border="0"'
+
 
 def is_light_color(hex_str: str) -> bool:
     h = hex_str.lstrip('#')
@@ -31,74 +43,283 @@ def is_light_color(hex_str: str) -> bool:
     except Exception:
         return False
 
-def render_kpi_card(metric: MetricDelta, primary_color: str = '#000000', accent_color: str = '#C6A15B') -> str:
-    """Render a clean, editorial KPI card matching the design language."""
+
+def card_surface(secondary_color: str) -> str:
+    """Card background derived from client branding, kept light enough to read."""
+    return secondary_color if is_light_color(secondary_color) else COLOR_CARD_FALLBACK
+
+
+def header_text_colors(primary_color: str) -> tuple[str, str]:
+    """Return (text, muted) colours legible on the branded KPI strip."""
+    if is_light_color(primary_color):
+        return COLOR_ON_SURFACE, COLOR_MUTED
+    return "#FFFFFF", "#B8B3A8"
+
+
+def format_metric_value(metric: MetricDelta) -> str:
     if metric.current_value is None:
-        val_str = 'Not available'
-    elif metric.unit == 'percentage':
-        val_str = f'{metric.current_value:.1f}%'
-    elif metric.unit == 'currency':
-        val_str = f'${metric.current_value:,.2f}'
-    else:
-        val_str = f'{int(metric.current_value):,}'
+        return 'Not available'
+    if metric.unit == 'percentage':
+        return f'{metric.current_value:.1f}%'
+    if metric.unit == 'currency':
+        return f'${metric.current_value:,.2f}'
+    return f'{int(metric.current_value):,}'
 
-    if metric.direction == 'up':
-        arrow = '&#8593;'
-        badge_color = '#16A34A'
-    elif metric.direction == 'down':
-        arrow = '&#8595;'
-        badge_color = '#BA1A1A'
-    else:
-        arrow = '&rarr;'
-        badge_color = '#515F74'
 
-    val_color = primary_color if primary_color else '#191C1E'
-
+def _delta_parts(metric: MetricDelta) -> tuple[str, str]:
+    """Return (arrow, label) for a metric's change, without inventing a comparison."""
+    if metric.prior_value is None:
+        return '', 'baseline'
     if metric.is_percentage_rate and metric.percentage_points_change is not None:
-        pct_str = f'{metric.percentage_points_change:+.1f}% pts'
+        magnitude = f'{abs(metric.percentage_points_change):.1f} pts'
     elif metric.percentage_change is not None:
-        pct_str = f'{metric.percentage_change:+.1f}%'
-    elif metric.prior_value is None:
-        arrow = ''
-        badge_color = '#515F74'
-        pct_str = 'baseline'
+        magnitude = f'{abs(metric.percentage_change):.1f}%'
     else:
-        pct_str = 'stable'
-
-    disp_name = html.escape(metric.display_name)
-    return f'''
-    <div style="background: #FFFFFF; border: 1px solid #E0E3E5; border-radius: 2px; padding: 16px 14px; text-align: left; height: 100%; box-sizing: border-box;">
-      <div style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #515F74; font-weight: 700; margin-bottom: 8px;">{disp_name}</div>
-      <div style="font-family: {FONT_FAMILY_SERIF}; font-size: 26px; font-weight: 600; color: {val_color}; letter-spacing: -0.02em; margin-bottom: 8px; line-height: 1.1;">{val_str}</div>
-      <div style="font-family: {FONT_FAMILY_MAIN}; font-size: 12px; font-weight: 600; color: {badge_color}; letter-spacing: 0.02em;">
-        <span style="font-size: 13px; font-weight: bold; vertical-align: baseline;">{arrow}</span> {pct_str}
-      </div>
-    </div>
-    '''
+        return '&rarr;', 'stable'
+    if metric.direction == 'up':
+        return '&#9650;', magnitude
+    if metric.direction == 'down':
+        return '&#9660;', magnitude
+    return '&rarr;', magnitude
 
 
-def render_goals_block(
-    goals: Sequence[str],
-    primary_color: str = '#000000',
-    accent_color: str = '#C6A15B',
+def _delta_chip_colors(direction: str, has_prior: bool, on_light: bool) -> tuple[str, str]:
+    if not has_prior or direction not in {'up', 'down'}:
+        return ('#E6E2DA', COLOR_MUTED) if on_light else ('#2A2A2C', '#B8B3A8')
+    if direction == 'up':
+        return ('#DCF0E4', '#14603A') if on_light else ('#1C3A2A', '#7FD6A3')
+    return ('#FBE2DF', '#93221B') if on_light else ('#3F1F1D', '#F2A19A')
+
+
+def render_delta_chip(metric: MetricDelta, primary_color: str) -> str:
+    """A small filled chip carrying the period-over-period change."""
+    on_light = is_light_color(primary_color)
+    arrow, label = _delta_parts(metric)
+    bg, fg = _delta_chip_colors(metric.direction, metric.prior_value is not None, on_light)
+    text = f'{arrow} {label}'.strip()
+    return (
+        f'<table {_TABLE} style="margin-top: 10px;"><tr>'
+        f'<td bgcolor="{bg}" style="background-color: {bg}; padding: 3px 8px; font-family: {FONT_FAMILY_MAIN}; '
+        f'font-size: 11px; font-weight: 600; color: {fg};">{text}</td>'
+        '</tr></table>'
+    )
+
+
+def render_kpi_cells(
+    metrics: Sequence[MetricDelta],
+    primary_color: str = '#0A0A0B',
+    *,
+    value_size: int = 36,
+    value_class: str = 'kpi-val',
 ) -> str:
-    """Render the configured client goals without inventing or rewriting them."""
-    cleaned_goals = [goal.strip() for goal in goals if isinstance(goal, str) and goal.strip()]
-    if cleaned_goals:
-        goal_items = ''.join(
-            f'<li style="padding: 3px 0; color: #191C1E;">{html.escape(goal)}</li>'
-            for goal in cleaned_goals
+    """Render the KPI cells for the dark branded strip, one column per metric."""
+    if not metrics:
+        return ''
+    header_text, header_muted = header_text_colors(primary_color)
+    width = max(1, int(100 / len(metrics)))
+    cells = ''
+    for metric in metrics:
+        cells += (
+            f'<td class="kpi" width="{width}%" style="vertical-align: top; padding-right: 14px;">'
+            f'<div class="kpi-label" style="font-family: {FONT_FAMILY_MAIN}; font-size: 10px; letter-spacing: 0.12em; '
+            f'text-transform: uppercase; color: {header_muted}; padding-bottom: 8px;">{html.escape(metric.display_name)}</div>'
+            f'<div class="{value_class}" style="font-family: {FONT_FAMILY_MAIN}; font-size: {value_size}px; '
+            f'line-height: {value_size}px; font-weight: 600; letter-spacing: -1px; color: {header_text};">{format_metric_value(metric)}</div>'
+            f'{render_delta_chip(metric, primary_color)}'
+            '</td>'
         )
-    else:
-        goal_items = '<li style="padding: 3px 0; color: #515F74;">No specific client goals are configured.</li>'
+    return cells
 
-    return f'''
-    <div style="background: #F7F9FB; border: 1px solid #E0E3E5; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 14px 16px;">
-      <ol style="margin: 0; padding-left: 22px; font-family: {FONT_FAMILY_MAIN}; font-size: 13.5px; line-height: 1.5;">
-        {goal_items}
-      </ol>
-    </div>
-    '''
+
+def render_section_label(number: int, label: str, accent_color: str, tag: Optional[str] = None) -> str:
+    """A numbered hairline section marker; the rule fills the remaining width."""
+    tag_cell = ''
+    if tag:
+        tag_cell = (
+            '<td style="padding-left: 10px; white-space: nowrap;">'
+            f'<span style="display: inline-block; border: 1px solid {COLOR_TAG_BORDER}; padding: 3px 8px; '
+            f'font-family: {FONT_FAMILY_MAIN}; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; '
+            f'color: {COLOR_MUTED};">{html.escape(tag)}</span></td>'
+        )
+    return (
+        f'<table {_TABLE} width="100%"><tr>'
+        f'<td width="22" style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; font-weight: 700; '
+        f'color: {accent_color}; white-space: nowrap; padding-right: 10px;">{number:02d}</td>'
+        f'<td style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; '
+        f'text-transform: uppercase; color: {COLOR_MUTED}; white-space: nowrap; padding-right: 10px;">{label}</td>'
+        '<td width="100%" style="vertical-align: middle;">'
+        f'<div style="border-top: 1px solid {COLOR_HAIRLINE}; font-size: 0; line-height: 0;">&nbsp;</div></td>'
+        f'{tag_cell}'
+        '</tr></table>'
+    )
+
+
+_STATUS_COLORS = {
+    'win': (COLOR_WIN, COLOR_WIN),
+    'watch': (COLOR_WATCH, COLOR_WATCH),
+}
+
+
+def render_finding_card(
+    label: str,
+    body: str,
+    secondary_color: str,
+    *,
+    status: str = 'neutral',
+    accent_color: str = '#C6A15B',
+    spaced: bool = True,
+) -> str:
+    """One cream card: a status dot, a plain-English label, and the narrative body."""
+    dot_color, label_color = _STATUS_COLORS.get(status, (accent_color, COLOR_MUTED))
+    surface = card_surface(secondary_color)
+    margin = 'margin-bottom: 10px;' if spaced else ''
+    return (
+        f'<table {_TABLE} width="100%" bgcolor="{surface}" style="background-color: {surface}; {margin}">'
+        '<tr><td style="padding: 18px 20px;">'
+        f'<table {_TABLE}><tr>'
+        '<td width="8" style="vertical-align: middle;">'
+        f'<div style="width: 8px; height: 8px; border-radius: 4px; background-color: {dot_color}; font-size: 0; line-height: 0;">&nbsp;</div></td>'
+        f'<td style="padding-left: 8px; font-family: {FONT_FAMILY_MAIN}; font-size: 11px; font-weight: 700; '
+        f'letter-spacing: 0.1em; text-transform: uppercase; color: {label_color};">{label}</td>'
+        '</tr></table>'
+        f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 13.5px; line-height: 21px; color: {COLOR_BODY}; '
+        f'padding-top: 10px;">{html.escape(body)}</div>'
+        '</td></tr></table>'
+    )
+
+
+def render_goal_pills(goals: Sequence[str]) -> str:
+    """Render configured client goals as outlined pills without rewriting them."""
+    cleaned = [goal.strip() for goal in goals if isinstance(goal, str) and goal.strip()]
+    if not cleaned:
+        return (
+            f'<span style="display: inline-block; border: 1px solid {COLOR_HAIRLINE}; padding: 6px 12px; '
+            f'margin: 0 6px 6px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: {COLOR_MUTED};">'
+            'No specific client goals are configured.</span>'
+        )
+    return ''.join(
+        f'<span style="display: inline-block; border: 1px solid {COLOR_HAIRLINE}; padding: 6px 12px; '
+        f'margin: 0 6px 6px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: {COLOR_ON_SURFACE};">'
+        f'{html.escape(goal)}</span>'
+        for goal in cleaned
+    )
+
+
+def render_bar_rows(
+    rows: Sequence[tuple[str, Optional[int]]],
+    bar_color: str,
+    secondary_color: str,
+) -> str:
+    """Horizontal bars scaled to the largest observed value in the set."""
+    usable = [(label, value) for label, value in rows if value is not None]
+    if not usable:
+        return ''
+    peak = max(value for _, value in usable)
+    track = card_surface(secondary_color)
+    out = ''
+    for label, value in rows:
+        has_value = value is not None and value > 0
+        text_color = COLOR_ON_SURFACE if has_value else COLOR_ZERO
+        percent = int(round(value / peak * 100)) if has_value and peak > 0 else 0
+        if percent > 0:
+            fill = (
+                f'<table {_TABLE} width="100%" bgcolor="{track}" style="background-color: {track};"><tr>'
+                f'<td width="{percent}%" bgcolor="{bar_color}" style="background-color: {bar_color}; height: 10px; font-size: 0; line-height: 0;">&nbsp;</td>'
+                '<td style="height: 10px; font-size: 0; line-height: 0;">&nbsp;</td>'
+                '</tr></table>'
+            )
+        else:
+            fill = (
+                f'<div style="background-color: {track}; height: 10px; font-size: 0; line-height: 0;">&nbsp;</div>'
+            )
+        display_value = f'{value:,}' if value is not None else 'n/a'
+        out += (
+            '<tr>'
+            f'<td width="90" style="padding: 0 10px 8px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 12.5px; color: {text_color};">{html.escape(label)}</td>'
+            f'<td style="padding: 0 0 8px 0;">{fill}</td>'
+            f'<td width="38" align="right" style="padding: 0 0 8px 10px; font-family: {FONT_FAMILY_MAIN}; '
+            f'font-size: 12.5px; font-weight: 600; color: {text_color};">{display_value}</td>'
+            '</tr>'
+        )
+    return out
+
+
+def render_bar_group(
+    heading: str,
+    rows: Sequence[tuple[str, Optional[int]]],
+    bar_color: str,
+    secondary_color: str,
+) -> str:
+    body = render_bar_rows(rows, bar_color, secondary_color)
+    if not body:
+        return ''
+    return (
+        f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 10.5px; letter-spacing: 0.1em; '
+        f'text-transform: uppercase; color: {COLOR_MUTED}; padding-bottom: 10px;">{heading}</div>'
+        f'<table {_TABLE} width="100%">{body}</table>'
+    )
+
+
+def render_stat_tiles(events: Sequence[ConversionEventSummary], secondary_color: str) -> str:
+    """One tile per recorded conversion event, with its change when a prior exists."""
+    if not events:
+        return ''
+    surface = card_surface(secondary_color)
+    width = max(1, int(100 / len(events)))
+    out = ''
+    for event in events:
+        value = f'{event.current_count:,}' if event.current_count is not None else 'Not available'
+        if event.prior_count is None:
+            delta_html = (
+                f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; font-weight: 600; '
+                f'color: {COLOR_MUTED}; padding-top: 6px;">baseline</div>'
+            )
+        elif event.percentage_change is not None:
+            if event.direction == 'up':
+                arrow, color = '&#9650;', COLOR_WIN
+            elif event.direction == 'down':
+                arrow, color = '&#9660;', COLOR_WATCH
+            else:
+                arrow, color = '&rarr;', COLOR_MUTED
+            delta_html = (
+                f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; font-weight: 600; '
+                f'color: {color}; padding-top: 6px;">{arrow} {abs(event.percentage_change):.1f}% vs prior</div>'
+            )
+        else:
+            delta_html = (
+                f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 11px; font-weight: 600; '
+                f'color: {COLOR_MUTED}; padding-top: 6px;">{event.prior_count:,} prior</div>'
+            )
+        out += (
+            f'<td class="tile" width="{width}%" style="vertical-align: top; padding: 0 5px 10px 0;">'
+            f'<table {_TABLE} width="100%" bgcolor="{surface}" style="background-color: {surface};">'
+            '<tr><td style="padding: 14px 16px;">'
+            f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 24px; line-height: 24px; font-weight: 600; '
+            f'letter-spacing: -0.5px; color: {COLOR_ON_SURFACE};">{value}</div>'
+            f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; line-height: 16px; color: {COLOR_MUTED}; '
+            f'padding-top: 8px;">{html.escape(event.display_name)}</div>'
+            f'{delta_html}'
+            '</td></tr></table></td>'
+        )
+    return out
+
+
+def render_ledger_table(headers: Sequence[tuple[str, str, str]], rows: Sequence[Sequence[tuple[str, str, str]]]) -> str:
+    """A ruled table. Each cell is (text, align, extra_style); text must be pre-escaped."""
+    head = ''.join(
+        f'<th align="{align}" style="padding: 8px 0; border-bottom: 1px solid {COLOR_ON_SURFACE}; '
+        f'font-family: {FONT_FAMILY_MAIN}; font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; '
+        f'text-transform: uppercase; {extra}">{text}</th>'
+        for text, align, extra in headers
+    )
+    body = ''
+    for row in rows:
+        body += '<tr>' + ''.join(
+            f'<td align="{align}" style="padding: 11px 0; border-bottom: 1px solid {COLOR_HAIRLINE}; '
+            f'font-family: {FONT_FAMILY_MAIN}; font-size: 13px; {extra}">{text}</td>'
+            for text, align, extra in row
+        ) + '</tr>'
+    return f'<table {_TABLE} width="100%" style="margin-top: 16px;"><tr>{head}</tr>{body}</table>'
 
 
 _ACTION_PRIORITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
@@ -116,6 +337,48 @@ def select_strongest_actions(actions: Sequence[ActionItem], limit: int) -> List[
         ),
     )
     return [action for _, action in ranked_actions[:limit]]
+
+
+def render_action_row(action: ActionItem, is_last: bool = False) -> str:
+    """A checkbox, the action copy, and an outlined priority tag on one ruled row."""
+    raw_priority = (action.priority or '').strip().lower()
+    if raw_priority == 'high':
+        tag_label, tag_color = 'Top Priority', COLOR_WATCH
+    elif raw_priority == 'medium':
+        tag_label, tag_color = 'Recommended Next Step', COLOR_MUTED
+    else:
+        tag_label, tag_color = 'Standard Optimization', COLOR_MUTED
+    tag_border = tag_color if raw_priority == 'high' else COLOR_TAG_BORDER
+    rule = '' if is_last else f'border-bottom: 1px solid {COLOR_HAIRLINE};'
+    return (
+        '<tr>'
+        f'<td width="22" style="vertical-align: top; padding: 18px 0 16px 0; {rule}">'
+        f'<div style="width: 14px; height: 14px; border: 1.5px solid {COLOR_ON_SURFACE}; border-radius: 2px; font-size: 0; line-height: 0;">&nbsp;</div></td>'
+        f'<td style="vertical-align: top; padding: 16px 14px; {rule}">'
+        f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 14px; line-height: 20px; font-weight: 600; '
+        f'color: {COLOR_ON_SURFACE}; padding-bottom: 3px;">{html.escape(action.title)}</div>'
+        f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 13px; line-height: 20px; color: {COLOR_MUTED};">{html.escape(action.description)}</div></td>'
+        f'<td width="132" align="right" style="vertical-align: top; padding: 16px 0; {rule} white-space: nowrap;">'
+        f'<span style="display: inline-block; border: 1px solid {tag_border}; padding: 3px 8px; '
+        f'font-family: {FONT_FAMILY_MAIN}; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; '
+        f'text-transform: uppercase; color: {tag_color};">{tag_label}</span></td>'
+        '</tr>'
+    )
+
+
+def render_note_band(text: str, accent_color: str, label: str = 'Note') -> str:
+    """A full-width band for report-mode caveats, in place of a boxed callout.
+
+    The caller owns the band's background so it can match the surrounding row.
+    """
+    return (
+        f'<table {_TABLE} width="100%"><tr>'
+        f'<td width="40" style="vertical-align: top; padding-top: 2px; font-family: {FONT_FAMILY_MAIN}; font-size: 11px; '
+        f'font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: {accent_color};">{label}</td>'
+        f'<td style="padding-left: 14px; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; line-height: 20px; '
+        f'color: {COLOR_BODY};">{text}</td>'
+        '</tr></table>'
+    )
 
 
 # Only these provider aggregates are suitable for the client-facing report.
@@ -311,126 +574,86 @@ def _client_delivery_note(status: str, *, website: bool = False) -> str:
     )
 
 
-def _render_delivery_rows(rows: Sequence[tuple[str, str]], *, primary_color: str) -> str:
-    return ''.join(
-        f'<tr style="border-bottom: 1px solid rgba(198, 198, 205, 0.3);">'
-        f'<td style="padding: 9px 10px; color: #191C1E; font-family: {FONT_FAMILY_MAIN}; font-size: 13px;">{html.escape(label)}</td>'
-        f'<td style="padding: 9px 10px; text-align: right; color: {primary_color}; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; font-weight: 600;">{html.escape(value)}</td>'
-        '</tr>'
-        for label, value in rows
+def _commentary(text: str, *, top: int = 12, bottom: int = 0) -> str:
+    return (
+        f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 13.5px; line-height: 22px; color: {COLOR_BODY}; '
+        f'padding: {top}px 0 {bottom}px 0;">{text}</div>'
     )
 
 
-def render_report_delivery_block(
-    delivery: Any,
-    primary_color: str = '#000000',
-    accent_color: str = '#C6A15B',
-) -> str:
-    """Render the client-safe analytics report email-delivery section."""
+def render_report_delivery_block(delivery: Any, primary_color: str = '#0A0A0B', accent_color: str = '#C6A15B') -> str:
+    """Client-safe report email-delivery body. The caller supplies the section label."""
     if not has_report_delivery_data(delivery):
         return ''
     rows = report_delivery_metric_rows(delivery)
-    status = _delivery_status(delivery)
-    rows_html = _render_delivery_rows(rows, primary_color=primary_color)
-    if not rows_html:
-        rows_html = (
-            '<tr><td colspan="2" style="padding: 10px; color: #515F74; '
-            f'font-family: {FONT_FAMILY_MAIN}; font-size: 13px;">Not available</td></tr>'
-        )
-    status_note = _client_delivery_note(status)
-    return f'''
-    <div style="background: #FFFFFF; border: 1px solid #E0E3E5; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 16px 18px;">
-      <h2 style="margin: 0 0 6px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 19px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Analytics Report Delivery</h2>
-      <p style="margin: 0 0 12px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: #515F74; line-height: 1.5;">Email delivery health for this analytics report. {html.escape(status_note)}</p>
-      <table role="presentation" style="width: 100%; border-collapse: collapse; border: 1px solid #E0E3E5;">
-        {rows_html}
-      </table>
-      <p style="margin: 12px 0 0 0; font-family: {FONT_FAMILY_MAIN}; font-size: 12px; color: #515F74; line-height: 1.5;">Open and click figures are estimated tracking signals, not inbox confirmation.</p>
-    </div>
-    '''
+    status_note = _client_delivery_note(_delivery_status(delivery))
+    intro = _commentary(f'Email delivery health for this analytics report. {html.escape(status_note)}')
+    if not rows:
+        return intro + _commentary('Not available.', top=0, bottom=0)
+    table = render_ledger_table(
+        [('Metric', 'left', f'color: {COLOR_MUTED};'), ('Value', 'right', f'color: {COLOR_MUTED};')],
+        [
+            [
+                (html.escape(label), 'left', f'color: {COLOR_ON_SURFACE}; font-weight: 600;'),
+                (html.escape(value), 'right', f'color: {COLOR_ON_SURFACE};'),
+            ]
+            for label, value in rows
+        ],
+    )
+    footnote = (
+        f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; line-height: 18px; color: {COLOR_MUTED}; '
+        'padding-top: 12px;">Open and click figures are estimated tracking signals, not inbox confirmation.</div>'
+    )
+    return intro + table + footnote
 
 
-def render_website_inquiry_delivery_block(
-    delivery: Any,
-    primary_color: str = '#000000',
-    accent_color: str = '#C6A15B',
-) -> str:
-    """Render technical website-inquiry delivery health without lead claims."""
+def render_website_inquiry_delivery_block(delivery: Any, primary_color: str = '#0A0A0B', accent_color: str = '#C6A15B') -> str:
+    """Technical website-inquiry delivery health, without lead claims."""
     if not has_website_inquiry_data(delivery):
         return ''
     rows = website_inquiry_metric_rows(delivery)
-    status = _delivery_status(delivery)
-    rows_html = ''.join(
-        f'<tr style="border-bottom: 1px solid rgba(198, 198, 205, 0.3);">'
-        f'<td style="padding: 9px 10px; color: #191C1E; font-family: {FONT_FAMILY_MAIN}; font-size: 13px;">{html.escape(label)}</td>'
-        f'<td style="padding: 9px 10px; text-align: right; color: {primary_color}; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; font-weight: 600;">{html.escape(current)}</td>'
-        f'<td style="padding: 9px 10px; text-align: right; color: #515F74; font-family: {FONT_FAMILY_MAIN}; font-size: 13px;">{html.escape(prior)}</td>'
-        '</tr>'
-        for label, current, prior in rows
+    status_note = _client_delivery_note(_delivery_status(delivery), website=True)
+    intro = _commentary(
+        f'Technical email-delivery health for website inquiry notifications. {html.escape(status_note)}'
     )
-    if not rows_html:
-        rows_html = (
-            '<tr><td colspan="3" style="padding: 10px; color: #515F74; '
-            f'font-family: {FONT_FAMILY_MAIN}; font-size: 13px;">Not available</td></tr>'
-        )
-    status_note = _client_delivery_note(status, website=True)
-    return f'''
-    <div style="background: #FFFFFF; border: 1px solid #E0E3E5; border-left: 4px solid {accent_color}; border-radius: 2px; padding: 16px 18px;">
-      <h2 style="margin: 0 0 6px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 19px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Website Inquiry Delivery</h2>
-      <p style="margin: 0 0 12px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 13px; color: #515F74; line-height: 1.5;">Technical email-delivery health for website inquiry notifications. {html.escape(status_note)}</p>
-      <table role="presentation" style="width: 100%; border-collapse: collapse; border: 1px solid #E0E3E5;">
-        <tr style="background: #F7F9FB; border-bottom: 1px solid #E0E3E5;">
-          <th style="padding: 8px 10px; text-align: left; color: #515F74; font-family: {FONT_FAMILY_MAIN}; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;">Metric</th>
-          <th style="padding: 8px 10px; text-align: right; color: #515F74; font-family: {FONT_FAMILY_MAIN}; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;">This period</th>
-          <th style="padding: 8px 10px; text-align: right; color: #515F74; font-family: {FONT_FAMILY_MAIN}; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;">Prior period</th>
-        </tr>
-        {rows_html}
-      </table>
-    </div>
-    '''
+    if not rows:
+        return intro + _commentary('Not available.', top=0, bottom=0)
+    table = render_ledger_table(
+        [
+            ('Metric', 'left', f'color: {COLOR_MUTED};'),
+            ('This period', 'right', f'color: {COLOR_MUTED};'),
+            ('Prior period', 'right', f'color: {COLOR_MUTED};'),
+        ],
+        [
+            [
+                (html.escape(label), 'left', f'color: {COLOR_ON_SURFACE}; font-weight: 600;'),
+                (html.escape(current), 'right', f'color: {COLOR_ON_SURFACE};'),
+                (html.escape(prior), 'right', f'color: {COLOR_MUTED};'),
+            ]
+            for label, current, prior in rows
+        ],
+    )
+    return intro + table
 
-def render_action_card(
-    action: ActionItem,
-    primary_color: str = '#000000',
-    accent_color: str = '#C6A15B',
-    is_last: bool = False,
-    responsive_mobile: bool = False,
-) -> str:
-    """Render a prioritized strategic action row item matching client-friendly language."""
-    title = html.escape(action.title)
-    desc = html.escape(action.description)
-    raw_priority = (action.priority or '').strip().lower()
-    border_bottom = 'border-bottom: 1px solid rgba(198, 198, 205, 0.3);' if not is_last else ''
 
-    if raw_priority == 'high':
-        priority_label = 'Top Priority'
-        p_badge = 'background: #FFDAD6; color: #93000A;'
-    elif raw_priority == 'medium':
-        priority_label = 'Recommended Next Step'
-        p_badge = 'background: #D5E3FD; color: #57657B;'
-    else:
-        priority_label = 'Standard Optimization'
-        p_badge = 'background: #E0E3E5; color: #45464D;'
-
-    copy_class = 'weekly-action-copy' if responsive_mobile else ''
-    badge_class = 'weekly-action-badge' if responsive_mobile else ''
-    check_class = 'weekly-action-check' if responsive_mobile else ''
-
-    return f'''
-    <div style="padding: 14px 16px; {border_bottom}">
-      <table role="presentation" style="width: 100%; border-collapse: collapse;">
-        <tr>
-          <td class="{check_class}" style="width: 24px; vertical-align: top; padding-top: 2px; padding-right: 12px;">
-            <div style="width: 16px; height: 16px; border: 1.5px solid {primary_color if primary_color else '#76777D'}; border-radius: 2px; background: #FFFFFF;"></div>
-          </td>
-          <td class="{copy_class}" style="vertical-align: middle;">
-            <div style="font-family: {FONT_FAMILY_MAIN}; color: #191C1E; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; margin-bottom: 2px;">{title}</div>
-            <div style="font-family: {FONT_FAMILY_MAIN}; color: #515F74; font-size: 13px; line-height: 1.45;">{desc}</div>
-          </td>
-          <td class="{badge_class}" style="text-align: right; vertical-align: middle; white-space: nowrap; padding-left: 12px;">
-            <span style="{p_badge} padding: 3px 8px; border-radius: 2px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; font-family: {FONT_FAMILY_MAIN}; display: inline-block;">{priority_label}</span>
-          </td>
-        </tr>
-      </table>
-    </div>
-    '''
+def render_keyword_table(keywords: Sequence[StrikingDistanceKeyword], accent_color: str, scrub) -> str:
+    """Striking-distance search terms, ranked by the precomputed opportunity score."""
+    if not keywords:
+        return ''
+    return render_ledger_table(
+        [
+            ('Search term', 'left', f'color: {COLOR_MUTED};'),
+            ('Search views', 'right', f'color: {COLOR_MUTED};'),
+            ('Google rank', 'right', f'color: {COLOR_MUTED};'),
+            ('Opportunity', 'right', f'color: {accent_color};'),
+        ],
+        [
+            [
+                (html.escape(scrub(keyword.query)), 'left', f'color: {COLOR_ON_SURFACE}; font-weight: 600;'),
+                (f'{keyword.impressions:,}', 'right', f'color: {COLOR_MUTED};'),
+                (f'{keyword.position:.1f}', 'right', f'color: {COLOR_ON_SURFACE}; font-weight: 600;'),
+                (f'{keyword.opportunity_score:.0f}', 'right', f'color: {accent_color}; font-weight: 700;'),
+            ]
+            for keyword in keywords
+        ],
+    )

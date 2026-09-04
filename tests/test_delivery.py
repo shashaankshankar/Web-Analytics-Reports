@@ -38,7 +38,12 @@ def test_render_growth_email_html(approved_full_briefing):
     assert "Area to Improve" in html
     assert "The configured search topic is available for future prioritization." in html
     assert "High-Opportunity Google Searches" in html
-    assert "font-size: 14px; color: #45464D; line-height: 1.6; background: #F7F9FB" in html
+    # Ledger layout: a branded KPI strip over numbered, hairline-ruled sections.
+    assert "background-color: #1E3A8A; padding: 30px 36px 28px 36px" in html
+    assert ">01</td>" in html and ">02</td>" in html
+    # A mid-tone brand secondary must not become a card background behind dark text.
+    assert "background-color: #3B82F6" not in html
+    assert "background-color: #F7F4EE" in html
     assert "Key searches where your website currently ranks on page 2" not in html
     assert "Review Configured Page Data" in html
     assert "Current Goals" in html
@@ -129,7 +134,9 @@ def test_render_weekly_digest_html(approved_full_briefing):
     )
     html = render_weekly_digest_html(approved_full_briefing)
     assert "Weekly Growth Digest" in html
-    assert "Week at a Glance" in html
+    # Headline metrics live in the branded KPI strip rather than a card grid.
+    assert "Total Sessions" in html
+    assert 'class="kpi-val"' in html
     assert "The current weekly source snapshot is available." in html
     assert "The configured acquisition channels are available." in html
     assert "The current snapshot recorded one consultation inquiry" in html
@@ -139,7 +146,9 @@ def test_render_weekly_digest_html(approved_full_briefing):
     assert "Review Configured Page Data" not in html
     assert "Current Goals" in html
     assert "Improve qualified inquiries" in html
-    assert ".weekly-brand-badge" in html
+    # KPIs scale down rather than stacking, so they stay on one row on phones.
+    assert ".kpi-val { font-size: 28px !important" in html
+    assert ".kpi { display: block" not in html
 
 
 def test_delivery_sections_are_separate_redacted_surfaces(approved_full_briefing):
