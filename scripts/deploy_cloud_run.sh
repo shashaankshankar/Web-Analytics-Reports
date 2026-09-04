@@ -94,7 +94,7 @@ case "$service_kind" in
       --no-allow-unauthenticated
       --service-account="$REPORT_SERVICE_ACCOUNT"
       --set-env-vars=REPORT_DELIVERY_ENABLED=true,REPORT_ALLOWED_CLIENTS=thehouseofdental
-      --set-secrets=OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest,RESEND_FROM_EMAIL=RESEND_FROM_EMAIL:latest
+      --set-secrets=OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,RESEND_API_KEY=RESEND_API_KEY:latest,RESEND_FROM_EMAIL=RESEND_FROM_EMAIL:latest,WEBSITE_RESEND_API_KEY=thehouseofdental-website-resend-key:latest
     )
     if [[ "$with_gbp_credentials" == true ]]; then
       [[ "$dry_run" == true ]] || {

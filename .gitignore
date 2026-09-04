@@ -7,3 +7,4 @@ __pycache__/
 .playwright-cli/
 output/
 tmp/
+.DS_Store
