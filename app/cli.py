@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import os
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -12,11 +13,20 @@ from typing import Optional
 from app.ai.agent import ExploratoryGrowthAgent
 from app.ai.analyst import GrowthAnalyst
 from app.ai.tools import MultiSourceAnalyticsToolkit
-from app.analytics.contracts import FullGrowthBriefing, REPORT_SPECS, ReportMode, ReportType, SourceAvailability
+from app.analytics.contracts import (
+    FullGrowthBriefing,
+    REPORT_SPECS,
+    ReportDeliveryMetrics,
+    ReportMode,
+    ReportType,
+    SourceAvailability,
+    WebsiteInquiryMetrics,
+)
 from app.analytics.metrics import aggregate_growth_metrics, calculate_date_ranges
 from app.analytics.periods import ReportWindowError, coverage_from_ga4, select_report_window
 from app.config import (
     ClientConfig,
+    Settings,
     is_production_dispatch_allowed,
     list_available_clients,
     load_client_config,
@@ -24,12 +34,16 @@ from app.config import (
 )
 from app.delivery.audit_template import render_exploration_audit_html
 from app.delivery.email_template import render_growth_email_html
+from app.delivery.internal_diagnostics import AlertSeverity, evaluate_delivery_diagnostics
 from app.delivery.pdf_builder import build_executive_pdf
+from app.delivery.report_store import SentReportStore
 from app.delivery.sender import ResendEmailSender, is_valid_email
 from app.delivery.weekly_digest_template import render_weekly_digest_html
 from app.sources.ga4 import GA4Extractor
 from app.sources.gbp import GoogleBusinessProfileExtractor
 from app.sources.gsc import SearchConsoleExtractor
+from app.sources.resend_email_metrics import ResendEmailMetricsSource
+from app.sources.website_inquiries import WebsiteInquiryMetricsSource
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +53,63 @@ VERIFIER_FAILURE_STATUSES = {
     "provider_error",
     "invalid_response",
 }
+
+
+def _persist_dispatch_provenance(
+    *,
+    dispatch: dict,
+    client: ClientConfig,
+    report_type: str,
+    observation_start_date: str,
+    observation_end_date: str,
+    delivery_kind: str,
+    has_attachment: bool,
+    recipient_role: str = "client",
+    cloud_run_revision: str | None = None,
+    idempotency_key: str = "",
+) -> None:
+    """Persist only safe provenance after Resend accepts an internal email."""
+    if dispatch.get("status") != "sent":
+        return
+    resend_email_id = dispatch.get("id")
+    if not isinstance(resend_email_id, str) or not resend_email_id.strip():
+        raise RuntimeError("Email was accepted but no provider ID was available for delivery tracking.")
+    settings = Settings.from_env()
+    if not settings.report_delivery_store_path:
+        logger.warning(
+            "REPORT_EVENT report_delivery_tracking_unconfigured client_id=%s report_type=%s",
+            client.client_id,
+            report_type,
+        )
+        return
+    revision = os.getenv("K_REVISION", "") if cloud_run_revision is None else str(cloud_run_revision)
+    try:
+        SentReportStore(settings.report_delivery_store_path).record_sent_report(
+            resend_email_id=resend_email_id,
+            client_id=client.client_id,
+            report_type=report_type,
+            reporting_window_start=observation_start_date,
+            reporting_window_end=observation_end_date,
+            timezone_name=client.timezone,
+            sent_at=datetime.now(timezone.utc),
+            recipient_role=recipient_role,
+            cloud_run_revision=revision,
+            idempotency_key=idempotency_key,
+            technical_metadata={
+                "delivery_kind": delivery_kind,
+                "has_attachment": has_attachment,
+                "provider_status": dispatch.get("status"),
+            },
+        )
+    except Exception as exc:
+        logger.exception(
+            "REPORT_EVENT report_delivery_tracking_failed client_id=%s report_type=%s",
+            client.client_id,
+            report_type,
+        )
+        raise RuntimeError(
+            "Email was accepted but delivery provenance could not be persisted; delivery metrics may be incomplete."
+        ) from exc
 
 
 def validate_pre_send_qa(
@@ -58,13 +129,18 @@ def validate_pre_send_qa(
     ga4_status = analytics.source_statuses.get("ga4", {})
     if isinstance(ga4_status, dict):
         ga4_status = ga4_status.get("status")
-    if ga4_status not in {None, SourceAvailability.AVAILABLE.value}:
-        issues.append("GA4 source is not available for the generated report.")
+    if ga4_status in {
+        SourceAvailability.ERROR.value,
+        SourceAvailability.UNAVAILABLE.value,
+        SourceAvailability.NOT_CONFIGURED.value,
+        SourceAvailability.EMPTY.value,
+    }:
+        issues.append("GA4 source did not provide a usable current summary for the generated report.")
 
     for metric in analytics.core_metrics:
-        if metric.current_value < 0 or (metric.prior_value is not None and metric.prior_value < 0):
+        if (metric.current_value is not None and metric.current_value < 0) or (metric.prior_value is not None and metric.prior_value < 0):
             issues.append(f"Negative metric value encountered in {metric.metric_name}.")
-        if metric.metric_name == "conversion_rate" and not 0.0 <= metric.current_value <= 100.0:
+        if metric.metric_name == "conversion_rate" and metric.current_value is not None and not 0.0 <= metric.current_value <= 100.0:
             issues.append(f"Conversion rate {metric.current_value}% out of valid [0, 100] bound.")
 
     if not briefing.company_name.strip():
@@ -94,9 +170,167 @@ def _combined_search_status(current: dict, prior: Optional[dict]) -> str:
         return SourceAvailability.UNAVAILABLE.value
     if statuses == {SourceAvailability.AVAILABLE.value}:
         return SourceAvailability.AVAILABLE.value
+    if SourceAvailability.PARTIAL.value in statuses:
+        return SourceAvailability.PARTIAL.value
+    if SourceAvailability.NOT_CONFIGURED.value in statuses:
+        return SourceAvailability.NOT_CONFIGURED.value
     if SourceAvailability.UNAVAILABLE.value in statuses:
         return SourceAvailability.UNAVAILABLE.value
     return SourceAvailability.EMPTY.value
+
+
+def _safe_report_delivery_metrics(
+    *,
+    client: ClientConfig,
+    report_type: ReportType,
+    start_date: str,
+    end_date: str,
+    reason: str,
+    status: SourceAvailability = SourceAvailability.ERROR,
+) -> ReportDeliveryMetrics:
+    """Build a redacted delivery result when the optional source cannot run."""
+    return ReportDeliveryMetrics(
+        status=status,
+        client_id=client.client_id,
+        report_type=report_type.value,
+        start_date=start_date,
+        end_date=end_date,
+        timezone=client.timezone,
+        reason=reason,
+    )
+
+
+def _safe_website_inquiry_metrics(
+    *,
+    client: ClientConfig,
+    reason: str,
+    status: SourceAvailability = SourceAvailability.ERROR,
+) -> WebsiteInquiryMetrics:
+    """Build a redacted website-inquiry result without exposing provider errors."""
+    return WebsiteInquiryMetrics(
+        status=status,
+        source=client.website_inquiry_metrics.aggregate_source or "website_inquiries",
+        credential_reference_configured=bool(client.website_inquiry_metrics.secret_manager_ref.strip()),
+        reason=reason,
+    )
+
+
+def _collect_delivery_metrics(
+    *,
+    client: ClientConfig,
+    report_type: ReportType,
+    start_date: str,
+    end_date: str,
+    report_delivery_source: object | None = None,
+    website_inquiry_source: object | None = None,
+) -> tuple[ReportDeliveryMetrics, WebsiteInquiryMetrics]:
+    """Collect optional delivery metrics while keeping failures non-fatal and safe."""
+    report_source = report_delivery_source
+    if report_source is None:
+        try:
+            report_source = ResendEmailMetricsSource.from_settings()
+        except Exception:
+            report_source = None
+
+    if report_source is None or not callable(getattr(report_source, "fetch_contract", None)):
+        report_delivery = _safe_report_delivery_metrics(
+            client=client,
+            report_type=report_type,
+            start_date=start_date,
+            end_date=end_date,
+            status=SourceAvailability.NOT_CONFIGURED,
+            reason="Report-delivery metrics are not configured.",
+        )
+    else:
+        try:
+            report_delivery = report_source.fetch_contract(
+                client.client_id,
+                start_date,
+                end_date,
+                client.timezone,
+                report_type=report_type.value,
+            )
+            if isinstance(report_delivery, dict):
+                report_delivery = ReportDeliveryMetrics.model_validate(report_delivery)
+            if not isinstance(report_delivery, ReportDeliveryMetrics):
+                raise ValueError
+        except Exception:
+            report_delivery = _safe_report_delivery_metrics(
+                client=client,
+                report_type=report_type,
+                start_date=start_date,
+                end_date=end_date,
+                reason="Report-delivery metrics are unavailable for this report window.",
+            )
+
+    website_source = website_inquiry_source
+    if website_source is None:
+        try:
+            website_source = WebsiteInquiryMetricsSource(client=client)
+        except Exception:
+            website_source = None
+
+    if website_source is None or not callable(getattr(website_source, "fetch_metrics", None)):
+        website_metrics = _safe_website_inquiry_metrics(
+            client=client,
+            status=SourceAvailability.NOT_CONFIGURED,
+            reason="Website inquiry delivery metrics are not configured.",
+        )
+    else:
+        try:
+            raw_website_metrics = website_source.fetch_metrics(
+                client.client_id,
+                start_date,
+                end_date,
+                client.timezone,
+            )
+            website_metrics = (
+                raw_website_metrics
+                if isinstance(raw_website_metrics, WebsiteInquiryMetrics)
+                else WebsiteInquiryMetrics.model_validate(raw_website_metrics)
+            )
+        except Exception:
+            website_metrics = _safe_website_inquiry_metrics(
+                client=client,
+                reason="Website inquiry delivery metrics are unavailable for this report window.",
+            )
+
+    logger.info(
+        "REPORT_EVENT delivery_metrics status=%s tracked_reports=%s website_inquiry_status=%s",
+        report_delivery.status.value,
+        report_delivery.tracked_report_count,
+        website_metrics.status.value,
+    )
+
+    diagnostics_result = evaluate_delivery_diagnostics(
+        report_metrics=report_delivery,
+        website_metrics=website_metrics,
+        config=client.website_inquiry_metrics,
+    )
+    for alert in diagnostics_result.alerts:
+        if alert.severity == AlertSeverity.CRITICAL:
+            logger.error(
+                "DELIVERY_DIAGNOSTIC_ALERT rule=%s category=%s message=%s",
+                alert.rule,
+                alert.category.value,
+                alert.message,
+            )
+        elif alert.severity == AlertSeverity.WARNING:
+            logger.warning(
+                "DELIVERY_DIAGNOSTIC_ALERT rule=%s category=%s message=%s",
+                alert.rule,
+                alert.category.value,
+                alert.message,
+            )
+        else:
+            logger.info(
+                "DELIVERY_DIAGNOSTIC_ALERT rule=%s category=%s message=%s",
+                alert.rule,
+                alert.category.value,
+                alert.message,
+            )
+
+    return report_delivery, website_metrics
 
 
 def generate_report(
@@ -111,6 +345,8 @@ def generate_report(
     reasoning_effort: Optional[str] = None,
     recipient_override: Optional[str] = None,
     test_send: bool = False,
+    report_delivery_source: object | None = None,
+    website_inquiry_source: object | None = None,
 ) -> FullGrowthBriefing:
     """Run the real-source growth reporting pipeline for one configured client."""
     if isinstance(report_type, str):
@@ -253,10 +489,14 @@ def generate_report(
     gsc_queries = gsc_current.get("rows", [])
     prior_gsc_queries = gsc_prior.get("rows", []) if gsc_prior else None
 
-    gbp_ext = GoogleBusinessProfileExtractor(
-        client.gbp_location_id,
-        account_id=client.gbp_account_id,
-    )
+    gbp_kwargs = {"account_id": client.gbp_account_id}
+    if client.gbp_public_place_id:
+        gbp_kwargs["public_place_id"] = client.gbp_public_place_id
+    if client.gbp_candidate_location_ids:
+        gbp_kwargs["candidate_location_ids"] = client.gbp_candidate_location_ids
+    if client.company_name:
+        gbp_kwargs["business_title"] = client.company_name
+    gbp_ext = GoogleBusinessProfileExtractor(client.gbp_location_id, **gbp_kwargs)
     gbp_data = gbp_ext.fetch_local_insights(observation_start_date, end_date, strict=False)
     gbp_prior = None
     if not baseline_mode:
@@ -320,6 +560,15 @@ def generate_report(
         ])),
     }
 
+    report_delivery_metrics, website_inquiry_metrics = _collect_delivery_metrics(
+        client=client,
+        report_type=rtype,
+        start_date=observation_start_date,
+        end_date=end_date,
+        report_delivery_source=report_delivery_source,
+        website_inquiry_source=website_inquiry_source,
+    )
+
     print("[*] Pre-processing & calculating metric deltas...")
     growth_input = aggregate_growth_metrics(
         client=client,
@@ -345,6 +594,7 @@ def generate_report(
         requested_comparison_end=date_plan.requested_comparison_end,
         comparison_suppressed=date_plan.comparison_suppressed,
         comparison_suppression_reason=date_plan.comparison_suppression_reason,
+        website_inquiry_metrics=website_inquiry_metrics,
     )
 
     print(f"[*] Running AI Growth Analyst synthesis ({rtype.value})...")
@@ -407,6 +657,7 @@ def generate_report(
         insights=insights,
         weekly_insights=weekly_insights,
         exploration_audit=exploration_audit,
+        report_delivery_metrics=report_delivery_metrics,
     )
 
     if rtype == ReportType.WEEKLY:
@@ -502,7 +753,19 @@ def generate_report(
             )
             if audit_dispatch.get("status") != "sent":
                 raise RuntimeError("Deep Insights audit email was not accepted; refusing to send the client report.")
-            print(f"[+] Deep Insights audit dispatch status: {audit_dispatch.get('status')} (ID: {audit_dispatch.get('id')})")
+            print(f"[+] Deep Insights audit dispatch status: {audit_dispatch.get('status')}")
+            _persist_dispatch_provenance(
+                dispatch=audit_dispatch,
+                client=client,
+                report_type="deep_insights_audit",
+                observation_start_date=observation_start_date,
+                observation_end_date=end_date,
+                delivery_kind="deep_insights_audit",
+                has_attachment=False,
+                recipient_role="agency_audit",
+                cloud_run_revision=os.getenv("K_REVISION", ""),
+                idempotency_key=audit_key,
+            )
 
         agency_cc = client.recipients.get("agency_cc")
         subject = (
@@ -528,7 +791,19 @@ def generate_report(
             cc_recipients=[agency_cc] if agency_cc else [],
             idempotency_key=idempotency_key,
         )
-        print(f"[+] Dispatch status: {dispatch.get('status')} (ID: {dispatch.get('id')})")
+        print(f"[+] Dispatch status: {dispatch.get('status')}")
+        _persist_dispatch_provenance(
+            dispatch=dispatch,
+            client=client,
+            report_type=rtype.value,
+            observation_start_date=observation_start_date,
+            observation_end_date=end_date,
+            delivery_kind="client_report",
+            has_attachment=pdf_bytes is not None,
+            recipient_role="client",
+            cloud_run_revision=os.getenv("K_REVISION", ""),
+            idempotency_key=idempotency_key,
+        )
 
     return briefing
 

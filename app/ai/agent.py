@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import httpx
 from pydantic import ValidationError
 
+from app.ai.privacy import sanitize_for_ai
 from app.ai.tools import MultiSourceAnalyticsToolkit
 from app.ai.validation import deterministic_decisions
 from app.ai.verifier import DiscoveryVerifier
@@ -334,6 +335,7 @@ class ExploratoryGrowthAgent:
             }
             if self.reasoning_effort:
                 payload["reasoning"] = {"effort": self.reasoning_effort}
+            payload = sanitize_for_ai(payload)
             try:
                 if self.http_client:
                     response = self.http_client.post(endpoint, headers=headers, json=payload, timeout=60.0)

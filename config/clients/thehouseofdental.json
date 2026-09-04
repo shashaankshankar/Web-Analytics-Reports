@@ -5,7 +5,9 @@
   "industry": "dental_healthcare",
   "ga4_property_id": "549721844",
   "gsc_site_url": "https://thehouseofdentalwp.com/",
-  "gbp_location_id": "places/ChIJM7fB_p1v54gR35t3HRaGH_Q",
+  "gbp_location_id": "locations/16486178344866374391",
+  "gbp_candidate_location_ids": ["locations/16486178344866374391"],
+  "gbp_public_place_id": "ChIJM7fB_p1v54gR35t3HRaGH_Q",
   "gbp_account_id": "",
   "branding": {
     "primary_color": "#0A0A0B",
@@ -27,5 +29,14 @@
   "reporting": {
     "weekly_digest": {"enabled": true, "day": "monday", "attach_pdf": false},
     "performance_report": {"enabled": true, "cadence": "28d", "attach_pdf": true, "deep_insights": false}
+  },
+  "website_inquiry_metrics": {
+    "enabled": true,
+    "provider": "secret_manager",
+    "secret_manager_ref": "secrets/thehouseofdental-website-resend-key",
+    "website_resend_metrics_secret_id": "secrets/thehouseofdental-website-resend-key",
+    "expected_client_id": "thehouseofdental",
+    "expected_website_sending_domain": "thehouseofdentalwp.com",
+    "aggregate_source": "website_delivery_aggregate"
   }
 }

@@ -261,10 +261,18 @@ class FakeGSCExtractor:
 class FakeGBPExtractor:
     """GBP fake that exposes only honest profile metadata."""
 
-    def __init__(self, location_id: str = "places/test", status: str = "available", account_id: str = ""):
+    def __init__(
+        self,
+        location_id: str = "places/test",
+        status: str = "available",
+        account_id: str = "",
+        business_title: str | None = None,
+        **kwargs: Any,
+    ):
         self.location_id = location_id
         self.status = status
         self.account_id = account_id
+        self.business_title = business_title
 
     def fetch_local_insights(self, start_date: str, end_date: str, **_: Any) -> dict[str, Any]:
         return {
@@ -388,6 +396,7 @@ def fake_full_briefing() -> FullGrowthBriefing:
         period_end=CURRENT_END,
         comparison_start=PRIOR_START,
         comparison_end=PRIOR_END,
+        goals=["Improve qualified inquiries", "Increase qualified traffic"],
         core_metrics=[
             MetricDelta(
                 metric_name="sessions",
@@ -629,7 +638,6 @@ def fake_weekly_output() -> WeeklyDigestOutput:
         conversion_insight="The current snapshot includes recorded customer actions; configured key conversions remain the separate GA4 conversion metric.",
         search_opportunity=None,
         local_insight="GBP action metrics are unavailable from this connector.",
-        next_actions=[ActionItem(title="Review page data", description="Prioritize the configured page data.")],
     )
 
 

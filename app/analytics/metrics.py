@@ -14,12 +14,88 @@ from app.analytics.contracts import (
     PagePerformance,
     ReportMode,
     ReportType,
+    WebsiteInquiryMetrics,
     SearchQueryMover,
     SourceAvailability,
     StrikingDistanceKeyword,
 )
 from app.config import ClientConfig
 from app.sources.gbp import GBP_PERFORMANCE_METRIC_LABELS
+
+
+# GA4 event classification is intentionally narrow. Automatic events are
+# engagement context and never enter the primary-lead or customer-action
+# tables. Unknown events are retained only in source diagnostics/raw connector
+# output, not promoted into client-facing conversion categories.
+PRIMARY_LEAD_EVENTS = frozenset({"generate_lead"})
+CUSTOMER_ACTION_EVENTS = frozenset({
+    "form_submit",
+    "appointment_request",
+    "phone_click",
+    "email_click",
+    "cta_click",
+    "file_download",
+})
+FUNNEL_ACTIVITY_EVENTS = frozenset({
+    "form_start",
+    "form_step",
+    "form_step_1",
+    "form_step_2",
+    "form_step_3",
+    "form_step1",
+    "form_step2",
+    "form_step3",
+    "step_1",
+    "step_2",
+    "step_3",
+})
+ENGAGEMENT_EVENTS = frozenset({"page_view", "scroll", "user_engagement"})
+
+EVENT_DISPLAY_NAMES = {
+    "generate_lead": "Primary Leads",
+    "form_submit": "Form Submissions",
+    "appointment_request": "Appointment Requests",
+    "phone_click": "Phone Clicks",
+    "email_click": "Email Clicks",
+    "cta_click": "CTA Clicks",
+    "file_download": "File Downloads",
+    "form_start": "Form Starts",
+    "form_step": "Form Steps",
+    "form_step_1": "Form Step 1",
+    "form_step_2": "Form Step 2",
+    "form_step_3": "Form Step 3",
+    "form_step1": "Form Step 1",
+    "form_step2": "Form Step 2",
+    "form_step3": "Form Step 3",
+    "step_1": "Form Step 1",
+    "step_2": "Form Step 2",
+    "step_3": "Form Step 3",
+}
+
+
+def _event_status(value: Any, *, has_payload: bool = False) -> SourceAvailability:
+    if isinstance(value, SourceAvailability):
+        return value
+    if value is not None:
+        try:
+            return SourceAvailability(str(value))
+        except ValueError:
+            pass
+    return SourceAvailability.AVAILABLE if has_payload else SourceAvailability.NOT_CONFIGURED
+
+
+def _optional_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    number = _optional_number(value)
+    return int(number) if number is not None else None
 
 
 def calculate_percentage_change(current: float, prior: float) -> Optional[float]:
@@ -194,34 +270,54 @@ def normalize_conversion_events(
     prior_events: Optional[Dict[str, int]] = None,
     comparison_available: bool = True,
 ) -> List[ConversionEventSummary]:
-    """Create normalized event conversion rows with deterministic deltas."""
-    event_display_names = {
-        "generate_lead": "Lead Submissions",
-        "contact_form_submit": "Contact Forms",
-        "appointment_request": "Appointment Inquiries",
-        "phone_click": "Direct Phone Clicks",
-        "email_click": "Email Inquiries",
-        "schedule_appointment": "Appointments Booked",
-        "quote_request": "Quote Inquiries",
-        "click_to_call": "Phone Clicks",
-    }
+    """Normalize only the primary GA4 key event for compatibility callers."""
+    return normalize_event_group(
+        current_events,
+        prior_events,
+        PRIMARY_LEAD_EVENTS,
+        comparison_available=comparison_available,
+        ensure_event_names=PRIMARY_LEAD_EVENTS,
+    )
+
+
+def normalize_event_group(
+    current_events: Dict[str, int],
+    prior_events: Optional[Dict[str, int]],
+    allowed_events: frozenset[str] | set[str],
+    *,
+    comparison_available: bool = True,
+    current_status: SourceAvailability | str = SourceAvailability.AVAILABLE,
+    prior_status: SourceAvailability | str | None = None,
+    ensure_event_names: frozenset[str] | set[str] | None = None,
+) -> List[ConversionEventSummary]:
+    """Create one explicitly classified GA4 event group.
+
+    A missing event row is rendered as zero only when the event query itself
+    is available. If the query is unavailable or errored, no synthetic event
+    count is emitted. Prior-only names remain visible for a valid comparison.
+    """
+    current_events = current_events or {}
     prior_events = prior_events or {}
-    # A current event can disappear from a GA4 event-name response when its
-    # count is zero. Keep prior-only names in comparison reports so a real
-    # drop to zero is visible instead of silently disappearing.
-    all_keys = set(current_events.keys())
+    current_state = _event_status(current_status, has_payload=bool(current_events))
+    prior_state = _event_status(prior_status, has_payload=bool(prior_events)) if comparison_available else SourceAvailability.NOT_CONFIGURED
+    current_available = current_state in {SourceAvailability.AVAILABLE, SourceAvailability.EMPTY}
+    prior_available = prior_state in {SourceAvailability.AVAILABLE, SourceAvailability.EMPTY}
+    all_keys = {key for key in current_events if key in allowed_events}
     if comparison_available:
-        all_keys.update(prior_events.keys())
+        all_keys.update(key for key in prior_events if key in allowed_events)
+    if current_available:
+        all_keys.update(ensure_event_names or set())
     summaries = []
 
-    for event_name in all_keys:
-        curr_val = int(current_events.get(event_name, 0))
-        prior_raw = prior_events.get(event_name) if comparison_available else None
-        prior_val = int(prior_raw) if prior_raw is not None else None
-        chg = curr_val - prior_val if prior_val is not None else None
-        pct = calculate_percentage_change(float(curr_val), float(prior_val)) if prior_val is not None else None
-        direction = determine_direction(float(curr_val), float(prior_val)) if prior_val is not None else "unavailable"
-        disp = event_display_names.get(event_name, event_name.replace("_", " ").title())
+    for event_name in sorted(all_keys):
+        curr_raw = current_events.get(event_name) if current_available else None
+        curr_val = _optional_int(curr_raw) if curr_raw is not None else (0 if current_available else None)
+        prior_raw = prior_events.get(event_name) if comparison_available and prior_available else None
+        prior_val = _optional_int(prior_raw) if prior_raw is not None else (0 if comparison_available and prior_available else None)
+        chg = curr_val - prior_val if curr_val is not None and prior_val is not None else None
+        pct = calculate_percentage_change(float(curr_val), float(prior_val)) if curr_val is not None and prior_val is not None else None
+        direction = determine_direction(float(curr_val), float(prior_val)) if curr_val is not None and prior_val is not None else "unavailable"
+        disp = EVENT_DISPLAY_NAMES.get(event_name, event_name.replace("_", " ").title())
 
         summaries.append(
             ConversionEventSummary(
@@ -232,10 +328,175 @@ def normalize_conversion_events(
                 count_change=chg,
                 percentage_change=pct,
                 direction=direction,
+                status=(
+                    SourceAvailability.PARTIAL
+                    if (current_state == SourceAvailability.AVAILABLE and comparison_available and prior_state != SourceAvailability.AVAILABLE)
+                    else current_state
+                ),
             )
         )
-    summaries.sort(key=lambda x: x.current_count, reverse=True)
+    summaries.sort(key=lambda x: x.current_count if x.current_count is not None else -1, reverse=True)
     return summaries
+
+
+def classify_ga4_events(
+    current_events: Dict[str, int],
+    prior_events: Optional[Dict[str, int]] = None,
+    *,
+    comparison_available: bool = True,
+    current_status: SourceAvailability | str | None = None,
+    prior_status: SourceAvailability | str | None = None,
+) -> dict[str, Any]:
+    """Return separated GA4 event groups and engagement counts."""
+    current_events = current_events or {}
+    prior_events = prior_events or {}
+    inferred_current = _event_status(current_status, has_payload=bool(current_events))
+    inferred_prior = _event_status(prior_status, has_payload=bool(prior_events)) if comparison_available else SourceAvailability.NOT_CONFIGURED
+    return {
+        "primary_leads": normalize_event_group(
+            current_events, prior_events, PRIMARY_LEAD_EVENTS,
+            comparison_available=comparison_available,
+            current_status=inferred_current,
+            prior_status=inferred_prior,
+            ensure_event_names=PRIMARY_LEAD_EVENTS,
+        ),
+        "customer_actions": normalize_event_group(
+            current_events, prior_events, CUSTOMER_ACTION_EVENTS,
+            comparison_available=comparison_available,
+            current_status=inferred_current,
+            prior_status=inferred_prior,
+        ),
+        "funnel_activity": normalize_event_group(
+            current_events, prior_events, FUNNEL_ACTIVITY_EVENTS,
+            comparison_available=comparison_available,
+            current_status=inferred_current,
+            prior_status=inferred_prior,
+        ),
+        "engagement_events": {
+            "current": {name: _optional_int(current_events.get(name)) for name in sorted(ENGAGEMENT_EVENTS) if name in current_events},
+            "prior": {name: _optional_int(prior_events.get(name)) for name in sorted(ENGAGEMENT_EVENTS) if name in prior_events} if comparison_available else {},
+            "current_status": inferred_current.value,
+            "prior_status": inferred_prior.value if comparison_available else SourceAvailability.NOT_CONFIGURED.value,
+        },
+        "automatic_events_excluded": sorted(
+            key for key in set(current_events) | (set(prior_events) if comparison_available else set())
+            if key not in PRIMARY_LEAD_EVENTS | CUSTOMER_ACTION_EVENTS | FUNNEL_ACTIVITY_EVENTS
+        ),
+    }
+
+
+def derive_form_progression_and_abandonment(
+    current_events: Dict[str, Any],
+    prior_events: Optional[Dict[str, Any]] = None,
+    *,
+    comparison_available: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Calculate funnel progression and dropoff rates across form steps.
+
+    Funnel steps:
+      Form starts -> Step 1 -> Step 2 -> Step 3 -> Submit (form_submit / generate_lead)
+    Computes:
+      - Dropoff counts & rates between steps
+      - Identifies dropoff stage from final recorded step
+      - Overall start-to-completion rate & abandonment rate
+    """
+    current_events = current_events or {}
+    prior_events = (prior_events or {}) if comparison_available else {}
+
+    def _get_val(events: Mapping[str, Any], names: tuple[str, ...]) -> int | None:
+        for name in names:
+            if name in events and events[name] is not None:
+                try:
+                    return int(events[name])
+                except (ValueError, TypeError):
+                    pass
+        return None
+
+    step_definitions = [
+        ("form_start", "Form Starts", ("form_start", "form_starts")),
+        ("form_step_1", "Step 1", ("form_step_1", "form_step1", "step_1", "step1")),
+        ("form_step_2", "Step 2", ("form_step_2", "form_step2", "step_2", "step2")),
+        ("form_step_3", "Step 3", ("form_step_3", "form_step3", "step_3", "step3")),
+        ("form_submit", "Submit", ("form_submit", "form_submission", "generate_lead")),
+    ]
+
+    raw_steps = []
+    has_any = False
+    for step_id, disp_name, aliases in step_definitions:
+        curr = _get_val(current_events, aliases)
+        prior = _get_val(prior_events, aliases) if comparison_available else None
+        if curr is not None or prior is not None:
+            has_any = True
+        raw_steps.append({
+            "step_id": step_id,
+            "display_name": disp_name,
+            "current_count": curr,
+            "prior_count": prior,
+        })
+
+    if not has_any:
+        return None
+
+    steps_data = []
+    dropoff_by_final_step: dict[str, int] = {}
+    highest_dropoff_count = -1
+    highest_dropoff_stage: str | None = None
+
+    for i in range(len(raw_steps)):
+        step = raw_steps[i]
+        curr = step["current_count"]
+        prior = step["prior_count"]
+
+        dropoff_count = None
+        dropoff_rate = None
+        progression_rate = None
+
+        if i < len(raw_steps) - 1:
+            next_step = raw_steps[i + 1]
+            next_curr = next_step["current_count"]
+            if curr is not None and next_curr is not None:
+                dropoff_count = max(0, curr - next_curr)
+                dropoff_by_final_step[step["step_id"]] = dropoff_count
+                if curr > 0:
+                    dropoff_rate = round((dropoff_count / curr) * 100.0, 2)
+                    progression_rate = round((next_curr / curr) * 100.0, 2)
+                else:
+                    dropoff_rate = 0.0
+                    progression_rate = 0.0
+
+                stage_label = f"{step['display_name']} -> {next_step['display_name']}"
+                if dropoff_count > highest_dropoff_count:
+                    highest_dropoff_count = dropoff_count
+                    highest_dropoff_stage = stage_label
+
+        step_dict = {
+            "step_id": step["step_id"],
+            "display_name": step["display_name"],
+            "current_count": curr,
+            "prior_count": prior,
+            "dropoff_count": dropoff_count,
+            "dropoff_rate": dropoff_rate,
+            "progression_rate": progression_rate,
+        }
+        steps_data.append(step_dict)
+
+    starts = raw_steps[0]["current_count"]
+    submits = raw_steps[-1]["current_count"]
+    completion_rate = None
+    abandonment_rate = None
+    if starts is not None and starts > 0 and submits is not None:
+        completion_rate = round((submits / starts) * 100.0, 2)
+        abandonment_rate = round((max(0, starts - submits) / starts) * 100.0, 2)
+
+    return {
+        "steps": steps_data,
+        "total_starts": starts,
+        "total_completions": submits,
+        "overall_completion_rate": completion_rate,
+        "overall_abandonment_rate": abandonment_rate,
+        "highest_dropoff_stage": highest_dropoff_stage,
+        "dropoff_by_final_step": dropoff_by_final_step,
+    }
 
 
 def aggregate_growth_metrics(
@@ -262,27 +523,65 @@ def aggregate_growth_metrics(
     requested_comparison_end: Optional[str] = None,
     comparison_suppressed: bool = False,
     comparison_suppression_reason: Optional[str] = None,
+    website_inquiry_metrics: Optional[WebsiteInquiryMetrics | dict[str, Any]] = None,
 ) -> GrowthAnalysisInput:
     """Process and normalize all multi-source raw inputs into a validated GrowthAnalysisInput contract."""
     summary = ga4_data.get("summary", {})
     comparison_available = report_mode == ReportMode.COMPARISON and not comparison_suppressed
     prior_summary = ga4_data.get("prior_summary", {}) if comparison_available else {}
 
-    sessions_curr = float(summary.get("sessions", 0))
-    sessions_prior = float(prior_summary.get("sessions")) if prior_summary.get("sessions") is not None else None
-    conversions_curr = float(summary.get("conversions", 0))
-    conversions_prior = float(prior_summary.get("conversions")) if prior_summary.get("conversions") is not None else None
+    query_statuses = ga4_data.get("query_statuses", {}) or {}
+    summary_query = query_statuses.get("summary", {}) if isinstance(query_statuses, dict) else {}
+    event_query = query_statuses.get("events", {}) if isinstance(query_statuses, dict) else {}
+    summary_status = _event_status(
+        summary_query.get("current") if isinstance(summary_query, dict) else None,
+        has_payload=bool(summary),
+    )
+    prior_summary_status = _event_status(
+        summary_query.get("prior") if isinstance(summary_query, dict) else None,
+        has_payload=bool(prior_summary),
+    ) if comparison_available else SourceAvailability.NOT_CONFIGURED
+    event_status = _event_status(
+        event_query.get("current") if isinstance(event_query, dict) else ga4_data.get("events_status"),
+        has_payload="events" in ga4_data,
+    )
+    prior_event_status = _event_status(
+        event_query.get("prior") if isinstance(event_query, dict) else ga4_data.get("prior_events_status"),
+        has_payload=bool(ga4_data.get("prior_events")),
+    ) if comparison_available else SourceAvailability.NOT_CONFIGURED
+
+    sessions_curr = _optional_number(summary.get("sessions"))
+    sessions_prior = _optional_number(prior_summary.get("sessions")) if comparison_available else None
+    event_groups = classify_ga4_events(
+        ga4_data.get("events", {}),
+        ga4_data.get("prior_events", {}) if comparison_available else {},
+        comparison_available=comparison_available,
+        current_status=event_status,
+        prior_status=prior_event_status,
+    )
+    primary_leads = event_groups["primary_leads"]
+    customer_actions = event_groups["customer_actions"]
+    funnel_activity = event_groups["funnel_activity"]
+    abandonment_summary = derive_form_progression_and_abandonment(
+        ga4_data.get("events", {}),
+        ga4_data.get("prior_events", {}) if comparison_available else {},
+        comparison_available=comparison_available,
+    )
+    lead_current = next((item.current_count for item in primary_leads if item.event_name == "generate_lead"), None)
+    lead_prior = next((item.prior_count for item in primary_leads if item.event_name == "generate_lead"), None)
+    conversions_curr = float(lead_current) if lead_current is not None else None
+    conversions_prior = float(lead_prior) if lead_prior is not None else None
 
     # Calculate deterministic conversion rates (key conversions / sessions)
-    cr_curr = round((conversions_curr / sessions_curr) * 100.0, 2) if sessions_curr > 0 else 0.0
+    cr_curr = round((conversions_curr / sessions_curr) * 100.0, 2) if conversions_curr is not None and sessions_curr is not None and sessions_curr > 0 else None
     cr_prior = (
         round((conversions_prior / sessions_prior) * 100.0, 2)
         if sessions_prior is not None and conversions_prior is not None and sessions_prior > 0
         else None
     )
-    cr_pt_change = round(cr_curr - cr_prior, 2) if cr_prior is not None else None
-    cr_pct_change = calculate_percentage_change(cr_curr, cr_prior) if cr_prior is not None else None
-    cr_dir = determine_direction(cr_curr, cr_prior, threshold=0.01) if cr_prior is not None else "unavailable"
+    cr_pt_change = round(cr_curr - cr_prior, 2) if cr_curr is not None and cr_prior is not None else None
+    cr_pct_change = calculate_percentage_change(cr_curr, cr_prior) if cr_curr is not None and cr_prior is not None else None
+    cr_dir = determine_direction(cr_curr, cr_prior, threshold=0.01) if cr_curr is not None and cr_prior is not None else "unavailable"
 
     conversion_rate_delta = MetricDelta(
         metric_name="conversion_rate",
@@ -295,17 +594,23 @@ def aggregate_growth_metrics(
         is_percentage_rate=True,
         direction=cr_dir,
         unit="percentage",
+        status=(
+            SourceAvailability.PARTIAL
+            if cr_curr is not None and comparison_available and cr_prior is None
+            else (event_status if cr_curr is None else SourceAvailability.AVAILABLE)
+        ),
     )
 
     def metric_delta(
         metric_name: str,
         display_name: str,
-        current_value: float,
+        current_value: Optional[float],
         prior_value: Optional[float],
         unit: str = "count",
         is_percentage_rate: bool = False,
+        status: SourceAvailability = SourceAvailability.AVAILABLE,
     ) -> MetricDelta:
-        absolute_change = round(current_value - prior_value, 1) if prior_value is not None else None
+        absolute_change = round(current_value - prior_value, 1) if current_value is not None and prior_value is not None else None
         return MetricDelta(
             metric_name=metric_name,
             display_name=display_name,
@@ -314,86 +619,91 @@ def aggregate_growth_metrics(
             absolute_change=absolute_change,
             percentage_change=(
                 calculate_percentage_change(current_value, prior_value)
-                if prior_value is not None
+                if current_value is not None and prior_value is not None
                 else None
             ),
             percentage_points_change=(
                 absolute_change if is_percentage_rate and absolute_change is not None else None
             ),
             is_percentage_rate=is_percentage_rate,
-            direction=determine_direction(current_value, prior_value) if prior_value is not None else "unavailable",
+            direction=determine_direction(current_value, prior_value) if current_value is not None and prior_value is not None else "unavailable",
             unit=unit,
+            status=status if current_value is not None else SourceAvailability.PARTIAL,
         )
 
     # Core metric deltas remain current-only in a baseline. A missing prior
     # value is represented as None rather than a synthetic zero.
     core_metrics = [
-        metric_delta("sessions", "Total Sessions", sessions_curr, sessions_prior),
+        metric_delta("sessions", "Total Sessions", sessions_curr, sessions_prior, status=summary_status),
         metric_delta(
             "active_users",
             "Active Users",
-            float(summary.get("activeUsers", 0)),
-            float(prior_summary.get("activeUsers")) if prior_summary.get("activeUsers") is not None else None,
+            _optional_number(summary.get("activeUsers")),
+            _optional_number(prior_summary.get("activeUsers")) if comparison_available else None,
+            status=summary_status,
         ),
         conversion_rate_delta,
-        metric_delta("conversions", "Key Conversions", conversions_curr, conversions_prior),
+        metric_delta("primary_leads", "Primary Leads", conversions_curr, conversions_prior, status=event_status),
         metric_delta(
             "engagement_rate",
             "Engagement Rate",
-            round(float(summary.get("engagementRate", 0.0)) * 100.0, 1),
+            round(_optional_number(summary.get("engagementRate")) * 100.0, 1) if _optional_number(summary.get("engagementRate")) is not None else None,
             (
-                round(float(prior_summary.get("engagementRate")) * 100.0, 1)
+                round(_optional_number(prior_summary.get("engagementRate")) * 100.0, 1)
                 if prior_summary.get("engagementRate") is not None
                 else None
             ),
             unit="percentage",
             is_percentage_rate=True,
+            status=summary_status,
         ),
     ]
 
     # Channels
     channels = []
     for ch in ga4_data.get("channels", []):
-        sess = int(ch.get("sessions", 0))
+        sess = _optional_int(ch.get("sessions"))
         prior_raw = ch.get("priorSessions") if comparison_available else None
-        prior_sess = int(prior_raw) if prior_raw is not None else None
+        prior_sess = _optional_int(prior_raw)
+        active_users = _optional_int(ch.get("activeUsers"))
+        channel_primary_leads = _optional_int(ch.get("primaryLeads"))
         channels.append(
             ChannelPerformance(
                 channel=ch.get("channel", "Direct"),
                 sessions=sess,
-                active_users=int(ch.get("activeUsers", 0)),
+                active_users=active_users,
                 prior_sessions=prior_sess,
-                session_change=sess - prior_sess if prior_sess is not None else None,
+                session_change=sess - prior_sess if sess is not None and prior_sess is not None else None,
                 percentage_change=(
                     calculate_percentage_change(float(sess), float(prior_sess))
-                    if prior_sess is not None
+                    if sess is not None and prior_sess is not None
                     else None
                 ),
-                conversions=int(ch.get("conversions", 0)),
+                conversions=channel_primary_leads,
             )
         )
-    channels.sort(key=lambda x: x.sessions, reverse=True)
+    channels.sort(key=lambda x: x.sessions if x.sessions is not None else -1, reverse=True)
 
     # Pages & High-Intent identification
     pages = []
     high_intent_keywords = {"contact", "book", "schedule", "quote", "pricing", "services", "treatment", "signup", "appointment"}
     for pg in ga4_data.get("pages", []):
         path = pg.get("pagePath", "/")
-        sess = int(pg.get("sessions", 0))
+        sess = _optional_int(pg.get("sessions"))
         prior_raw = pg.get("priorSessions") if comparison_available else None
-        prior_sess = int(prior_raw) if prior_raw is not None else None
+        prior_sess = _optional_int(prior_raw)
         is_intent = any(kw in path.lower() for kw in high_intent_keywords)
         pages.append(
             PagePerformance(
                 page_path=path,
                 sessions=sess,
-                active_users=int(pg.get("activeUsers", 0)),
+                active_users=_optional_int(pg.get("activeUsers")),
                 prior_sessions=prior_sess,
-                session_change=sess - prior_sess if prior_sess is not None else None,
+                session_change=sess - prior_sess if sess is not None and prior_sess is not None else None,
                 is_high_intent=is_intent,
             )
         )
-    pages.sort(key=lambda x: x.sessions, reverse=True)
+    pages.sort(key=lambda x: x.sessions if x.sessions is not None else -1, reverse=True)
 
     page_gainers = (
         sorted([p for p in pages if p.session_change is not None and p.session_change > 0], key=lambda x: x.session_change, reverse=True)[:5]
@@ -456,12 +766,24 @@ def aggregate_growth_metrics(
         else []
     )
 
-    # Normalized conversion events
-    events_summary = normalize_conversion_events(
-        ga4_data.get("events", {}),
-        ga4_data.get("prior_events", {}),
-        comparison_available=comparison_available,
-    )
+    # The compatibility ``conversion_events`` field mirrors primary leads only;
+    # customer actions and form funnel activity remain separate categories.
+    events_summary = primary_leads
+
+    engagement_summary = dict(event_groups["engagement_events"])
+    engagement_summary.update({
+        "sessions": sessions_curr,
+        "prior_sessions": sessions_prior,
+        "active_users": _optional_number(summary.get("activeUsers")),
+        "prior_active_users": _optional_number(prior_summary.get("activeUsers")) if comparison_available else None,
+        "page_views": _optional_int((ga4_data.get("events", {}) or {}).get("page_view")) if event_status in {SourceAvailability.AVAILABLE, SourceAvailability.EMPTY} else None,
+        "scrolls": _optional_int((ga4_data.get("events", {}) or {}).get("scroll")) if event_status in {SourceAvailability.AVAILABLE, SourceAvailability.EMPTY} else None,
+        "user_engagement": _optional_int((ga4_data.get("events", {}) or {}).get("user_engagement")) if event_status in {SourceAvailability.AVAILABLE, SourceAvailability.EMPTY} else None,
+        "status": event_status.value,
+    })
+
+    if isinstance(website_inquiry_metrics, dict):
+        website_inquiry_metrics = WebsiteInquiryMetrics(**website_inquiry_metrics)
 
     # Local SEO / GBP metrics with deterministic deltas
     def optional_delta(current_key: str, prior_key: str) -> tuple[Optional[int], Optional[int], Optional[int], Optional[float], str]:
@@ -575,6 +897,26 @@ def aggregate_growth_metrics(
         recent_review_snippets=gbp_data.get("recent_review_snippets", []),
     )
 
+    effective_source_statuses = dict(source_statuses or {})
+    effective_source_statuses.setdefault("ga4", {
+        "status": ga4_data.get("status") or summary_status.value,
+        "current_status": ga4_data.get("current_status") or summary_status.value,
+        "prior_status": ga4_data.get("prior_status") or (prior_summary_status.value if comparison_available else SourceAvailability.NOT_CONFIGURED.value),
+    })
+    effective_source_statuses.setdefault("gsc", {
+        "status": SourceAvailability.AVAILABLE.value if gsc_queries else SourceAvailability.NOT_CONFIGURED.value,
+    })
+    effective_source_statuses.setdefault("gbp", {
+        "status": gbp_data.get("status") or SourceAvailability.NOT_CONFIGURED.value,
+    })
+    effective_source_statuses["ga4_events"] = {
+        "current": event_status.value,
+        "prior": prior_event_status.value if comparison_available else SourceAvailability.NOT_CONFIGURED.value,
+        "automatic_events_excluded": event_groups["automatic_events_excluded"],
+    }
+    if website_inquiry_metrics is not None:
+        effective_source_statuses["website_inquiries"] = website_inquiry_metrics.status.value
+
     return GrowthAnalysisInput(
         client_id=client.client_id,
         company_name=client.company_name,
@@ -600,6 +942,17 @@ def aggregate_growth_metrics(
         goals=list(client.goals),
         core_metrics=core_metrics,
         conversion_rate=conversion_rate_delta,
+        primary_leads=primary_leads,
+        customer_actions=customer_actions,
+        funnel_activity=funnel_activity,
+        abandonment_summary=abandonment_summary,
+        engagement_metrics=engagement_summary,
+        event_statuses={
+            "current": event_status.value,
+            "prior": prior_event_status.value if comparison_available else SourceAvailability.NOT_CONFIGURED.value,
+            "automatic_events_excluded": event_groups["automatic_events_excluded"],
+        },
+        website_inquiry_metrics=website_inquiry_metrics,
         conversion_events=events_summary,
         top_channels=channels[:8],
         top_pages=pages[:10],
@@ -611,18 +964,19 @@ def aggregate_growth_metrics(
         raw_summary_stats={
             "events": ga4_data.get("events", {}),
             "prior_events": ga4_data.get("prior_events", {}) if comparison_available else {},
+            "abandonment_summary": abandonment_summary,
             "report_mode": report_mode.value,
             "measurement_start_date": measurement_start_date,
             "observed_days": (date.fromisoformat(end_date) - date.fromisoformat(start_date)).days + 1,
             "comparison_suppressed": not comparison_available,
             "comparison_suppression_reason": comparison_suppression_reason,
-            "source_statuses": source_statuses or {},
+            "source_statuses": effective_source_statuses,
             "source_diagnostics": source_diagnostics or {},
             "search_comparison_status": search_comparison_status.value,
             "search_comparison_truncated": prior_gsc_truncated,
             "search_comparison_diagnostics": search_comparison_diagnostics,
         },
-        source_statuses=source_statuses or {},
+        source_statuses=effective_source_statuses,
         source_diagnostics=source_diagnostics or {},
         search_comparison_status=search_comparison_status,
         search_comparison_truncated=prior_gsc_truncated,

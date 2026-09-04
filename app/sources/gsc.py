@@ -82,6 +82,7 @@ class SearchConsoleExtractor:
             "truncated": False,
         }
         if not self.is_configured():
+            result["status"] = SourceAvailability.NOT_CONFIGURED.value
             result["reason"] = "Search Console site is not configured."
             return result
 

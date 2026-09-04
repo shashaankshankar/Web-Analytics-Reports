@@ -108,3 +108,49 @@ def test_delivery_requires_explicit_allowlist(monkeypatch):
     settings = Settings.from_env()
     assert settings.report_delivery_enabled is True
     assert settings.report_allowed_clients == ("thehouseofdental",)
+
+
+def test_gbp_configuration_keeps_private_candidates_and_public_place_id_separate():
+    config = ClientConfig(
+        client_id="dental-client",
+        company_name="Dental Client",
+        domain="https://example.com",
+        gbp_location_id="locations/16486178344866374391",
+        gbp_candidate_location_ids=["locations/16486178344866374391"],
+        gbp_public_place_id="ChIJM7fB_p1v54gR35t3HRaGH_Q",
+    )
+    assert config.gbp_location_id == "locations/16486178344866374391"
+    assert config.gbp_candidate_location_ids == ["locations/16486178344866374391"]
+    assert config.gbp_public_place_id == "ChIJM7fB_p1v54gR35t3HRaGH_Q"
+
+
+def test_website_inquiry_config_accepts_reference_only_and_rejects_raw_secret():
+    config = ClientConfig(
+        client_id="scoped-client",
+        company_name="Scoped Client",
+        domain="https://example.com",
+        website_inquiry_metrics={
+            "enabled": True,
+            "provider": "secret_manager",
+            "secret_manager_ref": "projects/example-project/secrets/scoped-inquiries/versions/latest",
+            "expected_client_id": "scoped-client",
+        },
+    )
+    assert config.website_inquiry_metrics.secret_manager_ref.startswith("projects/")
+    with pytest.raises(ValidationError, match="Secret Manager resource reference"):
+        ClientConfig(
+            client_id="raw-secret",
+            company_name="Raw Secret",
+            domain="https://example.com",
+            website_inquiry_metrics={
+                "provider": "secret_manager",
+                "secret_manager_ref": "re_test_123456789",
+            },
+        )
+    with pytest.raises(ValidationError, match="website_api_key"):
+        ClientConfig(
+            client_id="nested-raw-secret",
+            company_name="Nested Raw Secret",
+            domain="https://example.com",
+            website_inquiry_metrics={"website_api_key": "must-not-be-configured"},
+        )

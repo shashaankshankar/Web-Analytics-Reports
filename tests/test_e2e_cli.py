@@ -107,6 +107,9 @@ def test_generate_report_weekly_has_no_deep_insights_section(tmp_path, patched_p
     html = (tmp_path / "test-client_weekly_briefing.html").read_text(encoding="utf-8")
     assert "Weekly Growth Digest" in html
     assert "Key Opportunities &amp; Discoveries" not in html
+    assert "Recommended Next Actions" not in html
+    assert "Current Goals" in html
+    assert "Improve qualified inquiries" in html
 
 
 def test_generate_report_explicit_explore_saves_internal_audit(tmp_path, patched_pipeline):
@@ -129,7 +132,8 @@ def test_generate_report_explicit_explore_saves_internal_audit(tmp_path, patched
 
 
 def test_generate_weekly_and_performance_baselines_do_not_overwrite_each_other(tmp_path, patched_pipeline):
-    patched_pipeline.measurement_start_date = "2026-08-12"
+    start_date, _, _, _ = calculate_date_ranges(days=7, timezone_str=patched_pipeline.timezone)
+    patched_pipeline.measurement_start_date = start_date
     weekly = cli.generate_report(
         client_slug="test-client",
         report_type="weekly",
@@ -222,19 +226,19 @@ def test_source_adapters_keep_unavailable_empty_and_error_distinct():
 
     ga4 = GA4Extractor(property_id="")
     ga4_result = ga4.run_report("2026-07-01", "2026-07-28", [], [])
-    assert ga4_result["status"] == SourceAvailability.UNAVAILABLE.value
+    assert ga4_result["status"] == SourceAvailability.NOT_CONFIGURED.value
     assert ga4_result["rows"] == []
 
     gsc = SearchConsoleExtractor(site_url="")
     gsc_result = gsc.fetch_search_analytics("2026-07-01", "2026-07-28")
-    assert gsc_result["status"] == SourceAvailability.UNAVAILABLE.value
+    assert gsc_result["status"] == SourceAvailability.NOT_CONFIGURED.value
     current, prior = gsc.fetch_comparative_search_analytics("2026-07-01", "2026-07-07", "2026-06-24", "2026-06-30")
-    assert current["status"] == SourceAvailability.UNAVAILABLE.value
-    assert prior["status"] == SourceAvailability.UNAVAILABLE.value
+    assert current["status"] == SourceAvailability.NOT_CONFIGURED.value
+    assert prior["status"] == SourceAvailability.NOT_CONFIGURED.value
 
     gbp = GoogleBusinessProfileExtractor(location_id="")
     gbp_result = gbp.fetch_local_insights("2026-07-01", "2026-07-28")
-    assert gbp_result["status"] == SourceAvailability.UNAVAILABLE.value
+    assert gbp_result["status"] == SourceAvailability.NOT_CONFIGURED.value
     assert gbp_result["phone_calls"] is None
 
 

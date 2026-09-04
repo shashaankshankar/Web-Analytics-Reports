@@ -39,7 +39,6 @@ WEEKLY_DIGEST_SCHEMA: dict[str, Any] = {
         "conversion_insight": {"type": "string"},
         "search_opportunity": _nullable_string(),
         "local_insight": _nullable_string(),
-        "next_actions": {"type": "array", "items": ACTION_ITEM_SCHEMA},
         "overall_sentiment": {"type": "string"},
     },
     "required": [
@@ -49,7 +48,6 @@ WEEKLY_DIGEST_SCHEMA: dict[str, Any] = {
         "conversion_insight",
         "search_opportunity",
         "local_insight",
-        "next_actions",
         "overall_sentiment",
     ],
 }
@@ -66,7 +64,7 @@ PERFORMANCE_REPORT_SCHEMA: dict[str, Any] = {
         "conversion_insights": {"type": "string"},
         "seo_and_content_opportunities": {"type": "string"},
         "local_seo_insights": {"type": "string"},
-        "agency_action_plan": {"type": "array", "items": ACTION_ITEM_SCHEMA},
+        "agency_action_plan": {"type": "array", "items": ACTION_ITEM_SCHEMA, "maxItems": 3},
         "overall_sentiment": {"type": "string"},
     },
     "required": [

@@ -262,3 +262,120 @@ def test_public_place_id_can_resolve_to_managed_private_location_and_account():
     }
     assert any("pageSize=20" in url for url in requested_urls if "accountmanagement" in url)
     assert any("readMask=name%2Ctitle%2Cmetadata" in url for url in requested_urls)
+
+
+def test_triple_verification_resolves_when_all_match():
+    def requester(url: str, token: str) -> dict:
+        if "accountmanagement" in url:
+            return {"accounts": [{"name": "accounts/acc123"}]}
+        if "locations" in url:
+            return {
+                "locations": [
+                    {
+                        "name": "locations/16486178344866374391",
+                        "title": "The House of Dental",
+                        "metadata": {"placeId": "ChIJM7fB_p1v54gR35t3HRaGH_Q"},
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    extractor = GoogleBusinessProfileExtractor(
+        location_id="locations/16486178344866374391",
+        candidate_location_ids=["locations/16486178344866374391"],
+        public_place_id="ChIJM7fB_p1v54gR35t3HRaGH_Q",
+        business_title="House of Dental",
+        access_token="test-token",
+        requester=requester,
+    )
+    resolved = extractor.resolve_private_location()
+    assert resolved["status"] == "available"
+    assert resolved["location_id"] == "locations/16486178344866374391"
+    assert resolved["account_id"] == "accounts/acc123"
+
+
+def test_triple_verification_rejects_when_private_location_candidate_mismatches():
+    def requester(url: str, token: str) -> dict:
+        if "accountmanagement" in url:
+            return {"accounts": [{"name": "accounts/acc123"}]}
+        if "locations" in url:
+            return {
+                "locations": [
+                    {
+                        "name": "locations/99999999999999999999",
+                        "title": "The House of Dental",
+                        "metadata": {"placeId": "ChIJM7fB_p1v54gR35t3HRaGH_Q"},
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    extractor = GoogleBusinessProfileExtractor(
+        location_id="",
+        candidate_location_ids=["locations/16486178344866374391"],
+        public_place_id="ChIJM7fB_p1v54gR35t3HRaGH_Q",
+        business_title="The House of Dental",
+        access_token="test-token",
+        requester=requester,
+    )
+    resolved = extractor.resolve_private_location()
+    assert resolved["status"] == "empty"
+    assert resolved["location_id"] is None
+
+
+def test_triple_verification_rejects_when_place_id_mismatches():
+    def requester(url: str, token: str) -> dict:
+        if "accountmanagement" in url:
+            return {"accounts": [{"name": "accounts/acc123"}]}
+        if "locations" in url:
+            return {
+                "locations": [
+                    {
+                        "name": "locations/16486178344866374391",
+                        "title": "The House of Dental",
+                        "metadata": {"placeId": "ChIJdifferentplace"},
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    extractor = GoogleBusinessProfileExtractor(
+        location_id="locations/16486178344866374391",
+        candidate_location_ids=["locations/16486178344866374391"],
+        public_place_id="ChIJM7fB_p1v54gR35t3HRaGH_Q",
+        business_title="House of Dental",
+        access_token="test-token",
+        requester=requester,
+    )
+    resolved = extractor.resolve_private_location()
+    assert resolved["status"] == "empty"
+    assert resolved["location_id"] is None
+
+
+def test_triple_verification_rejects_when_title_mismatches():
+    def requester(url: str, token: str) -> dict:
+        if "accountmanagement" in url:
+            return {"accounts": [{"name": "accounts/acc123"}]}
+        if "locations" in url:
+            return {
+                "locations": [
+                    {
+                        "name": "locations/16486178344866374391",
+                        "title": "Totally Unrelated Chiropractic Clinic",
+                        "metadata": {"placeId": "ChIJM7fB_p1v54gR35t3HRaGH_Q"},
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    extractor = GoogleBusinessProfileExtractor(
+        location_id="locations/16486178344866374391",
+        candidate_location_ids=["locations/16486178344866374391"],
+        public_place_id="ChIJM7fB_p1v54gR35t3HRaGH_Q",
+        business_title="House of Dental",
+        access_token="test-token",
+        requester=requester,
+    )
+    resolved = extractor.resolve_private_location()
+    assert resolved["status"] == "empty"
+    assert resolved["location_id"] is None

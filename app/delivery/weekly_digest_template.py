@@ -12,8 +12,10 @@ from app.delivery.email_components import (
     FONT_FAMILY_MAIN,
     FONT_FAMILY_SERIF,
     is_light_color,
-    render_action_card,
+    render_goals_block,
     render_kpi_card,
+    render_report_delivery_block,
+    render_website_inquiry_delivery_block,
 )
 
 def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
@@ -123,12 +125,48 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
           </tr>
         """
 
-    # 3. Next Actions (Strategic Action Plan)
-    actions_html = ""
-    num_acts = len(insights.next_actions[:2])
-    for idx, act in enumerate(insights.next_actions[:2]):
-        is_last = (idx == num_acts - 1)
-        actions_html += render_action_card(act, primary_color, accent_color, is_last=is_last, responsive_mobile=True)
+    goals_html = render_goals_block(analytics.goals, primary_color, accent_color)
+
+    report_delivery_block = render_report_delivery_block(
+        briefing.report_delivery_metrics,
+        primary_color,
+        accent_color,
+    )
+    report_delivery_section = (
+        f"""<!-- Section: Analytics Report Delivery -->
+          <tr>
+            <td style="padding: 20px 24px 16px 24px;">
+              {report_delivery_block}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 0 24px;">
+              <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
+            </td>
+          </tr>"""
+        if report_delivery_block
+        else ""
+    )
+    website_inquiry_block = render_website_inquiry_delivery_block(
+        analytics.website_inquiry_metrics,
+        primary_color,
+        accent_color,
+    )
+    website_inquiry_section = (
+        f"""<!-- Section: Website Inquiry Delivery -->
+          <tr>
+            <td style="padding: 20px 24px 16px 24px;">
+              {website_inquiry_block}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 0 24px;">
+              <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
+            </td>
+          </tr>"""
+        if website_inquiry_block
+        else ""
+    )
 
     logo_markup = f'<img class="weekly-brand-logo" src="{html.escape(logo_url)}" alt="{client_name}" height="52" style="height: 52px; width: auto; max-width: 260px; max-height: 56px; display: block; border: 0;" />' if logo_url else f'<span class="weekly-brand-logo" style="font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 700; color: {header_text_color}; letter-spacing: -0.01em;">{client_name}</span>'
 
@@ -164,26 +202,6 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
         padding: 5px 9px !important;
         font-size: 10px !important;
         letter-spacing: 0.04em !important;
-      }}
-      .weekly-action-copy,
-      .weekly-action-badge,
-      .weekly-action-check {{
-        display: block !important;
-        width: auto !important;
-        box-sizing: border-box !important;
-        text-align: left !important;
-      }}
-      .weekly-action-check {{
-        width: 100% !important;
-        padding: 0 0 8px 0 !important;
-      }}
-      .weekly-action-badge {{
-        padding: 10px 0 0 0 !important;
-        white-space: normal !important;
-      }}
-      .weekly-action-badge span {{
-        max-width: 100% !important;
-        box-sizing: border-box !important;
       }}
     }}
   </style>
@@ -227,6 +245,9 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
             </td>
           </tr>
 
+          {report_delivery_section}
+          {website_inquiry_section}
+
           <!-- Editorial Divider -->
           <tr>
             <td style="padding: 0 24px;">
@@ -235,6 +256,14 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
           </tr>
 
           {baseline_note}
+
+          <!-- Section: Current Goals -->
+          <tr>
+            <td style="padding: 20px 24px 8px 24px;">
+              <h2 style="margin: 0 0 12px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 18px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Current Goals</h2>
+              {goals_html}
+            </td>
+          </tr>
 
           <!-- Section: 7-Day Performance Cards -->
           <tr>
@@ -270,16 +299,6 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
           <tr>
             <td style="padding: 0 24px;">
               <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
-            </td>
-          </tr>
-
-          <!-- Section: Immediate Next Actions -->
-          <tr>
-            <td style="padding: 20px 24px 28px 24px;">
-              <h2 style="margin: 0 0 14px 0; font-family: {FONT_FAMILY_SERIF}; font-size: 18px; font-weight: 600; color: {primary_color}; line-height: 1.3;">Recommended Next Actions</h2>
-              <div style="background-color: #FFFFFF; border: 1px solid #E0E3E5; border-radius: 2px; overflow: hidden;">
-                {actions_html}
-              </div>
             </td>
           </tr>
 

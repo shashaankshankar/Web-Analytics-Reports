@@ -18,9 +18,17 @@ class ReportMode(str, Enum):
 
 
 class SourceAvailability(str, Enum):
-    """Honest state for a source query or period."""
+    """Honest state for a source query or period.
+
+    ``EMPTY`` remains as a compatibility value for connector responses that
+    successfully queried a source but received no rows. New report logic uses
+    ``NOT_CONFIGURED`` for missing setup and ``PARTIAL`` when only part of a
+    source contract was returned.
+    """
 
     AVAILABLE = "available"
+    PARTIAL = "partial"
+    NOT_CONFIGURED = "not_configured"
     EMPTY = "empty"
     UNAVAILABLE = "unavailable"
     ERROR = "error"
@@ -31,7 +39,7 @@ class ReportSpec(BaseModel):
     display_name: str
     default_days: int
     requires_pdf: bool = True
-    max_actions: int = 4
+    max_actions: int = 3
     enable_deep_agent_default: bool = False
 
 
@@ -41,7 +49,7 @@ REPORT_SPECS: dict[ReportType, ReportSpec] = {
         display_name="Weekly Growth Digest",
         default_days=7,
         requires_pdf=False,
-        max_actions=2,
+        max_actions=0,
         enable_deep_agent_default=False,
     ),
     ReportType.PERFORMANCE_28D: ReportSpec(
@@ -49,7 +57,7 @@ REPORT_SPECS: dict[ReportType, ReportSpec] = {
         display_name="28-Day Performance Report",
         default_days=28,
         requires_pdf=True,
-        max_actions=4,
+        max_actions=3,
         enable_deep_agent_default=False,
     ),
 }
@@ -58,7 +66,7 @@ REPORT_SPECS: dict[ReportType, ReportSpec] = {
 class MetricDelta(BaseModel):
     metric_name: str
     display_name: str
-    current_value: float
+    current_value: Optional[float] = None
     prior_value: Optional[float] = None
     absolute_change: Optional[float] = None
     percentage_change: Optional[float] = None  # None if prior was 0
@@ -66,35 +74,41 @@ class MetricDelta(BaseModel):
     is_percentage_rate: bool = False
     direction: str = "unavailable"  # "up", "down", "flat", "unavailable"
     unit: str = "count"  # "count", "currency", "percentage", "seconds"
+    status: SourceAvailability = SourceAvailability.AVAILABLE
 
 
 class ConversionEventSummary(BaseModel):
     event_name: str
     display_name: str
-    current_count: int
+    current_count: Optional[int] = None
     prior_count: Optional[int] = None
     count_change: Optional[int] = None
     percentage_change: Optional[float] = None
     direction: str = "unavailable"
+    status: SourceAvailability = SourceAvailability.AVAILABLE
 
 
 class ChannelPerformance(BaseModel):
     channel: str
-    sessions: int
-    active_users: int
+    sessions: Optional[int] = None
+    active_users: Optional[int] = None
     prior_sessions: Optional[int] = None
     session_change: Optional[int] = None
     percentage_change: Optional[float] = None
-    conversions: int = 0
+    # Legacy field retained for compatibility. It is never populated from the
+    # broad GA4 ``conversions`` metric by the report pipeline.
+    conversions: Optional[int] = None
+    status: SourceAvailability = SourceAvailability.AVAILABLE
 
 
 class PagePerformance(BaseModel):
     page_path: str
-    sessions: int
-    active_users: int
+    sessions: Optional[int] = None
+    active_users: Optional[int] = None
     prior_sessions: Optional[int] = None
     session_change: Optional[int] = None
     is_high_intent: bool = False
+    status: SourceAvailability = SourceAvailability.AVAILABLE
 
 
 class StrikingDistanceKeyword(BaseModel):
@@ -185,6 +199,47 @@ class LocalInteractionData(BaseModel):
     recent_review_snippets: List[str] = Field(default_factory=list)
 
 
+class WebsiteInquiryMetrics(BaseModel):
+    """Optional client-scoped website inquiry aggregate, without credentials."""
+
+    status: SourceAvailability = SourceAvailability.NOT_CONFIGURED
+    source: str = "website_delivery_aggregate"
+    current_inquiries: Optional[int] = None
+    prior_inquiries: Optional[int] = None
+    inquiry_events: dict[str, Optional[int]] = Field(default_factory=dict)
+    prior_inquiry_events: dict[str, Optional[int]] = Field(default_factory=dict)
+    delivery_metrics: dict[str, Any] = Field(default_factory=dict)
+    credential_reference_configured: bool = False
+    reason: Optional[str] = None
+
+
+class ReportDeliveryMetrics(BaseModel):
+    """Client-safe aggregate delivery tracking; no IDs, recipients, or raw records."""
+
+    status: SourceAvailability = SourceAvailability.NOT_CONFIGURED
+    source: str = "resend_email_metrics"
+    client_id: Optional[str] = None
+    report_type: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    timezone: Optional[str] = None
+    metrics: dict[str, int | float | None] = Field(default_factory=dict)
+    tracked_report_count: int = 0
+    queried_report_count: int = 0
+    successful_report_count: int = 0
+    failed_report_count: int = 0
+    retention_excluded_count: int = 0
+    successful_batches: int = 0
+    failed_batches: int = 0
+    cache_hit: bool = False
+    retention_clamped: bool = False
+    provider_retention_clamped: bool = False
+    tracking_note: str = (
+        "Delivered means the recipient mail server accepted the message. Opens and clicks are estimated tracking signals, not inbox confirmation."
+    )
+    reason: Optional[str] = None
+
+
 class GrowthAnalysisInput(BaseModel):
     """Normalized, deterministic data contract passed to AI Growth Analyst and renderers."""
     client_id: str
@@ -210,6 +265,18 @@ class GrowthAnalysisInput(BaseModel):
 
     core_metrics: List[MetricDelta] = Field(default_factory=list)
     conversion_rate: Optional[MetricDelta] = None
+    # Primary leads are restricted to the configured GA4 key event generate_lead.
+    primary_leads: List[ConversionEventSummary] = Field(default_factory=list)
+    # Customer actions are useful interactions, but are not key conversions.
+    customer_actions: List[ConversionEventSummary] = Field(default_factory=list)
+    # Funnel activity describes form progression and is not a completed lead.
+    funnel_activity: List[ConversionEventSummary] = Field(default_factory=list)
+    abandonment_summary: Optional[dict[str, Any]] = Field(default=None, description="Detailed funnel progression, dropoff rates between steps, and abandonment analysis.")
+    # Sessions, users, page views, scrolls, and user engagement live here rather
+    # than in any conversion table.
+    engagement_metrics: dict[str, Any] = Field(default_factory=dict)
+    event_statuses: dict[str, Any] = Field(default_factory=dict)
+    website_inquiry_metrics: Optional[WebsiteInquiryMetrics] = None
     conversion_events: List[ConversionEventSummary] = Field(default_factory=list)
     top_channels: List[ChannelPerformance] = Field(default_factory=list)
     top_pages: List[PagePerformance] = Field(default_factory=list)
@@ -541,7 +608,6 @@ class WeeklyDigestOutput(BaseModel):
     conversion_insight: str = Field(default="", description="Plain-English summary of recorded customer/contact actions and configured key conversions")
     search_opportunity: Optional[str] = Field(default=None, description="One striking-distance or trending search opportunity (1-2 sentences)")
     local_insight: Optional[str] = Field(default=None, description="GBP interaction movement (calls, directions) or None if unconfigured")
-    next_actions: List[ActionItem] = Field(default_factory=list, description="Max 2 concrete optimizations for the upcoming week")
     overall_sentiment: str = Field(default="Growth", description="Positive, Moderate, Critical, Growth")
 
 
@@ -554,7 +620,7 @@ class AIReportOutput(BaseModel):
     conversion_insights: str = Field(default="", description="Analysis of conversion rate, key events, and funnel effectiveness")
     seo_and_content_opportunities: str = Field(..., description="Striking-distance keyword targets and new service pages")
     local_seo_insights: str = Field(default="", description="Analysis of GBP interactions, reviews, and local discovery")
-    agency_action_plan: List[ActionItem] = Field(..., description="2-4 concrete optimizations for upcoming cycle justifying retainer")
+    agency_action_plan: List[ActionItem] = Field(..., description="Up to 3 strongest evidence-backed optimizations for the upcoming cycle")
     deep_discoveries: List[DataDiscovery] = Field(default_factory=list, description="Client-specific discoveries from exploratory multi-source agent tools")
     overall_sentiment: str = Field(default="Growth", description="Positive, Moderate, Critical, Growth")
 
@@ -583,3 +649,4 @@ class FullGrowthBriefing(BaseModel):
     insights: AIReportOutput
     weekly_insights: Optional[WeeklyDigestOutput] = None
     exploration_audit: Optional[ExplorationAudit] = None
+    report_delivery_metrics: Optional[ReportDeliveryMetrics] = None
