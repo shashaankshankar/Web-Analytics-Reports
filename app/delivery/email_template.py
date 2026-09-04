@@ -1,6 +1,7 @@
 from __future__ import annotations
 import html
 from app.analytics.contracts import FullGrowthBriefing, REPORT_SPECS, ReportMode, ReportType
+from app.ai.privacy import scrub_gsc_query
 from app.delivery.email_components import (
     COLOR_BG,
     COLOR_ON_SURFACE,
@@ -14,6 +15,8 @@ from app.delivery.email_components import (
     render_action_card,
     render_goals_block,
     render_kpi_card,
+    render_report_delivery_block,
+    render_website_inquiry_delivery_block,
     select_strongest_actions,
 )
 from app.delivery.discovery_copy import build_client_discovery_copies
@@ -120,7 +123,7 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
         conv_rows_html += f"""
         <tr style="border-bottom: 1px solid rgba(198, 198, 205, 0.3);">
           <td style="padding: 12px 14px; font-family: {FONT_FAMILY_MAIN}; font-weight: 600; color: #191C1E; font-size: 13.5px;">{ev_name}</td>
-          <td style="padding: 12px 14px; text-align: center; color: #191C1E; font-size: 13.5px; font-weight: 600; font-family: {FONT_FAMILY_MAIN};">{ce.current_count:,}</td>
+          <td style="padding: 12px 14px; text-align: center; color: #191C1E; font-size: 13.5px; font-weight: 600; font-family: {FONT_FAMILY_MAIN};">{(f"{ce.current_count:,}" if ce.current_count is not None else "Not available")}</td>
           <td style="padding: 12px 14px; text-align: center; color: #515F74; font-size: 13px; font-family: {FONT_FAMILY_MAIN};">{prior_display}</td>
           <td style="padding: 12px 14px; text-align: right; {color_style} font-weight: 600; font-size: 13px; font-family: {FONT_FAMILY_MAIN};">{dir_icon} {pct_str}</td>
         </tr>
@@ -161,7 +164,7 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
     # 5. LLM-authored SEO narrative and striking-distance keyword rows
     kw_rows_html = ""
     for kw in analytics.striking_distance_keywords[:5]:
-        kw_query = html.escape(kw.query)
+        kw_query = html.escape(scrub_gsc_query(kw.query))
         kw_rows_html += f"""
         <tr style="border-bottom: 1px solid rgba(198, 198, 205, 0.3);">
           <td style="padding: 12px 14px; font-family: {FONT_FAMILY_MAIN}; font-weight: 600; color: #191C1E; font-size: 13.5px;">
@@ -395,6 +398,47 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
             </td>
           </tr>""" if (local_insights_escaped or gbp_evidence_html) else ""
 
+    report_delivery_block = render_report_delivery_block(
+        briefing.report_delivery_metrics,
+        primary_color,
+        accent_color,
+    )
+    report_delivery_section = (
+        f"""<!-- Section: Analytics Report Delivery -->
+          <tr>
+            <td style="padding: 24px 32px;">
+              {report_delivery_block}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 0 32px;">
+              <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
+            </td>
+          </tr>"""
+        if report_delivery_block
+        else ""
+    )
+    website_inquiry_block = render_website_inquiry_delivery_block(
+        analytics.website_inquiry_metrics,
+        primary_color,
+        accent_color,
+    )
+    website_inquiry_section = (
+        f"""<!-- Section: Website Inquiry Delivery -->
+          <tr>
+            <td style="padding: 24px 32px;">
+              {website_inquiry_block}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 0 32px;">
+              <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
+            </td>
+          </tr>"""
+        if website_inquiry_block
+        else ""
+    )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -500,6 +544,9 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
           </tr>
 
           {conv_section}
+
+          {report_delivery_section}
+          {website_inquiry_section}
 
           <!-- Section: Inflow & Channel Dynamics -->
           <tr>

@@ -16,7 +16,9 @@ from app.analytics.metrics import (
     filter_striking_distance_keywords,
     calculate_search_movers,
     normalize_conversion_events,
+    classify_ga4_events,
     aggregate_growth_metrics,
+    derive_form_progression_and_abandonment,
 )
 from app.config import ClientConfig
 from app.analytics.periods import ReportWindowError, select_report_window
@@ -181,24 +183,41 @@ def test_normalize_conversion_events():
     curr_events = {"generate_lead": 18, "phone_click": 12}
     prior_events = {"generate_lead": 15, "phone_click": 10}
     events = normalize_conversion_events(curr_events, prior_events)
-    assert len(events) == 2
+    assert len(events) == 1
     lead_ev = next(e for e in events if e.event_name == "generate_lead")
-    assert lead_ev.display_name == "Lead Submissions"
+    assert lead_ev.display_name == "Primary Leads"
     assert lead_ev.count_change == 3
     assert lead_ev.percentage_change == 20.0
     assert lead_ev.direction == "up"
 
 
 def test_normalize_conversion_events_keeps_prior_only_events_for_comparisons():
-    events = normalize_conversion_events(
+    groups = classify_ga4_events(
         {"generate_lead": 0},
         {"generate_lead": 3, "appointment_request": 2},
     )
-    appointment = next(event for event in events if event.event_name == "appointment_request")
+    assert [event.event_name for event in groups["primary_leads"]] == ["generate_lead"]
+    appointment = next(event for event in groups["customer_actions"] if event.event_name == "appointment_request")
     assert appointment.current_count == 0
     assert appointment.prior_count == 2
     assert appointment.count_change == -2
     assert appointment.direction == "down"
+
+
+def test_classify_ga4_events_excludes_automatic_events_from_action_groups():
+    groups = classify_ga4_events({
+        "generate_lead": 2,
+        "phone_click": 3,
+        "form_start": 4,
+        "page_view": 100,
+        "scroll": 20,
+        "user_engagement": 40,
+    })
+    assert [item.event_name for item in groups["primary_leads"]] == ["generate_lead"]
+    assert [item.event_name for item in groups["customer_actions"]] == ["phone_click"]
+    assert [item.event_name for item in groups["funnel_activity"]] == ["form_start"]
+    assert "page_view" in groups["automatic_events_excluded"]
+    assert "page_view" not in {item.event_name for item in groups["customer_actions"]}
 
 def test_aggregate_growth_metrics():
     client = ClientConfig(
@@ -406,3 +425,118 @@ def test_aggregate_growth_metrics_initial_baseline_has_no_prior_values_or_deltas
     assert growth_input.page_decliners == []
     assert growth_input.search_movers == []
     assert growth_input.comparison_suppressed is True
+
+
+def test_form_progression_and_abandonment_derivation():
+    current_events = {
+        "form_start": 100,
+        "form_step_1": 80,
+        "form_step_2": 50,
+        "form_step_3": 30,
+        "form_submit": 20,
+    }
+    prior_events = {
+        "form_start": 90,
+        "form_step_1": 70,
+        "form_step_2": 40,
+        "form_step_3": 25,
+        "form_submit": 15,
+    }
+    abandonment = derive_form_progression_and_abandonment(current_events, prior_events)
+    assert abandonment is not None
+    assert abandonment["total_starts"] == 100
+    assert abandonment["total_completions"] == 20
+    assert abandonment["overall_completion_rate"] == 20.0
+    assert abandonment["overall_abandonment_rate"] == 80.0
+
+    steps = abandonment["steps"]
+    assert len(steps) == 5
+    # Step 0: form_start -> 100, dropoff 20, dropoff_rate 20.0%
+    assert steps[0]["step_id"] == "form_start"
+    assert steps[0]["current_count"] == 100
+    assert steps[0]["dropoff_count"] == 20
+    assert steps[0]["dropoff_rate"] == 20.0
+    assert steps[0]["progression_rate"] == 80.0
+
+    # Step 1: form_step_1 -> 80, dropoff 30, dropoff_rate 37.5%
+    assert steps[1]["step_id"] == "form_step_1"
+    assert steps[1]["current_count"] == 80
+    assert steps[1]["dropoff_count"] == 30
+    assert steps[1]["dropoff_rate"] == 37.5
+    assert steps[1]["progression_rate"] == 62.5
+
+    # Step 2: form_step_2 -> 50, dropoff 20, dropoff_rate 40.0%
+    assert steps[2]["step_id"] == "form_step_2"
+    assert steps[2]["current_count"] == 50
+    assert steps[2]["dropoff_count"] == 20
+    assert steps[2]["dropoff_rate"] == 40.0
+
+    # Step 3: form_step_3 -> 30, dropoff 10, dropoff_rate 33.33%
+    assert steps[3]["step_id"] == "form_step_3"
+    assert steps[3]["current_count"] == 30
+    assert steps[3]["dropoff_count"] == 10
+
+    # Step 4: form_submit -> 20, dropoff None
+    assert steps[4]["step_id"] == "form_submit"
+    assert steps[4]["current_count"] == 20
+    assert steps[4]["dropoff_count"] is None
+
+    # Highest dropoff count was Step 1 -> Step 2 (30 users dropped off)
+    assert abandonment["highest_dropoff_stage"] == "Step 1 -> Step 2"
+    assert abandonment["dropoff_by_final_step"] == {
+        "form_start": 20,
+        "form_step_1": 30,
+        "form_step_2": 20,
+        "form_step_3": 10,
+    }
+
+
+def test_aggregate_growth_metrics_includes_abandonment_summary():
+    client = ClientConfig(
+        client_id="acme",
+        company_name="Acme Corp",
+        domain="https://acme.example.com",
+        industry="healthcare",
+        goals=["Improve conversion"],
+    )
+    ga4_data = {
+        "summary": {"activeUsers": 500, "sessions": 700, "engagementRate": 0.65, "bounceRate": 0.35, "conversions": 20},
+        "prior_summary": {"activeUsers": 400, "sessions": 550, "engagementRate": 0.60, "bounceRate": 0.40, "conversions": 15},
+        "channels": [],
+        "pages": [],
+        "events": {
+            "form_start": 100,
+            "form_step_1": 75,
+            "form_step_2": 50,
+            "form_step_3": 35,
+            "generate_lead": 20,
+        },
+        "prior_events": {
+            "form_start": 80,
+            "form_step_1": 60,
+            "form_step_2": 40,
+            "form_step_3": 25,
+            "generate_lead": 15,
+        },
+    }
+    growth_input = aggregate_growth_metrics(
+        client=client,
+        start_date="2026-08-01",
+        end_date="2026-08-28",
+        prior_start_date="2026-07-04",
+        prior_end_date="2026-07-31",
+        ga4_data=ga4_data,
+        gsc_queries=[],
+        gbp_data={},
+    )
+    assert growth_input.abandonment_summary is not None
+    assert growth_input.abandonment_summary["total_starts"] == 100
+    assert growth_input.abandonment_summary["total_completions"] == 20
+    assert growth_input.raw_summary_stats["abandonment_summary"] == growth_input.abandonment_summary
+    # Funnel activity contains step events
+    step_events = {item.event_name for item in growth_input.funnel_activity}
+    assert "form_start" in step_events
+    assert "form_step_1" in step_events
+    assert "form_step_2" in step_events
+    assert "form_step_3" in step_events
+

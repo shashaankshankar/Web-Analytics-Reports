@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -115,8 +116,21 @@ class GoogleBusinessProfileExtractor:
         access_token: Optional[str] = None,
         requester: Callable[[str, str], dict] = default_gbp_requester,
         account_id: Optional[str] = None,
+        public_place_id: Optional[str] = None,
+        candidate_location_ids: Optional[list[str]] = None,
+        business_title: Optional[str] = None,
+        company_name: Optional[str] = None,
     ):
         self.location_id = location_id
+        self.public_place_id = str(public_place_id or "").strip().removeprefix("places/")
+        self.candidate_location_ids = [
+            str(value).strip()
+            for value in (candidate_location_ids or [])
+            if str(value).strip().startswith("locations/")
+        ]
+        if str(location_id or "").strip().startswith("locations/") and str(location_id).strip() not in self.candidate_location_ids:
+            self.candidate_location_ids.insert(0, str(location_id).strip())
+        self.business_title = (business_title or company_name or "").strip() or None
         self._access_token = access_token
         self.requester = requester
         configured_account = account_id or os.getenv("GBP_ACCOUNT_ID", "")
@@ -125,7 +139,11 @@ class GoogleBusinessProfileExtractor:
         self._resolved_account_id: Optional[str] = self.account_id
 
     def is_configured(self) -> bool:
-        return bool(self.location_id and self.location_id.strip())
+        return bool(
+            (self.location_id and self.location_id.strip())
+            or self.candidate_location_ids
+            or self.public_place_id
+        )
 
     def get_token(self) -> str:
         if self._access_token:
@@ -921,8 +939,22 @@ class GoogleBusinessProfileExtractor:
             if not page_token:
                 return locations
 
-    def resolve_private_location(self, access_token: Optional[str] = None) -> Dict[str, Any]:
-        """Resolve a public Place ID to a private account/location resource."""
+    @staticmethod
+    def _titles_match(title1: str, title2: str) -> bool:
+        def _norm(s: str) -> str:
+            s = s.lower().strip()
+            if s.startswith("the "):
+                s = s[4:].strip()
+            s = re.sub(r"[^\w\s]", "", s)
+            return " ".join(s.split())
+
+        n1, n2 = _norm(title1), _norm(title2)
+        if not n1 or not n2:
+            return False
+        return n1 == n2 or n1 in n2 or n2 in n1
+
+    def _resolve_private_location(self, access_token: Optional[str] = None) -> Dict[str, Any]:
+        """Resolve a public Place ID to a private account/location resource requiring triple validation."""
         result: Dict[str, Any] = {
             "status": SourceAvailability.UNAVAILABLE.value,
             "location_id": None,
@@ -935,8 +967,15 @@ class GoogleBusinessProfileExtractor:
             return result
 
         configured_location = self.location_id.strip()
-        target_place_id = configured_location.removeprefix("places/") if configured_location.startswith("places/") else None
+        target_place_id = self.public_place_id or (
+            configured_location.removeprefix("places/") if configured_location.startswith("places/") else None
+        )
+        target_private_locations = set(self.candidate_location_ids)
+        if configured_location.startswith("locations/"):
+            target_private_locations.add(configured_location)
         target_private_location = configured_location if configured_location.startswith("locations/") else None
+        expected_title = self.business_title
+
         try:
             if self._private_account_resource() and target_private_location:
                 accounts = [{"name": self._private_account_resource()}]
@@ -956,10 +995,22 @@ class GoogleBusinessProfileExtractor:
                     location_name = location.get("name")
                     metadata = location.get("metadata") or {}
                     place_id = metadata.get("placeId", metadata.get("place_id"))
-                    if (
-                        (target_private_location and location_name == target_private_location)
-                        or (target_place_id and place_id == target_place_id)
-                    ):
+                    location_title = str(
+                        location.get("title")
+                        or (location.get("displayName") if isinstance(location.get("displayName"), str) else (location.get("displayName") or {}).get("text", ""))
+                        or ""
+                    ).strip()
+
+                    # Triple verification: require ALL available/configured identifiers to match
+                    checks = []
+                    if target_private_locations:
+                        checks.append(location_name in target_private_locations)
+                    if target_place_id:
+                        checks.append(place_id == target_place_id)
+                    if expected_title:
+                        checks.append(self._titles_match(location_title, expected_title))
+
+                    if checks and all(checks):
                         self._resolved_location_id = location_name
                         self._resolved_account_id = account_name
                         result.update({
@@ -975,8 +1026,10 @@ class GoogleBusinessProfileExtractor:
             return result
 
         result["status"] = SourceAvailability.EMPTY.value
-        result["reason"] = "No managed GBP location matched the configured Place ID."
+        result["reason"] = "No managed GBP location matched all configured identifiers (private location candidate, public Place ID, and business title)."
         return result
+
+    resolve_private_location = _resolve_private_location
 
     def fetch_local_insights(
         self,
@@ -987,7 +1040,7 @@ class GoogleBusinessProfileExtractor:
         """Fetch profile, periodic performance, keyword, review, and call data."""
         if not self.is_configured():
             return self._base_result(
-                SourceAvailability.UNAVAILABLE,
+                SourceAvailability.NOT_CONFIGURED,
                 "Google Business Profile location is not configured.",
             )
 
@@ -1004,7 +1057,7 @@ class GoogleBusinessProfileExtractor:
             clean_location = resolution.get("location_id") or clean_location
 
         if not clean_location.startswith("locations/"):
-            public_place_id = self.location_id.strip().removeprefix("places/")
+            public_place_id = self.public_place_id or self.location_id.strip().removeprefix("places/")
             url = f"https://places.googleapis.com/v1/places/{public_place_id}"
             try:
                 headers = {
@@ -1015,7 +1068,10 @@ class GoogleBusinessProfileExtractor:
                 request = urllib.request.Request(url, method="GET", headers=headers)
                 with urllib.request.urlopen(request, timeout=30) as response:
                     data = json.loads(response.read().decode())
-                return self._profile_result(data, profile_source="places")
+                public_result = self._profile_result(data, profile_source="places")
+                public_result["status"] = SourceAvailability.PARTIAL.value
+                public_result["reason"] = "Public Places profile data is available; private GBP performance and managed-review data were not verified."
+                return public_result
             except Exception as exc:
                 return self._base_result(
                     SourceAvailability.ERROR,
@@ -1082,4 +1138,26 @@ class GoogleBusinessProfileExtractor:
         ]
         result["limitations"] = [item for item in result["limitations"] if item]
         result["reason"] = "GBP profile and requested sub-sources were queried."
+        sub_statuses = [
+            result.get("profile_status"),
+            result.get("performance_status"),
+            result.get("search_keywords_status"),
+            result.get("reviews_status"),
+            result.get("business_calls_status"),
+        ]
+        core_statuses = [
+            result.get("profile_status"),
+            result.get("performance_status"),
+        ]
+        if any(status == SourceAvailability.ERROR.value for status in sub_statuses):
+            result["status"] = SourceAvailability.PARTIAL.value
+        elif any(status == SourceAvailability.PARTIAL.value for status in sub_statuses):
+            result["status"] = SourceAvailability.PARTIAL.value
+        elif any(status in {
+            SourceAvailability.PARTIAL.value,
+            SourceAvailability.UNAVAILABLE.value,
+            SourceAvailability.NOT_CONFIGURED.value,
+            SourceAvailability.EMPTY.value,
+        } for status in core_statuses) and any(status == SourceAvailability.AVAILABLE.value for status in core_statuses):
+            result["status"] = SourceAvailability.PARTIAL.value
         return result

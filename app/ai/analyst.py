@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 
 from app.config import Settings
+from app.ai.privacy import sanitize_for_ai
 from app.ai.structured_output import (
     PERFORMANCE_REPORT_SCHEMA,
     WEEKLY_DIGEST_SCHEMA,
@@ -114,7 +115,7 @@ def build_weekly_user_prompt(data: GrowthAnalysisInput) -> str:
         "local_seo": _local_seo_prompt_payload(data),
         "conversion_events": [e.model_dump() for e in data.conversion_events[:8]],
     }
-    schema_str = json.dumps(payload, indent=2)
+    schema_str = json.dumps(sanitize_for_ai(payload), indent=2, ensure_ascii=False)
     return f"""Analyze this 7-day weekly growth dataset for {data.company_name} ({data.domain}) and produce a concise, warm, executive weekly digest for the business owner.
 
 Dataset:
@@ -180,7 +181,7 @@ def build_performance_user_prompt(data: GrowthAnalysisInput) -> str:
         "local_seo": _local_seo_prompt_payload(data),
         "raw_summary_stats": data.raw_summary_stats,
     }
-    schema_str = json.dumps(payload, indent=2)
+    schema_str = json.dumps(sanitize_for_ai(payload), indent=2, ensure_ascii=False)
     dataset_name = (
         "initial measurement baseline dataset"
         if data.report_mode == ReportMode.INITIAL_BASELINE
@@ -352,6 +353,7 @@ class GrowthAnalyst:
         }
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
+        payload = sanitize_for_ai(payload)
 
         endpoint = f"{self.base_url}/chat/completions"
         try:
@@ -395,6 +397,7 @@ class GrowthAnalyst:
         }
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
+        payload = sanitize_for_ai(payload)
 
         endpoint = f"{self.base_url}/chat/completions"
         try:

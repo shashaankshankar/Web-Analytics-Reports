@@ -38,6 +38,12 @@ Set these through Secret Manager or Cloud Run environment configuration:
 - `OPENROUTER_API_KEY`
 - `RESEND_API_KEY`
 - `RESEND_FROM_EMAIL`
+- `REPORT_DELIVERY_STORE_PATH` (optional protected durable path for the small
+  internal sent-report provenance store)
+- `REPORT_DELIVERY_CACHE_TTL_SECONDS` (default `900`; cache lifetime for a
+  successful read-only metrics result)
+- `REPORT_DELIVERY_RETENTION_DAYS` (default `90`; older stored provenance is
+  excluded and reported as unavailable/partial rather than zero)
 - `GBP_OAUTH_CREDENTIALS_JSON` (Secret Manager-backed JSON containing the
   authorized GBP user's OAuth `client_id`, `client_secret`, `refresh_token`,
   and optional `token_uri`)
@@ -56,6 +62,20 @@ Use the Cloud Run service account's Application Default Credentials for GA4 and
 Search Console. Private GBP profile, Performance, managed Reviews, and optional
 Business Calls data use the authorized user's OAuth bundle. Do not upload a
 service-account key file to the image or repository.
+
+The internal report sender and Resend Email Metrics source both use the global
+internal `RESEND_API_KEY`; website inquiry configuration never supplies or
+overrides that key. Website credentials must be client-scoped references in
+the client JSON and resolved by a separately wired website aggregate provider.
+No website credential falls back to the internal sender key.
+
+The provenance store contains only Resend message IDs, client/report/window
+identity, timezone, UTC send time, and allowlisted technical flags. It does not
+contain recipients, message content, or secret values. Cloud Run's ordinary
+container filesystem is ephemeral and is not a durable shared database, so
+configure an external or explicitly durable store before relying on historical
+delivery metrics across revisions or instances. A successful local test or
+Resend API response is not inbox-receipt evidence.
 
 Before the first live GBP call, the Google Cloud project must have approved
 Business Profile API access. Enabling the individual APIs is not sufficient:

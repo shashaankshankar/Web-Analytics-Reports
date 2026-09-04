@@ -22,8 +22,15 @@ class ResendEmailSender:
         from_email: Optional[str] = None,
         endpoint: str = "https://api.resend.com/emails",
     ):
-        self.api_key = api_key or os.getenv("RESEND_API_KEY", os.getenv("REPORT_EMAIL_API_KEY", ""))
-        self.from_email = from_email or os.getenv("RESEND_FROM_EMAIL", os.getenv("REPORT_EMAIL_FROM", "reports@growthagency.com"))
+        # Internal report delivery has one global credential boundary.  A
+        # caller-provided value is useful only for isolated tests; there is no
+        # legacy or client/website credential fallback.
+        self.api_key = os.getenv("RESEND_API_KEY", "") if api_key is None else api_key
+        self.from_email = (
+            os.getenv("RESEND_FROM_EMAIL", "reports@growthagency.com")
+            if from_email is None
+            else from_email
+        )
         self.endpoint = endpoint
 
     @property
@@ -96,18 +103,23 @@ class ResendEmailSender:
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 res_data = json.loads(response.read())
+                resend_email_id = res_data.get("id")
+                if not isinstance(resend_email_id, str) or not resend_email_id.strip():
+                    raise RuntimeError(
+                        "Resend accepted the request without returning an email ID; delivery state is unknown."
+                    )
                 return {
                     "status": "sent",
-                    "id": res_data.get("id"),
+                    "id": resend_email_id.strip(),
                     "to": valid_to,
                     "cc": valid_cc,
                     "subject": subject,
                     "idempotency_key": idempotency_key,
                 }
         except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="ignore")
+            error.read()
             logger.exception("REPORT_EVENT resend_api_error status_code=%s", error.code)
-            raise RuntimeError(f"Resend API error {error.code}: {body}") from error
+            raise RuntimeError(f"Resend API error {error.code}; delivery state is unknown.") from error
         except Exception:
             logger.exception("REPORT_EVENT resend_api_error")
             raise

@@ -14,6 +14,8 @@ from app.delivery.email_components import (
     is_light_color,
     render_goals_block,
     render_kpi_card,
+    render_report_delivery_block,
+    render_website_inquiry_delivery_block,
 )
 
 def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
@@ -125,6 +127,47 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
 
     goals_html = render_goals_block(analytics.goals, primary_color, accent_color)
 
+    report_delivery_block = render_report_delivery_block(
+        briefing.report_delivery_metrics,
+        primary_color,
+        accent_color,
+    )
+    report_delivery_section = (
+        f"""<!-- Section: Analytics Report Delivery -->
+          <tr>
+            <td style="padding: 20px 24px 16px 24px;">
+              {report_delivery_block}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 0 24px;">
+              <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
+            </td>
+          </tr>"""
+        if report_delivery_block
+        else ""
+    )
+    website_inquiry_block = render_website_inquiry_delivery_block(
+        analytics.website_inquiry_metrics,
+        primary_color,
+        accent_color,
+    )
+    website_inquiry_section = (
+        f"""<!-- Section: Website Inquiry Delivery -->
+          <tr>
+            <td style="padding: 20px 24px 16px 24px;">
+              {website_inquiry_block}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 0 24px;">
+              <div style="height: 1px; background-color: #000000; opacity: 0.15; width: 100%;"></div>
+            </td>
+          </tr>"""
+        if website_inquiry_block
+        else ""
+    )
+
     logo_markup = f'<img class="weekly-brand-logo" src="{html.escape(logo_url)}" alt="{client_name}" height="52" style="height: 52px; width: auto; max-width: 260px; max-height: 56px; display: block; border: 0;" />' if logo_url else f'<span class="weekly-brand-logo" style="font-family: {FONT_FAMILY_SERIF}; font-size: 20px; font-weight: 700; color: {header_text_color}; letter-spacing: -0.01em;">{client_name}</span>'
 
     return f"""<!DOCTYPE html>
@@ -201,6 +244,9 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
               </p>
             </td>
           </tr>
+
+          {report_delivery_section}
+          {website_inquiry_section}
 
           <!-- Editorial Divider -->
           <tr>

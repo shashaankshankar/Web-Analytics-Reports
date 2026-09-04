@@ -261,10 +261,18 @@ class FakeGSCExtractor:
 class FakeGBPExtractor:
     """GBP fake that exposes only honest profile metadata."""
 
-    def __init__(self, location_id: str = "places/test", status: str = "available", account_id: str = ""):
+    def __init__(
+        self,
+        location_id: str = "places/test",
+        status: str = "available",
+        account_id: str = "",
+        business_title: str | None = None,
+        **kwargs: Any,
+    ):
         self.location_id = location_id
         self.status = status
         self.account_id = account_id
+        self.business_title = business_title
 
     def fetch_local_insights(self, start_date: str, end_date: str, **_: Any) -> dict[str, Any]:
         return {

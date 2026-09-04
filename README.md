@@ -79,6 +79,48 @@ For each real client, keep two dates distinct when they are known:
 
 When a requested prior period is before, or overlaps, `measurement_start_date`, the performance command automatically creates an **Initial Measurement Baseline**. The observed window begins on `measurement_start_date`, current source-backed values are shown, and prior values, deltas, movement claims, and comparison findings are suppressed. The report is not labeled as a complete 28-day report. A normal comparison report requires a full current and prior source-covered window on or after the measurement start date.
 
+### Delivery tracking and website metrics boundaries
+
+Internal report delivery and website inquiry measurement are separate systems.
+`RESEND_API_KEY` and `RESEND_FROM_EMAIL` belong only to the internal report
+sender and the read-only Resend Email Metrics source. The sender records a
+successful provider ID only after Resend returns one. If
+`REPORT_DELIVERY_STORE_PATH` is configured, the service stores that ID with the
+client slug, report type, exact reporting window, client timezone, UTC send
+timestamp, and a few safe technical flags. It does not store message bodies,
+recipient addresses, or credentials.
+
+The Resend metrics source calls `GET /emails/metrics` only with IDs selected
+from that store for one exact client/report/window/timezone. Requests contain
+at most 100 IDs. A successful provider response is `available`; no matching
+stored IDs is `empty`; a mix of retained and expired IDs or failed/partial
+batches is `partial`; expired-only local provenance is `unavailable`; and
+credential, transport, or malformed-response failures remain `not_configured`,
+`unavailable`, or `error` as appropriate.
+Unknown values are never converted to zero. A provider `delivered` signal means
+acceptance by the recipient mail server, not confirmed inbox placement.
+
+Website inquiry metrics are opt-in and client-scoped. A client may reference a
+separately managed credential without placing secret material in its JSON:
+
+```json
+{
+  "website_inquiry_metrics": {
+    "enabled": true,
+    "provider": "secret_manager",
+    "secret_manager_ref": "projects/PROJECT/secrets/CLIENT_WEBSITE_METRICS/versions/latest",
+    "expected_client_id": "client-slug",
+    "aggregate_source": "website_delivery_aggregate"
+  }
+}
+```
+
+The website adapter never reads `RESEND_API_KEY`. Without an explicitly wired
+website aggregate reader and a valid client-bound credential/reference, it
+returns `not_configured` or `unavailable` and makes no provider call. This pass
+does not implement a website provider, GA4 Admin, GBP OAuth, AI redaction, or
+report-layout integration.
+
 ### 3. Generate Reports via CLI
 
 ```bash
@@ -111,3 +153,11 @@ email requires `REPORT_DELIVERY_ENABLED=true` and an explicit
 `REPORT_ALLOWED_CLIENTS` allowlist; the initial allowlist should contain only
 `thehouseofdental`. Production Cloud Run deployment is gated to a clean,
 published `main` checkout by `scripts/deploy_cloud_run.sh`.
+
+Delivery tracking is a separate readiness gate. Set
+`REPORT_DELIVERY_STORE_PATH` only to a protected durable location appropriate
+for the runtime. The local filesystem of a typical Cloud Run container is not a
+durable multi-instance database; until an external or mounted store is
+provided, reports can still send but historical Resend metrics may be
+`not_configured` or incomplete. Local tests use provider fakes and do not send
+email or establish Resend acceptance, webhook delivery, or inbox receipt.

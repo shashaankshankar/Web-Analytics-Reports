@@ -23,10 +23,15 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from app.ai.privacy import scrub_gsc_query
 
 from app.analytics.contracts import FullGrowthBriefing, REPORT_SPECS, ReportMode, ReportType
 from app.delivery.discovery_copy import build_client_discovery_copies
-from app.delivery.email_components import select_strongest_actions
+from app.delivery.email_components import (
+    report_delivery_metric_rows,
+    select_strongest_actions,
+    website_inquiry_metric_rows,
+)
 from app.delivery.gbp_reporting import calls_rows, keyword_rows as gbp_keyword_rows, performance_rows, profile_rows, review_rows
 
 
@@ -314,8 +319,13 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
     if core_metrics:
         kpi_cells = []
         for m in core_metrics[:5]:
-            val_s = f'{int(m.current_value):,}' if m.unit == 'count' else f'{m.current_value:.1f}%'
-            if m.unit == 'currency':
+            if m.current_value is None:
+                val_s = 'Not available'
+            elif m.unit == 'count':
+                val_s = f'{int(m.current_value):,}'
+            else:
+                val_s = f'{m.current_value:.1f}%'
+            if m.unit == 'currency' and m.current_value is not None:
                 val_s = f'${m.current_value:,.2f}'
 
             if m.is_percentage_rate and m.percentage_points_change is not None:
@@ -389,7 +399,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
 
             conv_rows.append([
                 Paragraph(escape(ce.display_name), styles['TdAction']),
-                Paragraph(f'{ce.current_count:,}', styles['TdStat']),
+                Paragraph(f'{ce.current_count:,}' if ce.current_count is not None else 'Not available', styles['TdStat']),
                 Paragraph(f'{ce.prior_count:,}' if ce.prior_count is not None else 'Not available', styles['TdStat']),
                 Paragraph(f'{dir_icon}{pct_str}', dir_style),
             ])
@@ -413,7 +423,93 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             story.append(Paragraph(escape(briefing.insights.conversion_insights), styles['BodyMd']))
             story.append(Spacer(1, 5))
 
-    # 5. Traffic & Visitor Inflow Insights Narrative
+    # 6. Delivery health sections. These use only redacted aggregate rows;
+    # provider IDs, recipients, credentials, and raw diagnostics never enter
+    # the client PDF.
+    def _delivery_status(model) -> str:
+        value = getattr(model, 'status', '') if model is not None else ''
+        return str(getattr(value, 'value', value) or '').strip().lower()
+
+    def _delivery_note(status: str, website: bool = False) -> str:
+        if status == 'partial':
+            return (
+                'Some tracked activity was unavailable for this window; displayed figures are partial.'
+                if not website
+                else 'Some inquiry-notification activity was unavailable for this window; displayed figures are partial.'
+            )
+        if status in {'empty', 'unavailable', 'error'}:
+            return (
+                'Delivery metrics are not available for this window.'
+                if not website
+                else 'Website inquiry delivery metrics are not available for this window.'
+            )
+        return (
+            'Open and click figures are estimated tracking signals, not inbox confirmation.'
+            if not website
+            else 'These figures describe notification delivery, not appointments or confirmed leads.'
+        )
+
+    report_delivery = briefing.report_delivery_metrics
+    if report_delivery is not None and _delivery_status(report_delivery) != 'not_configured':
+        rows = report_delivery_metric_rows(report_delivery)
+        delivery_table_rows = [[Paragraph('Metric', styles['ThAction']), Paragraph('Value', styles['ThStat'])]]
+        delivery_table_rows.extend([
+            [Paragraph(escape(label), styles['TdAction']), Paragraph(escape(value), styles['TdStat'])]
+            for label, value in rows
+        ] or [[Paragraph('Activity', styles['TdAction']), Paragraph('Not available', styles['TdStat'])]])
+        t_delivery = Table(delivery_table_rows, colWidths=[5.4 * inch, 2.2 * inch], repeatRows=1)
+        t_delivery.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), BG_SURFACE_LOW),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.75, BORDER_OUTLINE_30),
+            ('LINEBELOW', (0, 1), (-1, -1), 0.5, BORDER_OUTLINE_30),
+            ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        story.append(Paragraph('ANALYTICS REPORT DELIVERY', styles['SectionHeaderCaps']))
+        story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
+        story.append(Paragraph(
+            f'Email delivery health for this analytics report. {_delivery_note(_delivery_status(report_delivery))}',
+            styles['BodyMd'],
+        ))
+        story.append(KeepTogether([t_delivery, Spacer(1, 3)]))
+
+    website_delivery = briefing.analytics.website_inquiry_metrics
+    if website_delivery is not None and _delivery_status(website_delivery) != 'not_configured':
+        rows = website_inquiry_metric_rows(website_delivery)
+        inquiry_table_rows = [[
+            Paragraph('Metric', styles['ThAction']),
+            Paragraph('This Period', styles['ThStat']),
+            Paragraph('Prior Period', styles['ThStat']),
+        ]]
+        inquiry_table_rows.extend([
+            [Paragraph(escape(label), styles['TdAction']), Paragraph(escape(current), styles['TdStat']), Paragraph(escape(prior), styles['TdStat'])]
+            for label, current, prior in rows
+        ] or [[Paragraph('Activity', styles['TdAction']), Paragraph('Not available', styles['TdStat']), Paragraph('Not available', styles['TdStat'])]])
+        t_inquiry_delivery = Table(inquiry_table_rows, colWidths=[3.6 * inch, 2.0 * inch, 2.0 * inch], repeatRows=1)
+        t_inquiry_delivery.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), BG_SURFACE_LOW),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.75, BORDER_OUTLINE_30),
+            ('LINEBELOW', (0, 1), (-1, -1), 0.5, BORDER_OUTLINE_30),
+            ('BOX', (0, 0), (-1, -1), 0.75, BORDER_OUTLINE_30),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        story.append(Paragraph('WEBSITE INQUIRY DELIVERY', styles['SectionHeaderCaps']))
+        story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
+        story.append(Paragraph(
+            f'Technical notification delivery health. {_delivery_note(_delivery_status(website_delivery), website=True)}',
+            styles['BodyMd'],
+        ))
+        story.append(KeepTogether([t_inquiry_delivery, Spacer(1, 3)]))
+
+    # 7. Traffic & Visitor Inflow Insights Narrative
     story.append(Paragraph('VISITOR INFLOW &amp; POPULAR PAGES', styles['SectionHeaderCaps']))
     story.append(HRFlowable(width='100%', thickness=0.75, color=BORDER_TERTIARY_20, spaceBefore=0, spaceAfter=4))
     story.append(Paragraph(escape(briefing.insights.traffic_and_inflow_insights), styles['BodyMd']))
@@ -438,7 +534,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             ]]
             for keyword in keywords:
                 keyword_rows.append([
-                    Paragraph(escape(keyword.query), styles['TdAction']),
+                    Paragraph(escape(scrub_gsc_query(keyword.query)), styles['TdAction']),
                     Paragraph(f'{keyword.impressions:,}', styles['TdStat']),
                     Paragraph(f'{keyword.position:.1f}', styles['TdStat']),
                     Paragraph(f'{keyword.opportunity_score:.0f}', styles['TdStatAccent']),

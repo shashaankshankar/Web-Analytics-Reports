@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.ai.privacy import scrub_gsc_query
 from app.analytics.contracts import LocalInteractionData
 
 
@@ -129,7 +130,7 @@ def performance_rows(local: LocalInteractionData) -> list[dict[str, Any]]:
 def keyword_rows(local: LocalInteractionData, limit: int = 10) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for item in (local.monthly_search_keywords or [])[:limit]:
-        keyword = str(item.get("search_keyword") or "").strip()
+        keyword = scrub_gsc_query(item.get("search_keyword"))
         if not keyword:
             continue
         value = item.get("insights_value")
@@ -153,14 +154,11 @@ def review_rows(local: LocalInteractionData, limit: int = 5) -> list[dict[str, s
         rating = review.get("star_rating")
         status = str(review.get("reply_status") or "unavailable")
         status = status.replace("_", " ").title()
-        comment = " ".join(str(review.get("comment") or "").split())
-        if len(comment) > 120:
-            comment = f"{comment[:117].rstrip()}..."
         rows.append({
             "rating": str(rating) if rating is not None else "Not reported",
             "reply_status": status,
             "updated": str(review.get("update_time") or review.get("create_time") or "")[:10],
-            "comment": comment or "No comment supplied",
+            "comment": "Comment withheld for privacy",
         })
     return rows
 

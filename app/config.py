@@ -5,8 +5,8 @@ import os
 import re
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Optional
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Any, Literal, Mapping, Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "config" / "clients"
@@ -40,6 +40,62 @@ class ReportingSettingsConfig(BaseModel):
     weekly_digest: WeeklyDigestConfig = Field(default_factory=WeeklyDigestConfig)
     performance_report: PerformanceReportConfig = Field(default_factory=PerformanceReportConfig)
 
+
+class WebsiteInquiryMetricsConfig(BaseModel):
+    """Optional, client-scoped website inquiry source configuration.
+
+    This model intentionally stores only a reference to externally managed
+    secret material. It never accepts an API key, token, recipient, or webhook
+    payload in the client JSON file.
+    """
+
+    enabled: bool = False
+    provider: Literal["website_aggregates", "secret_manager"] = "website_aggregates"
+    secret_manager_ref: str = ""
+    website_resend_metrics_secret_id: str = ""
+    expected_client_id: str = ""
+    expected_website_sending_domain: str = ""
+    aggregate_source: str = "website_delivery_aggregate"
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_secret_refs(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            ref = data.get("secret_manager_ref", "")
+            alias = data.get("website_resend_metrics_secret_id", "")
+            if ref and not alias:
+                data["website_resend_metrics_secret_id"] = ref
+            elif alias and not ref:
+                data["secret_manager_ref"] = alias
+        return data
+
+    @field_validator("secret_manager_ref", "website_resend_metrics_secret_id")
+    @classmethod
+    def validate_secret_manager_ref(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.match(r"^(?:projects/[a-z0-9][a-z0-9-]*/)?secrets/[a-zA-Z0-9][a-zA-Z0-9._-]*(?:/versions/[a-zA-Z0-9._-]+)?$", value):
+            raise ValueError("secret_manager_ref must be a Secret Manager resource reference, not secret material.")
+        return value
+
+    @field_validator("expected_client_id")
+    @classmethod
+    def validate_expected_client_id(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value and not re.match(r"^[a-z0-9_-]+$", value):
+            raise ValueError("expected_client_id must be a client slug.")
+        return value
+
+    @field_validator("expected_website_sending_domain")
+    @classmethod
+    def validate_expected_website_sending_domain(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value.startswith("https://"):
+            value = value[8:]
+        elif value.startswith("http://"):
+            value = value[7:]
+        return value.rstrip("/")
+
 class ClientConfig(BaseModel):
     client_id: str = Field(..., description="Unique slug identifier for client")
     company_name: str = Field(..., description="Business or organization name")
@@ -47,7 +103,15 @@ class ClientConfig(BaseModel):
     industry: str = Field(default="general", description="Industry / business context")
     ga4_property_id: str = Field(default="", description="Google Analytics 4 Property ID")
     gsc_site_url: str = Field(default="", description="Google Search Console Site URL")
-    gbp_location_id: str = Field(default="", description="Google Business Profile Location ID")
+    gbp_location_id: str = Field(default="", description="Candidate private Google Business Profile location resource")
+    gbp_candidate_location_ids: list[str] = Field(
+        default_factory=list,
+        description="Candidate private locations/<id> resources; OAuth access still verifies the match.",
+    )
+    gbp_public_place_id: str = Field(
+        default="",
+        description="Public Google Places ID kept separate from private locations/<id> resources.",
+    )
     gbp_account_id: str = Field(default="", description="Optional Google Business Profile account ID for managed reviews")
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     recipients: dict[str, str] = Field(default_factory=dict, description="Recipient email map")
@@ -62,6 +126,7 @@ class ClientConfig(BaseModel):
     )
     goals: list[str] = Field(default_factory=list, description="Agency goals and growth priorities")
     reporting: ReportingSettingsConfig = Field(default_factory=ReportingSettingsConfig)
+    website_inquiry_metrics: WebsiteInquiryMetricsConfig = Field(default_factory=WebsiteInquiryMetricsConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -97,6 +162,19 @@ class ClientConfig(BaseModel):
             return date.fromisoformat(v.strip())
         except ValueError as exc:
             raise ValueError("Date fields must contain a valid calendar date in YYYY-MM-DD format.") from exc
+
+    @model_validator(mode="after")
+    def validate_scoped_source_references(self) -> "ClientConfig":
+        candidates = list(self.gbp_candidate_location_ids)
+        if self.gbp_location_id and self.gbp_location_id.startswith("locations/") and self.gbp_location_id not in candidates:
+            candidates.insert(0, self.gbp_location_id)
+        for value in candidates:
+            if not re.fullmatch(r"locations/[A-Za-z0-9_-]+", value.strip()):
+                raise ValueError("gbp_candidate_location_ids must contain locations/<id> resources.")
+        self.gbp_candidate_location_ids = candidates
+        if self.website_inquiry_metrics.expected_client_id and self.website_inquiry_metrics.expected_client_id != self.client_id:
+            raise ValueError("website_inquiry_metrics.expected_client_id must match client_id.")
+        return self
 
 def load_client_config(client_slug_or_path: str | Path, config_dir: Path | None = None) -> ClientConfig:
     """Load a client configuration by slug from config/clients/<slug>.json or from a direct file path."""
@@ -137,8 +215,10 @@ class Settings(BaseModel):
     openrouter_base_url: str = Field(
         default_factory=lambda: os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     )
-    resend_api_key: str = Field(default_factory=lambda: os.getenv("RESEND_API_KEY", os.getenv("REPORT_EMAIL_API_KEY", "")))
-    resend_from_email: str = Field(default_factory=lambda: os.getenv("RESEND_FROM_EMAIL", os.getenv("REPORT_EMAIL_FROM", "reports@growthagency.com")))
+    # These are the Vector Studios report-delivery credentials. Website inquiry
+    # credentials are client-scoped references and are never read here.
+    resend_api_key: str = Field(default_factory=lambda: os.getenv("RESEND_API_KEY", ""))
+    resend_from_email: str = Field(default_factory=lambda: os.getenv("RESEND_FROM_EMAIL", "reports@growthagency.com"))
     google_application_credentials: str = Field(default_factory=lambda: os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""))
     llm_model: str = Field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-5.6-luna"))
     llm_reasoning_mode: str = Field(default_factory=lambda: os.getenv("LLM_REASONING_MODE", "standard"))
@@ -150,6 +230,17 @@ class Settings(BaseModel):
             for slug in os.getenv("REPORT_ALLOWED_CLIENTS", "").split(",")
             if slug.strip()
         )
+    )
+    report_delivery_store_path: str = Field(
+        default_factory=lambda: os.getenv("REPORT_DELIVERY_STORE_PATH", "")
+    )
+    report_delivery_cache_ttl_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("REPORT_DELIVERY_CACHE_TTL_SECONDS", "900")),
+        ge=0,
+    )
+    report_delivery_retention_days: int = Field(
+        default_factory=lambda: int(os.getenv("REPORT_DELIVERY_RETENTION_DAYS", "90")),
+        ge=0,
     )
 
     @classmethod

@@ -7,7 +7,10 @@ from app.analytics.contracts import (
     MetricDelta,
     ReportMode,
     ReportType,
+    ReportDeliveryMetrics,
+    SourceAvailability,
     WeeklyDigestOutput,
+    WebsiteInquiryMetrics,
 )
 from app.delivery.email_template import render_growth_email_html
 from app.delivery.discovery_copy import build_client_discovery_copy, build_client_discovery_copies
@@ -137,6 +140,41 @@ def test_render_weekly_digest_html(approved_full_briefing):
     assert "Current Goals" in html
     assert "Improve qualified inquiries" in html
     assert ".weekly-brand-badge" in html
+
+
+def test_delivery_sections_are_separate_redacted_surfaces(approved_full_briefing):
+    approved_full_briefing.report_delivery_metrics = ReportDeliveryMetrics(
+        status=SourceAvailability.PARTIAL,
+        client_id="test-client",
+        report_type="performance",
+        start_date=CURRENT_START,
+        end_date=CURRENT_END,
+        timezone="America/New_York",
+        metrics={"sent": 4, "delivered": 3, "delivery_rate": 75.0},
+        tracked_report_count=4,
+        successful_report_count=3,
+        failed_report_count=1,
+    )
+    approved_full_briefing.analytics.website_inquiry_metrics = WebsiteInquiryMetrics(
+        status=SourceAvailability.AVAILABLE,
+        current_inquiries=5,
+        prior_inquiries=3,
+        inquiry_events={"email_delivered": 5},
+        prior_inquiry_events={"email_delivered": 3},
+    )
+
+    html_out = render_growth_email_html(approved_full_briefing)
+    pdf_text = "\n".join(
+        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
+    )
+    for surface in (html_out, pdf_text):
+        assert "Analytics Report Delivery" in surface or "ANALYTICS REPORT DELIVERY" in surface
+        assert "Website Inquiry Delivery" in surface or "WEBSITE INQUIRY DELIVERY" in surface
+        assert "Some tracked activity was unavailable" in surface
+        assert "Inquiry messages delivered" in surface
+        assert "re-client-provider-id" not in surface
+        assert "recipient@example.com" not in surface
+        assert "Authorization" not in surface
 
 
 def test_monthly_html_limits_recommended_actions_to_three_strongest(approved_full_briefing):

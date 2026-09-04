@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from pydantic import BaseModel
 
+from app.ai.privacy import (
+    sanitize_for_ai,
+    sanitize_gsc_rows,
+    sanitize_source_rows,
+    scrub_gsc_query_filter,
+)
 from app.analytics.contracts import (
     EvidenceBundle,
     EvidenceFact,
@@ -93,6 +99,8 @@ class MultiSourceAnalyticsToolkit:
         self.gbp_extractor = gbp_extractor or GoogleBusinessProfileExtractor(
             client.gbp_location_id,
             account_id=client.gbp_account_id,
+            public_place_id=client.gbp_public_place_id,
+            candidate_location_ids=client.gbp_candidate_location_ids,
         )
         self._records: list[EvidenceRecord] = []
         self._diagnostics: list[str] = []
@@ -353,14 +361,14 @@ class MultiSourceAnalyticsToolkit:
         payload: Optional[dict[str, Any]] = None,
     ) -> EvidencePeriod:
         status = _status(result.get("status"), rows)
-        reason = result.get("reason")
+        reason = sanitize_for_ai(result.get("reason")) if result.get("reason") else None
         return EvidencePeriod(
             start_date=start_date,
             end_date=end_date,
             status=status,
             row_count=int(result.get("row_count", len(rows)) or 0),
-            rows=rows,
-            payload=payload or {},
+            rows=sanitize_source_rows(rows, source="source"),
+            payload=sanitize_for_ai(payload or {}),
             truncated=bool(result.get("truncated", False)),
             reason=reason,
         )
@@ -379,29 +387,48 @@ class MultiSourceAnalyticsToolkit:
         prior_payload: Optional[dict[str, Any]] = None,
         candidate_eligibility_blocked: bool = False,
     ) -> tuple[EvidenceRecord, dict[str, Any]]:
+        safe_query = sanitize_for_ai(query)
+        safe_current_rows = sanitize_source_rows(current_rows, source=source)
+        safe_prior_rows = sanitize_source_rows(prior_rows or [], source=source)
+        safe_limitations = sanitize_for_ai(limitations or [])
+        safe_current_payload = sanitize_for_ai(current_payload or {})
+        safe_prior_payload = sanitize_for_ai(prior_payload) if prior_payload is not None else None
+        safe_facts: list[EvidenceFact] = []
+        for fact in facts:
+            sanitized_fact = sanitize_for_ai(fact.model_dump(mode="json"))
+            if isinstance(sanitized_fact, dict):
+                safe_facts.append(EvidenceFact(**sanitized_fact))
         record = EvidenceRecord(
             evidence_id=self._new_evidence_id(),
             source=source,
-            query=query,
-            current=self._period(current_result, self.start_date, self.end_date, current_rows, current_payload),
+            query=safe_query,
+            current=self._period(current_result, self.start_date, self.end_date, safe_current_rows, safe_current_payload),
             prior=(
-                self._period(prior_result, self.prior_start_date, self.prior_end_date, prior_rows or [], prior_payload)
+                self._period(prior_result, self.prior_start_date, self.prior_end_date, safe_prior_rows, safe_prior_payload)
                 if prior_result is not None
                 else None
             ),
-            facts=facts,
-            limitations=limitations or [],
+            facts=safe_facts,
+            limitations=safe_limitations,
             candidate_eligibility_blocked=candidate_eligibility_blocked,
         )
         record.candidates = self._build_candidates(record)
         self._records.append(record)
-        if record.current.status in {SourceAvailability.UNAVAILABLE, SourceAvailability.EMPTY, SourceAvailability.ERROR}:
+        if record.current.status in {
+            SourceAvailability.NOT_CONFIGURED,
+            SourceAvailability.PARTIAL,
+            SourceAvailability.UNAVAILABLE,
+            SourceAvailability.EMPTY,
+            SourceAvailability.ERROR,
+        }:
             self._diagnostics.append(
                 f"{record.evidence_id} {source} current status={record.current.status.value}: {record.current.reason or 'no additional reason'}"
             )
         if record.current.status == SourceAvailability.ERROR:
             self._diagnostics.append(f"{record.evidence_id} tool execution failed; no discovery may use this run.")
         if record.prior and record.prior.status in {
+            SourceAvailability.NOT_CONFIGURED,
+            SourceAvailability.PARTIAL,
             SourceAvailability.UNAVAILABLE,
             SourceAvailability.EMPTY,
             SourceAvailability.ERROR,
@@ -421,17 +448,17 @@ class MultiSourceAnalyticsToolkit:
             "status": record.current.status.value,
             "current": record.current.model_dump(mode="json"),
             "prior": record.prior.model_dump(mode="json") if record.prior else None,
-            "facts": [fact.model_dump(mode="json") for fact in facts],
+            "facts": [fact.model_dump(mode="json") for fact in safe_facts],
             "candidates": [candidate.model_dump(mode="json") for candidate in record.candidates],
             "eligible_candidates": [
                 candidate.model_dump(mode="json") for candidate in record.candidates if candidate.eligible
             ],
-            "data": current_rows,
-            "prior_data": prior_rows or [],
+            "data": safe_current_rows,
+            "prior_data": safe_prior_rows,
             "limitations": record.limitations,
             "candidate_eligibility_blocked": record.candidate_eligibility_blocked,
         }
-        return record, response
+        return record, sanitize_for_ai(response)
 
     def _device_integrity_limitations(
         self,
@@ -502,7 +529,7 @@ class MultiSourceAnalyticsToolkit:
                 numeric_value = _numeric(raw_value)
                 entry[name] = numeric_value if numeric_value is not None else raw_value
             structured.append(entry)
-        return structured
+        return sanitize_source_rows(structured, source="ga4")
 
     @staticmethod
     def _row_key(row: dict[str, Any], dimensions: list[str], index: int) -> str:
@@ -638,10 +665,11 @@ class MultiSourceAnalyticsToolkit:
             limitations=integrity_limitations,
             candidate_eligibility_blocked=bool(integrity_limitations),
         )
-        return json.dumps(response)
+        return json.dumps(sanitize_for_ai(response), ensure_ascii=False)
 
     def _exec_gsc(self, args: Dict[str, Any]) -> str:
         query_regex = str(args.get("query_regex", ""))
+        safe_query_regex = scrub_gsc_query_filter(query_regex)
         min_impressions = int(args.get("min_impressions", 10))
         limit = int(args.get("limit", 15))
         if min_impressions < 0 or limit < 1 or limit > 100:
@@ -657,8 +685,12 @@ class MultiSourceAnalyticsToolkit:
                 if self.comparison_enabled
                 else None
             )
-            current_rows = filter_search_rows(current_result, query_regex, min_impressions, limit)
-            prior_rows = filter_search_rows(prior_result or {}, query_regex, min_impressions, limit)
+            current_rows = sanitize_gsc_rows(
+                filter_search_rows(current_result, query_regex, min_impressions, limit)
+            )
+            prior_rows = sanitize_gsc_rows(
+                filter_search_rows(prior_result or {}, query_regex, min_impressions, limit)
+            )
         except re.error:
             return self._error_response("query_gsc_search_queries", "Search Console query_regex is invalid.")
         facts = self._row_facts(
@@ -670,14 +702,17 @@ class MultiSourceAnalyticsToolkit:
         )
         _, response = self._record(
             source="gsc",
-            query={"query_regex": query_regex, "min_impressions": min_impressions, "limit": limit},
+            query={"query_regex": safe_query_regex, "min_impressions": min_impressions, "limit": limit},
             current_result=current_result,
             current_rows=current_rows,
             prior_result=prior_result,
             prior_rows=prior_rows,
             facts=facts,
         )
-        return json.dumps({**response, "queries": current_rows, "prior_queries": prior_rows})
+        return json.dumps(
+            sanitize_for_ai({**response, "queries": current_rows, "prior_queries": prior_rows}),
+            ensure_ascii=False,
+        )
 
     def _exec_gbp(self, args: Dict[str, Any]) -> str:
         result = self.gbp_extractor.fetch_local_insights(self.start_date, self.end_date)
@@ -729,6 +764,9 @@ class MultiSourceAnalyticsToolkit:
             "answered_calls": (prior_result or {}).get("answered_calls"),
             "missed_calls": (prior_result or {}).get("missed_calls"),
         } if prior_result is not None else None
+
+        payload = sanitize_for_ai(payload)
+        prior_payload = sanitize_for_ai(prior_payload) if prior_payload is not None else None
 
         payload = {
             key: value for key, value in payload.items() if value not in (None, {}, [])
@@ -836,7 +874,7 @@ class MultiSourceAnalyticsToolkit:
             prior_result=prior_result,
             prior_payload=prior_payload,
         )
-        return json.dumps(response)
+        return json.dumps(sanitize_for_ai(response), ensure_ascii=False)
 
     def _exec_device_breakdown(self, args: Dict[str, Any]) -> str:
         dimensions = ["deviceCategory"]
@@ -928,7 +966,10 @@ class MultiSourceAnalyticsToolkit:
             limitations=integrity_limitations,
             candidate_eligibility_blocked=bool(integrity_limitations),
         )
-        return json.dumps({**response, "devices": current_rows, "prior_devices": prior_rows})
+        return json.dumps(
+            sanitize_for_ai({**response, "devices": current_rows, "prior_devices": prior_rows}),
+            ensure_ascii=False,
+        )
 
     def _exec_referrers(self, args: Dict[str, Any]) -> str:
         limit = int(args.get("limit", 10))
@@ -960,4 +1001,7 @@ class MultiSourceAnalyticsToolkit:
             prior_rows=prior_rows,
             facts=facts,
         )
-        return json.dumps({**response, "referrers": current_rows, "prior_referrers": prior_rows})
+        return json.dumps(
+            sanitize_for_ai({**response, "referrers": current_rows, "prior_referrers": prior_rows}),
+            ensure_ascii=False,
+        )

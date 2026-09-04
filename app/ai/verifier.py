@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 import httpx
 
+from app.ai.privacy import sanitize_for_ai
 from app.ai.structured_output import VERIFIER_SCHEMA, parse_response_json, response_format
 from app.analytics.contracts import DataDiscovery, EvidenceBundle, ValidationDecision
 from app.analytics.discovery_integrity import approved_card_fingerprint
@@ -94,6 +95,7 @@ class DiscoveryVerifier:
         }
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
+        payload = sanitize_for_ai(payload)
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         endpoint = f"{self.base_url}/chat/completions"
         try:

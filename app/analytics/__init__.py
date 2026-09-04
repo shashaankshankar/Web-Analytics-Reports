@@ -2,6 +2,7 @@ from app.analytics.contracts import (
     ActionItem,
     AIReportOutput,
     ChannelPerformance,
+    ConversionEventSummary,
     ClientDiscoveryCard,
     DataDiscovery,
     DiscoveryProposal,
@@ -22,6 +23,8 @@ from app.analytics.contracts import (
     PagePerformance,
     StrikingDistanceKeyword,
     SourceAvailability,
+    ReportDeliveryMetrics,
+    WebsiteInquiryMetrics,
     ValidationDecision,
 )
 from app.analytics.metrics import (
@@ -30,12 +33,16 @@ from app.analytics.metrics import (
     calculate_percentage_change,
     determine_direction,
     filter_striking_distance_keywords,
+    classify_ga4_events,
+    normalize_conversion_events,
+    normalize_event_group,
 )
 
 __all__ = [
     "ActionItem",
     "AIReportOutput",
     "ChannelPerformance",
+    "ConversionEventSummary",
     "ClientDiscoveryCard",
     "DataDiscovery",
     "DiscoveryProposal",
@@ -56,10 +63,15 @@ __all__ = [
     "PagePerformance",
     "StrikingDistanceKeyword",
     "SourceAvailability",
+    "ReportDeliveryMetrics",
+    "WebsiteInquiryMetrics",
     "ValidationDecision",
     "aggregate_growth_metrics",
     "calculate_date_ranges",
     "calculate_percentage_change",
     "determine_direction",
     "filter_striking_distance_keywords",
+    "classify_ga4_events",
+    "normalize_conversion_events",
+    "normalize_event_group",
 ]
