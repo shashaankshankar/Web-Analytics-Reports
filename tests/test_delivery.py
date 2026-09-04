@@ -1,3 +1,4 @@
+import re
 from io import BytesIO
 from pypdf import PdfReader
 import pytest
@@ -24,6 +25,16 @@ from tests.fakes import (
     fake_discovery,
     fake_full_briefing,
 )
+
+def pdf_text_of(pdf_bytes) -> str:
+    """Extracted PDF text with wrapping collapsed.
+
+    Line breaks are a layout decision; these assertions are about whether the
+    content reached the client artifact at all.
+    """
+    raw = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf_bytes)).pages)
+    return re.sub(r"\s+", " ", raw)
+
 
 @pytest.fixture
 def approved_full_briefing():
@@ -110,9 +121,7 @@ def test_render_reports_include_deterministic_gbp_evidence(approved_full_briefin
     )
 
     html_out = render_growth_email_html(approved_full_briefing)
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
     for client_surface in (html_out, pdf_text):
         assert "Profile details" in client_surface or "PROFILE DETAILS" in client_surface
         assert "Call Button Clicks" in client_surface
@@ -173,9 +182,7 @@ def test_delivery_sections_are_separate_redacted_surfaces(approved_full_briefing
     )
 
     html_out = render_growth_email_html(approved_full_briefing)
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
     for surface in (html_out, pdf_text):
         assert "Analytics Report Delivery" in surface or "ANALYTICS REPORT DELIVERY" in surface
         assert "Website Inquiry Delivery" in surface or "WEBSITE INQUIRY DELIVERY" in surface
@@ -281,9 +288,7 @@ def test_client_copy_layer_returns_only_stored_model_text(approved_full_briefing
     approved_full_briefing.insights.deep_discoveries = [scoped]
     approved_full_briefing.exploration_audit = fake_completed_discovery_audit([scoped])
     html_out = render_growth_email_html(approved_full_briefing)
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
     for client_surface in (html_out, pdf_text):
         assert scoped.insight in client_surface
         assert scoped.recommended_action in client_surface
@@ -312,9 +317,7 @@ def test_client_discovery_selection_deduplicates_and_caps_distinct_themes(approv
     approved_full_briefing.insights.deep_discoveries = discoveries
     approved_full_briefing.exploration_audit = audit
     html_out = render_growth_email_html(approved_full_briefing)
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
     assert html_out.count("What we noticed:") == 3
     assert pdf_text.count("What we noticed:") == 3
 
@@ -340,9 +343,7 @@ def test_verifier_unavailable_renders_honest_empty_state(approved_full_briefing)
         }
     )
     html_out = render_growth_email_html(approved_full_briefing)
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
     for client_surface in (html_out, pdf_text):
         assert "MODEL INTERPRETATION MUST NOT APPEAR" not in client_surface
         assert "MODEL ACTION MUST NOT APPEAR" not in client_surface
@@ -379,9 +380,7 @@ def test_deep_insights_empty_state_is_client_friendly_in_html_and_pdf(approved_f
     approved_full_briefing.exploration_audit = fake_completed_discovery_audit([])
 
     html_out = render_growth_email_html(approved_full_briefing)
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
     expected = "No additional opportunities were identified from this period, and no recommendations were added."
     assert expected in html_out
     assert expected in pdf_text
@@ -406,9 +405,7 @@ def test_build_executive_pdf_uses_client_discovery_copy_and_hides_audit_fields(a
         approved_full_briefing.insights.deep_discoveries
     )
 
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
     assert "WHERE WE'RE FOCUSING NEXT" in pdf_text
     assert "What we noticed:" in pdf_text
     assert "Recommended next step:" in pdf_text
@@ -423,11 +420,10 @@ def test_build_executive_pdf(approved_full_briefing):
     assert len(pdf_bytes) > 2000
     reader = PdfReader(BytesIO(pdf_bytes))
     assert len(reader.pages) >= 1
-    text = reader.pages[0].extract_text()
-    assert "Test Company" in text
-    assert "EXECUTIVE SNAPSHOT" in text
-    assert "KEY INQUIRY ACTIONS" in text
-    pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    assert "Test Company" in (reader.pages[0].extract_text() or "")
+    pdf_text = pdf_text_of(pdf_bytes)
+    assert "EXECUTIVE OVERVIEW" in pdf_text
+    assert "CUSTOMER INQUIRIES & KEY ACTIONS" in pdf_text
     assert "The configured search topic is available for future prioritization." in pdf_text
     assert "Continue monitoring the configured conversion path." in pdf_text
     assert "The current event snapshot includes the configured lead event." in pdf_text
@@ -435,8 +431,9 @@ def test_build_executive_pdf(approved_full_briefing):
     assert "CURRENT GOALS" in pdf_text
     assert "Improve qualified inquiries" in pdf_text
     assert "configured search topic" in pdf_text
-    assert "Search Term" in pdf_text
-    assert "Executive Insights | Test Company" in pdf_text
+    assert "SEARCH TERM" in pdf_text
+    assert "Prepared by Vector Studios - Confidential" in pdf_text
+    assert "Page 1 of" in pdf_text
     assert "\x7f" not in pdf_text
 
 
@@ -449,9 +446,7 @@ def test_monthly_pdf_limits_recommended_actions_to_three_strongest(approved_full
         ActionItem(title="Medium PDF action omitted", description="Another medium PDF action.", priority="Medium"),
     ]
 
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
 
     assert "High PDF action one" in pdf_text
     assert "High PDF action two" in pdf_text
@@ -470,9 +465,7 @@ def test_comparison_report_uses_28_day_title_and_empty_search_state(approved_ful
     assert "Search &amp; Content Topics to Validate" in empty_search_html
     assert "High-Opportunity Google Searches" not in empty_search_html
 
-    pdf_text = "\n".join(
-        page.extract_text() or "" for page in PdfReader(BytesIO(build_executive_pdf(approved_full_briefing))).pages
-    )
+    pdf_text = pdf_text_of(build_executive_pdf(approved_full_briefing))
     assert "28-Day Performance Report" in pdf_text
     assert "SEARCH & CONTENT TOPICS TO VALIDATE" in pdf_text
 
@@ -510,7 +503,7 @@ def test_baseline_rendering_shows_current_values_without_prior_or_growth_deltas(
     assert "28-Day Performance Report" not in html
     assert "baseline" in html
     pdf_bytes = build_executive_pdf(briefing)
-    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf_bytes)).pages)
+    pdf_text = pdf_text_of(pdf_bytes)
     assert "Initial Measurement Baseline" in pdf_text
     assert "Current values are shown without prior-period values or growth deltas." in pdf_text
 

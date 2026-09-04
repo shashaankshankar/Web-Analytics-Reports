@@ -13,6 +13,7 @@ from app.delivery.email_components import (
     SECTION_LABEL_REPORT_DELIVERY,
     SECTION_LABEL_WEBSITE_INQUIRY,
     card_surface,
+    copyright_year,
     header_text_colors,
     render_action_row,
     render_bar_group,
@@ -59,11 +60,6 @@ def _sub_heading(text: str) -> str:
         f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 10.5px; letter-spacing: 0.1em; '
         f'text-transform: uppercase; color: {COLOR_MUTED}; padding: 20px 0 0 0;">{text}</div>'
     )
-
-
-def _copyright_year(briefing: FullGrowthBriefing) -> str:
-    period_end = briefing.analytics.period_end or ""
-    return period_end[:4] if len(period_end) >= 4 and period_end[:4].isdigit() else "2026"
 
 
 def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
@@ -509,7 +505,7 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top: 1px solid {COLOR_HAIRLINE};">
                 <tr>
                   <td class="stack" style="padding: 20px 0 24px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; color: {COLOR_MUTED};">{attachment_note}Prepared by {AGENCY_NAME} &middot; Confidential</td>
-                  <td class="stack" align="right" style="padding: 0 0 24px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; color: {COLOR_MUTED};">&copy; {_copyright_year(briefing)} {client_name}</td>
+                  <td class="stack" align="right" style="padding: 0 0 24px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; color: {COLOR_MUTED};">&copy; {copyright_year(analytics.period_end)} {client_name}</td>
                 </tr>
               </table>
             </td>

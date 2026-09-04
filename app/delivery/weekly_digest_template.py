@@ -11,6 +11,7 @@ from app.delivery.email_components import (
     SECTION_LABEL_REPORT_DELIVERY,
     SECTION_LABEL_WEBSITE_INQUIRY,
     card_surface,
+    copyright_year,
     header_text_colors,
     render_finding_card,
     render_goal_pills,
@@ -34,11 +35,6 @@ _WEEKLY_FINDINGS = (
     ("search_opportunity", "Google Search Opportunity", "neutral"),
     ("local_insight", "Local Google Maps Activity", "neutral"),
 )
-
-
-def _copyright_year(briefing: FullGrowthBriefing) -> str:
-    period_end = briefing.analytics.period_end or ""
-    return period_end[:4] if len(period_end) >= 4 and period_end[:4].isdigit() else "2026"
 
 
 def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
@@ -216,7 +212,7 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top: 1px solid {COLOR_HAIRLINE};">
                 <tr>
                   <td class="stack" style="padding: 20px 0 24px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; color: {COLOR_MUTED};">Prepared by {AGENCY_NAME} &middot; Confidential</td>
-                  <td class="stack" align="right" style="padding: 0 0 24px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; color: {COLOR_MUTED};">&copy; {_copyright_year(briefing)} {client_name}</td>
+                  <td class="stack" align="right" style="padding: 0 0 24px 0; font-family: {FONT_FAMILY_MAIN}; font-size: 11.5px; color: {COLOR_MUTED};">&copy; {copyright_year(analytics.period_end)} {client_name}</td>
                 </tr>
               </table>
             </td>

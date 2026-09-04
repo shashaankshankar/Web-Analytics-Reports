@@ -56,6 +56,12 @@ def header_text_colors(primary_color: str) -> tuple[str, str]:
     return "#FFFFFF", "#B8B3A8"
 
 
+def copyright_year(period_end: str) -> str:
+    """Footer year, taken from the reported period rather than the clock."""
+    period_end = period_end or ""
+    return period_end[:4] if len(period_end) >= 4 and period_end[:4].isdigit() else "2026"
+
+
 def format_metric_value(metric: MetricDelta) -> str:
     if metric.current_value is None:
         return 'Not available'
