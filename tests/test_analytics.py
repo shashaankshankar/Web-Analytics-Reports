@@ -261,6 +261,8 @@ def test_aggregate_growth_metrics():
     assert sess_metric.current_value == 700
     assert sess_metric.prior_value == 550
     assert sess_metric.direction == "up"
+    active_users_metric = next(m for m in growth_input.core_metrics if m.metric_name == "active_users")
+    assert active_users_metric.display_name == "Unique Visitors"
     cr_metric = next(m for m in growth_input.core_metrics if m.metric_name == "conversion_rate")
     assert cr_metric.current_value == 4.0  # 28 / 700 = 4.0%
     assert cr_metric.prior_value == 3.64  # 20 / 550 = 3.64%

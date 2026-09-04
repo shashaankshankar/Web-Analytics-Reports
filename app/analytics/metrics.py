@@ -637,7 +637,7 @@ def aggregate_growth_metrics(
         metric_delta("sessions", "Total Sessions", sessions_curr, sessions_prior, status=summary_status),
         metric_delta(
             "active_users",
-            "Active Users",
+            "Unique Visitors",
             _optional_number(summary.get("activeUsers")),
             _optional_number(prior_summary.get("activeUsers")) if comparison_available else None,
             status=summary_status,
