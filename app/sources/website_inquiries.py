@@ -347,9 +347,5 @@ class WebsiteInquiryMetricsSource:
         )
         return model.model_dump(mode="json")
 
-    fetch_website_inquiry_metrics = fetch_metrics
-    get_metrics = fetch_metrics
 
-
-WebsiteMetricsSource = WebsiteInquiryMetricsSource
 WebsiteInquiryMetricsExtractor = WebsiteInquiryMetricsSource

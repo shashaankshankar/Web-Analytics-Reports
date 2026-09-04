@@ -649,26 +649,16 @@ def serialize_for_ai(value: Any) -> str:
     return json.dumps(sanitized, ensure_ascii=False, default=str)
 
 
-# Descriptive aliases keep call sites readable and make the boundary easy to
-# reuse for future AI request types without exposing the source records.
-sanitize_ai_payload = sanitize_for_ai
-sanitize_outbound_payload = sanitize_for_ai
-serialize_ai_payload = serialize_for_ai
-
-
 __all__ = [
     "PROVIDER_ERROR_WITHHELD",
     "REDACTED_QUERY",
     "REDACTED_VALUE",
     "is_unsafe_gsc_query",
     "is_unsafe_patient_specific_row",
-    "sanitize_ai_payload",
     "sanitize_for_ai",
     "sanitize_gsc_rows",
-    "sanitize_outbound_payload",
     "sanitize_source_rows",
     "scrub_gsc_query",
     "scrub_gsc_query_filter",
-    "serialize_ai_payload",
     "serialize_for_ai",
 ]

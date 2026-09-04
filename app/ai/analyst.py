@@ -53,10 +53,6 @@ _TECHNICAL_TERM_MAPPINGS: dict[str, str] = {
     # GA4 conversion & lead events
     "contact_form_submits": "contact form submissions",
     "contact_form_submit": "contact form submission",
-    "contact_form_submissions": "contact form submissions",
-    "contact_form_submission": "contact form submission",
-    "contact_forms": "contact forms",
-    "contact_form": "contact form",
     "phone_call_clicks": "phone call button clicks",
     "phone_call_click": "phone call button click",
     "phone_clicks": "phone call clicks",
@@ -67,52 +63,27 @@ _TECHNICAL_TERM_MAPPINGS: dict[str, str] = {
     "call_click": "phone call",
     "generate_leads": "inquiry leads",
     "generate_lead": "inquiry lead",
-    "lead_submissions": "lead submissions",
-    "lead_submission": "lead submission",
     "inquiry_submits": "inquiry submissions",
     "inquiry_submit": "inquiry submission",
-    "inquiry_submissions": "inquiry submissions",
-    "inquiry_submission": "inquiry submission",
-    "appointment_requests": "appointment requests",
-    "appointment_request": "appointment request",
     "book_appointments": "appointment bookings",
     "book_appointment": "appointment booking",
     "booking_submits": "appointment bookings",
     "booking_submit": "appointment booking",
     "schedule_consultations": "consultation requests",
     "schedule_consultation": "consultation request",
-    "consultation_requests": "consultation requests",
-    "consultation_request": "consultation request",
-    "email_clicks": "email clicks",
-    "email_click": "email click",
     "directions_clicks": "direction clicks",
     "directions_click": "direction click",
-    "direction_requests": "direction requests",
-    "direction_request": "direction request",
     "direction_actions": "direction requests",
     "direction_action": "direction request",
     "form_submits": "form submissions",
     "form_submit": "form submission",
-    "form_starts": "form starts",
-    "form_start": "form start",
-    "form_steps": "form steps",
-    "form_step": "form step",
-    "form_step_1": "form step 1",
-    "form_step_2": "form step 2",
-    "form_step_3": "form step 3",
     "form_step1": "form step 1",
     "form_step2": "form step 2",
     "form_step3": "form step 3",
     "cta_clicks": "call to action clicks",
     "cta_click": "call to action click",
-    "file_downloads": "file downloads",
-    "file_download": "file download",
-    "first_visits": "first visits",
-    "first_visit": "first visit",
     "session_starts": "website visits",
     "session_start": "website visit",
-    "page_views": "page views",
-    "page_view": "page view",
     "screen_page_views": "page views",
     "screen_page_view": "page view",
     "user_engagement": "visitor engagement",
@@ -126,21 +97,10 @@ _TECHNICAL_TERM_MAPPINGS: dict[str, str] = {
     "total_user": "total visitor",
     "new_users": "new visitors",
     "new_user": "new visitor",
-    "engagement_rate": "engagement rate",
-    "bounce_rate": "bounce rate",
-    "average_session_duration": "average session duration",
-    "event_count": "event count",
-    "key_conversions": "key conversions",
-    "key_conversion": "key conversion",
-    "primary_leads": "primary leads",
-    "primary_lead": "primary lead",
-    "prior_sessions": "prior sessions",
 
     # Google Business Profile / Local Metrics
     "website_clicks": "website visits",
     "website_click": "website visit",
-    "booking_clicks": "booking clicks",
-    "booking_click": "booking click",
     "messaging_clicks": "messages",
     "messaging_click": "message",
     "food_orders": "online orders",
@@ -248,8 +208,8 @@ def clean_plain_text(text: Optional[str]) -> str:
     t = t.replace("**", "").replace("*", "").replace("`", "")
     # Remove markdown italics underscores around single words
     t = re.sub(r"(^|\s)_([A-Za-z0-9]+)_($|[\s.,;:!?])", r"\1\2\3", t)
-    # Replace raw em-dashes with clean commas or dashes
-    t = t.replace(" — ", ", ").replace(" —", ", ").replace("— ", ", ").replace("—", ", ")
+    # Replace raw em-dashes with clean commas
+    t = re.sub(r"\s*—\s*", ", ", t)
     # Humanize raw variable names, database keys, and snake_case tokens
     t = humanize_technical_tokens(t)
     # Clean up double colons or excessive spaces
@@ -614,6 +574,3 @@ class GrowthAnalyst:
             raise AnalysisUnavailableError(
                 f"OpenRouter performance synthesis failed: {type(exc).__name__}."
             ) from exc
-
-# Backward compatibility alias
-build_user_prompt = build_performance_user_prompt
