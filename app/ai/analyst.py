@@ -31,12 +31,13 @@ YOUR AUDIENCE & TONE:
 2. Write in clear, natural, human-readable plain English. Be encouraging, transparent, and direct.
 3. Avoid technical jargon (do NOT say 'slicing', 'dimension clusters', 'raw event counts', 'funnel contraction', 'data state final'). Translate metrics into real-world business outcomes: phone calls, consultation requests, appointment inquiries, and website visitors.
 4. CRITICAL FORMATTING RULE: Do NOT use markdown syntax (NO asterisks like **bold**, NO em-dashes like —, NO markdown bullets, NO hashtags). Write natural, clean sentences.
-5. Ground every observation in the provided data. Do not invent numbers or metrics.
-6. If a source status is empty, unavailable, or error, say that the source is unavailable and do not infer a result from it.
-7. If report_mode is initial_baseline, use current observation data only. Do not state or imply a prior value, comparison, trend, movement, increase, decrease, or growth change.
-8. Treat ratings, review totals, and review excerpts as observed profile context. Do not turn them into claims of reputation strength, patient satisfaction, social proof, or future attraction unless the supplied data directly supports that wording.
-9. With small samples, prefer neutral descriptions of the observed actions and qualify uncertainty instead of calling activity strong, encouraging, meaningful, or representative.
-10. Return ONLY a valid JSON object matching the requested schema.
+5. CRITICAL CLIENT-FACING RULE: NEVER output raw technical variable names, database keys, or code identifiers with underscores (e.g., do NOT write 'contact_form_submit', 'phone_click', 'active_users', 'generate_lead', 'CALL_CLICKS', 'primary_leads', 'screen_page_views', 'engagement_rate', etc.). Business clients cannot understand raw code identifiers. The purpose of this analysis is to transform raw telemetry into clear, intuitive insights and actions grounded in the client's business, practice, and goals. Always translate technical event and metric keys into natural, client-friendly plain English (e.g., 'contact form submissions', 'phone calls', 'unique visitors', 'inquiry leads', 'phone calls').
+6. Ground every observation in the provided data. Do not invent numbers or metrics.
+7. If a source status is empty, unavailable, or error, say that the source is unavailable and do not infer a result from it.
+8. If report_mode is initial_baseline, use current observation data only. Do not state or imply a prior value, comparison, trend, movement, increase, decrease, or growth change.
+9. Treat ratings, review totals, and review excerpts as observed profile context. Do not turn them into claims of reputation strength, patient satisfaction, social proof, or future attraction unless the supplied data directly supports that wording.
+10. With small samples, prefer neutral descriptions of the observed actions and qualify uncertainty instead of calling activity strong, encouraging, meaningful, or representative.
+11. Return ONLY a valid JSON object matching the requested schema.
 """
 
 
@@ -48,22 +49,209 @@ _BASELINE_MOVEMENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_TECHNICAL_TERM_MAPPINGS: dict[str, str] = {
+    # GA4 conversion & lead events
+    "contact_form_submits": "contact form submissions",
+    "contact_form_submit": "contact form submission",
+    "contact_form_submissions": "contact form submissions",
+    "contact_form_submission": "contact form submission",
+    "contact_forms": "contact forms",
+    "contact_form": "contact form",
+    "phone_call_clicks": "phone call button clicks",
+    "phone_call_click": "phone call button click",
+    "phone_clicks": "phone call clicks",
+    "phone_click": "phone call click",
+    "phone_button_clicks": "phone call button clicks",
+    "phone_button_click": "phone call button click",
+    "call_clicks": "phone calls",
+    "call_click": "phone call",
+    "generate_leads": "inquiry leads",
+    "generate_lead": "inquiry lead",
+    "lead_submissions": "lead submissions",
+    "lead_submission": "lead submission",
+    "inquiry_submits": "inquiry submissions",
+    "inquiry_submit": "inquiry submission",
+    "inquiry_submissions": "inquiry submissions",
+    "inquiry_submission": "inquiry submission",
+    "appointment_requests": "appointment requests",
+    "appointment_request": "appointment request",
+    "book_appointments": "appointment bookings",
+    "book_appointment": "appointment booking",
+    "booking_submits": "appointment bookings",
+    "booking_submit": "appointment booking",
+    "schedule_consultations": "consultation requests",
+    "schedule_consultation": "consultation request",
+    "consultation_requests": "consultation requests",
+    "consultation_request": "consultation request",
+    "email_clicks": "email clicks",
+    "email_click": "email click",
+    "directions_clicks": "direction clicks",
+    "directions_click": "direction click",
+    "direction_requests": "direction requests",
+    "direction_request": "direction request",
+    "direction_actions": "direction requests",
+    "direction_action": "direction request",
+    "form_submits": "form submissions",
+    "form_submit": "form submission",
+    "form_starts": "form starts",
+    "form_start": "form start",
+    "form_steps": "form steps",
+    "form_step": "form step",
+    "form_step_1": "form step 1",
+    "form_step_2": "form step 2",
+    "form_step_3": "form step 3",
+    "form_step1": "form step 1",
+    "form_step2": "form step 2",
+    "form_step3": "form step 3",
+    "cta_clicks": "call to action clicks",
+    "cta_click": "call to action click",
+    "file_downloads": "file downloads",
+    "file_download": "file download",
+    "first_visits": "first visits",
+    "first_visit": "first visit",
+    "session_starts": "website visits",
+    "session_start": "website visit",
+    "page_views": "page views",
+    "page_view": "page view",
+    "screen_page_views": "page views",
+    "screen_page_view": "page view",
+    "user_engagement": "visitor engagement",
+    "video_starts": "video plays",
+    "video_start": "video play",
+
+    # GA4 & Traffic Metrics
+    "active_users": "unique visitors",
+    "active_user": "unique visitor",
+    "total_users": "total visitors",
+    "total_user": "total visitor",
+    "new_users": "new visitors",
+    "new_user": "new visitor",
+    "engagement_rate": "engagement rate",
+    "bounce_rate": "bounce rate",
+    "average_session_duration": "average session duration",
+    "event_count": "event count",
+    "key_conversions": "key conversions",
+    "key_conversion": "key conversion",
+    "primary_leads": "primary leads",
+    "primary_lead": "primary lead",
+    "prior_sessions": "prior sessions",
+
+    # Google Business Profile / Local Metrics
+    "website_clicks": "website visits",
+    "website_click": "website visit",
+    "booking_clicks": "booking clicks",
+    "booking_click": "booking click",
+    "messaging_clicks": "messages",
+    "messaging_click": "message",
+    "food_orders": "online orders",
+    "food_order": "online order",
+    "food_order_clicks": "online orders",
+    "business_impressions_desktop_maps": "Google Maps desktop views",
+    "business_impressions_desktop_search": "Google Search desktop views",
+    "business_impressions_mobile_maps": "Google Maps mobile views",
+    "business_impressions_mobile_search": "Google Search mobile views",
+    "business_direction_requests": "direction requests",
+    "business_conversations": "conversations",
+    "business_bookings": "bookings",
+    "business_food_orders": "food orders",
+    "business_food_menu_clicks": "menu clicks",
+    "gbp_call_clicks": "Google Business Profile phone calls",
+    "gbp_direction_requests": "Google Business Profile direction requests",
+    "gbp_website_clicks": "Google Business Profile website visits",
+}
+
+_CAMEL_CASE_REPLACEMENTS: dict[str, str] = {
+    "activeUsers": "unique visitors",
+    "totalUsers": "total visitors",
+    "newUsers": "new visitors",
+    "engagementRate": "engagement rate",
+    "screenPageViews": "page views",
+    "eventCount": "event count",
+    "keyConversions": "key conversions",
+    "primaryLeads": "primary leads",
+    "priorSessions": "prior sessions",
+    "bounceRate": "bounce rate",
+}
+
+_URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"\x27\)]+?(?=[.,;:!?]?(\s|$|[<>\"\x27\)]))")
+_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9._-]+\.[A-Za-z]{2,}\b")
+_SNAKE_CASE_PATTERN = re.compile(r"\b_?[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+_?\b")
+
+
+def humanize_technical_tokens(text: str) -> str:
+    """Replace raw variable names, database keys, and snake_case tokens with client-friendly English.
+
+    Preserves URLs and email addresses that legitimately contain underscores.
+    """
+    if not text:
+        return ""
+
+    urls: list[str] = []
+
+    def save_url(m: re.Match[str]) -> str:
+        urls.append(m.group(0))
+        return f"\x02URLPROTECTED{len(urls)-1}\x03"
+
+    emails: list[str] = []
+
+    def save_email(m: re.Match[str]) -> str:
+        emails.append(m.group(0))
+        return f"\x02EMAILPROTECTED{len(emails)-1}\x03"
+
+    t = _URL_PATTERN.sub(save_url, text)
+    t = _EMAIL_PATTERN.sub(save_email, t)
+
+    for camel_key, replacement in _CAMEL_CASE_REPLACEMENTS.items():
+        t = re.sub(rf"\b{re.escape(camel_key)}\b", replacement, t)
+
+    def replace_token(m: re.Match[str]) -> str:
+        tok = m.group(0)
+        clean_tok = tok.strip("_")
+        if not clean_tok:
+            return " "
+        lower_tok = clean_tok.lower()
+        if lower_tok in _TECHNICAL_TERM_MAPPINGS:
+            repl = _TECHNICAL_TERM_MAPPINGS[lower_tok]
+        elif clean_tok.isupper():
+            repl = clean_tok.lower().replace("_", " ")
+        else:
+            repl = clean_tok.replace("_", " ")
+
+        prefix = m.string[:m.start()]
+        is_sentence_start = bool(re.search(r"(?:^|[.!?]\s+)$", prefix))
+        if is_sentence_start or (clean_tok[0].isupper() and not clean_tok.isupper()):
+            repl = repl[:1].upper() + repl[1:]
+        return repl
+
+    t = _SNAKE_CASE_PATTERN.sub(replace_token, t)
+
+    for i, email in enumerate(emails):
+        t = t.replace(f"\x02EMAILPROTECTED{i}\x03", email)
+    for i, url in enumerate(urls):
+        t = t.replace(f"\x02URLPROTECTED{i}\x03", url)
+
+    return t
+
 
 class AnalysisUnavailableError(RuntimeError):
     """Raised when a real OpenRouter synthesis cannot be completed."""
 
 
 def clean_plain_text(text: Optional[str]) -> str:
-    """Sanitize LLM text to ensure clean, human-readable plain English without markdown artifacts."""
+    """Sanitize LLM text to ensure clean, human-readable plain English without markdown artifacts or raw variable names."""
     if not text:
         return ""
     t = text.strip()
     # Convert markdown bold labels like '**Title** — description' or '**Title:** desc' to clean 'Title: desc'
     t = re.sub(r"\*\*(.*?)\*\*\s*[—–\-:]*\s*", r"\1: ", t)
-    # Remove remaining markdown asterisks, underscores used for italics, and backticks
+    # Remove remaining markdown asterisks and backticks
     t = t.replace("**", "").replace("*", "").replace("`", "")
+    # Remove markdown italics underscores around single words
+    t = re.sub(r"(^|\s)_([A-Za-z0-9]+)_($|[\s.,;:!?])", r"\1\2\3", t)
     # Replace raw em-dashes with clean commas or dashes
     t = t.replace(" — ", ", ").replace(" —", ", ").replace("— ", ", ").replace("—", ", ")
+    # Humanize raw variable names, database keys, and snake_case tokens
+    t = humanize_technical_tokens(t)
     # Clean up double colons or excessive spaces
     t = re.sub(r":\s*:", ":", t)
     t = re.sub(r"\s+", " ", t).strip()
@@ -123,6 +311,7 @@ Dataset:
 
 Instructions:
 - Write in natural, easy-to-read sentences without technical jargon or markdown formatting (no asterisks, no em-dashes).
+- Do NOT output raw technical variable names, database keys, or tokens containing underscores (e.g., contact_form_submit, phone_click, active_users, generate_lead, CALL_CLICKS). Always translate raw telemetry, metric keys, and event names into clear, natural, client-friendly plain English (e.g., 'contact form submissions', 'phone calls', 'unique visitors', 'inquiry leads') in the context of the client, their business, and their goals.
 - Highlight key wins in patient/customer activity, website visitors, and local search visibility.
 - Treat Key Conversions as the subset of events currently configured as conversions in GA4. Recorded customer actions can be nonzero even when Key Conversions is zero; never describe zero key conversions as zero customer activity.
 - Write conversion_insight as 1-2 plain-English sentences that name the recorded customer/contact actions and their counts when present, and explain the difference between recorded actions and configured key conversions when that distinction matters.
@@ -210,6 +399,7 @@ Dataset:
 Important Guidelines:
 - Write in natural, warm, professional English tailored for a busy business owner.
 - Do NOT use markdown formatting (no asterisks like **bold**, no em-dashes like —, no raw markdown symbols). Write clean sentences.
+- Do NOT output raw technical variable names, database keys, or tokens containing underscores (e.g., contact_form_submit, phone_click, active_users, generate_lead, CALL_CLICKS). Always translate raw telemetry, metric keys, and event names into clear, natural, client-friendly business English (e.g., 'contact form submissions', 'phone calls', 'website visitors', 'inquiry leads') contextualized to the client's business, practice, and goals.
 - Clearly translate data into business value: patient inquiries, phone calls, website traffic, and Google search rankings.
 - Key Conversions are the subset of GA4 events currently marked as conversions. The conversion_events list contains recorded events and may be nonzero even when Key Conversions is zero. Do not call every recorded event a completed appointment, call, sale, or revenue outcome.
 - Explain Engagement Rate in plain English as the share of sessions GA4 classifies as engaged. With a small sample or initial baseline, describe it as an early signal and avoid claiming it proves meaningful interest.

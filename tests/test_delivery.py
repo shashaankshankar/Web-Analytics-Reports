@@ -13,6 +13,13 @@ from app.analytics.contracts import (
     WeeklyDigestOutput,
     WebsiteInquiryMetrics,
 )
+from app.delivery.email_components import (
+    is_light_color,
+    render_action_row,
+    render_bar_rows,
+    render_delta_chip,
+    render_kpi_cells,
+)
 from app.delivery.email_template import render_growth_email_html
 from app.delivery.discovery_copy import build_client_discovery_copy, build_client_discovery_copies
 from app.delivery.pdf_builder import build_executive_pdf
@@ -531,3 +538,301 @@ def test_sender_with_comma_separated_recipients():
             cc_recipients="agency@example.com, lead@example.com",
             idempotency_key="test-key-123",
         )
+
+
+def test_is_light_color_safe_none_and_empty():
+    assert is_light_color(None) is False
+    assert is_light_color("") is False
+    assert is_light_color("#FFFFFF") is True
+    assert is_light_color("#000000") is False
+    assert is_light_color("fff") is True
+    assert is_light_color("000") is False
+    assert is_light_color("not_a_hex") is False
+
+
+def test_render_delta_chip_suppress_and_unavailable():
+    metric = MetricDelta(
+        metric_name="sessions",
+        display_name="Total Sessions",
+        current_value=1000,
+        prior_value=800,
+        absolute_change=200,
+        percentage_change=25.0,
+        direction="up",
+    )
+    # Normal comparison
+    chip_normal = render_delta_chip(metric, "#0A0A0B", suppress_comparison=False)
+    assert "&#9650;" in chip_normal
+    assert "25.0%" in chip_normal
+    assert "baseline" not in chip_normal
+
+    # Suppressed comparison
+    chip_suppressed = render_delta_chip(metric, "#0A0A0B", suppress_comparison=True)
+    assert "baseline" in chip_suppressed
+    assert "&#9650;" not in chip_suppressed
+    assert "25.0%" not in chip_suppressed
+
+    # Metric direction unavailable
+    metric_unavail = metric.model_copy(update={"direction": "unavailable"})
+    chip_unavail = render_delta_chip(metric_unavail, "#0A0A0B", suppress_comparison=False)
+    assert "baseline" in chip_unavail
+    assert "&#9650;" not in chip_unavail
+    assert "25.0%" not in chip_unavail
+
+
+def test_render_kpi_cells_suppress_comparison():
+    metric = MetricDelta(
+        metric_name="sessions",
+        display_name="Total Sessions",
+        current_value=1000,
+        prior_value=800,
+        percentage_change=25.0,
+        direction="up",
+    )
+    cells_suppressed = render_kpi_cells([metric], "#0A0A0B", suppress_comparison=True)
+    assert "baseline" in cells_suppressed
+    assert "25.0%" not in cells_suppressed
+
+    cells_normal = render_kpi_cells([metric], "#0A0A0B", suppress_comparison=False)
+    assert "25.0%" in cells_normal
+    assert "baseline" not in cells_normal
+
+
+def test_render_bar_rows_at_and_over_100_percent():
+    rows = [
+        ("Peak", 100),
+        ("Half", 50),
+        ("Zero", 0),
+    ]
+    html = render_bar_rows(rows, "#1E3A8A", "#F7F4EE")
+    # For 100% percent, only one <td> is emitted inside the inner table
+    assert '<tr><td width="100%" bgcolor="#1E3A8A" style="background-color: #1E3A8A; height: 10px; font-size: 0; line-height: 0;">&nbsp;</td></tr>' in html
+    # For 50% percent, two <td> cells are emitted
+    assert '<td width="50%" bgcolor="#1E3A8A" style="background-color: #1E3A8A; height: 10px; font-size: 0; line-height: 0;">&nbsp;</td>' in html
+    assert '<td style="height: 10px; font-size: 0; line-height: 0;">&nbsp;</td>' in html
+
+
+def test_render_action_row_column_width_160():
+    action = ActionItem(
+        title="Action Title",
+        description="Action description.",
+        priority="medium",
+    )
+    row_html = render_action_row(action)
+    assert 'width="160"' in row_html
+    assert 'width="132"' not in row_html
+    assert "Recommended Next Step" in row_html
+
+
+def test_email_template_exec_list_margin_and_conversion_insights(approved_full_briefing):
+    # Verify exec_list has style="margin-top: 12px;"
+    html = render_growth_email_html(approved_full_briefing)
+    assert 'style="margin-top: 12px;"' in html
+
+    # Verify Section 02 renders conversion_insights even when stat_tiles is empty
+    approved_full_briefing.analytics.conversion_events = []
+    approved_full_briefing.insights.conversion_insights = "Important conversion commentary without stat tiles."
+    html_without_tiles = render_growth_email_html(approved_full_briefing)
+    assert "Customer Inquiries &amp; Key Actions" in html_without_tiles
+    assert "Important conversion commentary without stat tiles." in html_without_tiles
+
+    # Verify Section 02 is omitted when conv_body is completely empty
+    approved_full_briefing.insights.conversion_insights = ""
+    html_empty_conv = render_growth_email_html(approved_full_briefing)
+    assert "Customer Inquiries &amp; Key Actions" not in html_empty_conv
+
+
+def test_weekly_digest_suppress_comparison_and_empty_body(approved_full_briefing):
+    approved_full_briefing.report_type = ReportType.WEEKLY
+    approved_full_briefing.period_label = f"Weekly Period ({CURRENT_START} to {CURRENT_END})"
+    approved_full_briefing.weekly_insights = WeeklyDigestOutput(
+        biggest_win="Win",
+        needs_attention="Attention",
+        acquisition_insight="Acq",
+        conversion_insight="Conv",
+        search_opportunity="Search",
+        local_insight="Local",
+    )
+    approved_full_briefing.comparison_suppressed = True
+    html = render_weekly_digest_html(approved_full_briefing)
+    assert "baseline" in html
+    assert "Baseline period. Change comparisons begin with the next digest." in html
+
+
+def test_html_tag_balance_in_rendered_templates(approved_full_briefing):
+    from html.parser import HTMLParser
+
+    class TagBalanceChecker(HTMLParser):
+        VOID_TAGS = {"meta", "link", "img", "br", "hr", "input", "area", "base", "col", "embed", "param", "source", "track", "wbr"}
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.errors = []
+        def handle_starttag(self, tag, attrs):
+            if tag.lower() not in self.VOID_TAGS:
+                self.stack.append(tag.lower())
+        def handle_endtag(self, tag):
+            tag = tag.lower()
+            if tag in self.VOID_TAGS:
+                return
+            if not self.stack:
+                self.errors.append(f"Unexpected closing tag </{tag}>")
+                return
+            expected = self.stack.pop()
+            if expected != tag:
+                self.errors.append(f"Mismatched tag: expected </{expected}>, got </{tag}>")
+
+    # Check Growth Report HTML
+    growth_html = render_growth_email_html(approved_full_briefing)
+    growth_checker = TagBalanceChecker()
+    growth_checker.feed(growth_html)
+    assert not growth_checker.errors, f"Growth HTML has tag errors: {growth_checker.errors}"
+    assert not growth_checker.stack, f"Growth HTML has unclosed tags: {growth_checker.stack}"
+
+    # Check Weekly Digest HTML
+    approved_full_briefing.report_type = ReportType.WEEKLY
+    approved_full_briefing.weekly_insights = WeeklyDigestOutput(
+        biggest_win="Win",
+        needs_attention="Attention",
+        acquisition_insight="Acq",
+        conversion_insight="Conv",
+        search_opportunity="Search",
+        local_insight="Local",
+    )
+    weekly_html = render_weekly_digest_html(approved_full_briefing)
+    weekly_checker = TagBalanceChecker()
+    weekly_checker.feed(weekly_html)
+    assert not weekly_checker.errors, f"Weekly HTML has tag errors: {weekly_checker.errors}"
+    assert not weekly_checker.stack, f"Weekly HTML has unclosed tags: {weekly_checker.stack}"
+
+
+def test_pdf_flow_and_dynamic_pagination(approved_full_briefing):
+    # Comparison report
+    comp_pdf = build_executive_pdf(approved_full_briefing)
+    comp_reader = PdfReader(BytesIO(comp_pdf))
+    assert len(comp_reader.pages) >= 2, f"Expected at least 2 pages for comparison PDF, got {len(comp_reader.pages)}"
+    comp_full_text = "\n".join(p.extract_text() or "" for p in comp_reader.pages)
+    assert "EXECUTIVE OVERVIEW" in (comp_reader.pages[0].extract_text() or "")
+    assert "CUSTOMER INQUIRIES & KEY ACTIONS" in comp_full_text
+    assert "WHERE VISITORS CAME FROM & WHAT THEY VIEWED" in comp_full_text
+    assert "RECOMMENDED NEXT ACTIONS" in comp_full_text
+    assert "CURRENT GOALS" in comp_full_text
+
+    # Verify no page ends with an orphan section label
+    for page_idx, page in enumerate(comp_reader.pages):
+        lines = [line.strip() for line in (page.extract_text() or "").split("\n") if line.strip()]
+        # The last line before footer should not be a section number or title
+        content_lines = [l for l in lines if not l.startswith("Prepared by") and not "(c)" in l]
+        if content_lines:
+            assert not content_lines[-1].isdigit(), f"Page {page_idx + 1} ended with an orphan section number"
+
+    # Baseline report
+    baseline = approved_full_briefing.model_copy(deep=True)
+    baseline.report_mode = ReportMode.INITIAL_BASELINE
+    baseline.comparison_suppressed = True
+    baseline.analytics.report_mode = ReportMode.INITIAL_BASELINE
+    baseline.analytics.comparison_suppressed = True
+    for metric in baseline.analytics.core_metrics:
+        metric.prior_value = None
+        metric.direction = "unavailable"
+    for event in baseline.analytics.conversion_events:
+        event.prior_count = None
+        event.direction = "unavailable"
+
+    base_pdf = build_executive_pdf(baseline)
+    base_reader = PdfReader(BytesIO(base_pdf))
+    assert len(base_reader.pages) >= 2, f"Expected at least 2 pages for baseline PDF, got {len(base_reader.pages)}"
+    base_p1 = base_reader.pages[0].extract_text() or ""
+    assert "INITIAL MEASUREMENT BASELINE" in base_p1 or "Initial Measurement Baseline" in base_p1
+    assert "EXECUTIVE OVERVIEW" in base_p1
+
+    # Expanded report with GBP data spans additional pages cleanly
+    gbp_b = approved_full_briefing.model_copy(deep=True)
+    gbp_b.analytics.local_seo = LocalInteractionData(
+        profile_status="available",
+        profile={
+            "title": "Test Company",
+            "primary_phone": "+1 555 0100",
+            "address": {"addressLines": ["1 Test Street"], "locality": "Winter Park", "postalCode": "32789"},
+            "website_uri": "https://test.example.com",
+            "regular_hours": {"periods": [{"openDay": "MONDAY", "openTime": {"hours": 8}, "closeDay": "MONDAY", "closeTime": {"hours": 17}}]},
+            "primary_category": {"displayName": "Dentist"},
+            "services": [{"structuredServiceItem": {"description": "Teeth whitening"}}],
+        },
+        performance_status="available",
+        performance_metrics={"CALL_CLICKS": {"total": 5, "series": []}},
+        available_performance_metrics=["CALL_CLICKS"],
+        search_keywords_status="available",
+        monthly_search_keywords=[{"search_keyword": "dentist winter park", "insights_value": 22, "insights_value_type": "value"}],
+        reviews_status="available",
+        reviews=[{"star_rating": "FIVE", "reply_status": "NOT_REPLIED", "update_time": "2026-08-01T00:00:00Z", "comment": "A source-backed review comment."}],
+        review_inventory_complete=True,
+        review_response_summary={"review_count": 1, "unreplied_count": 1, "reply_coverage_percent": 0.0, "complete": True},
+        business_calls_status="available",
+        answered_calls=7,
+        missed_calls=2,
+    )
+    gbp_pdf = build_executive_pdf(gbp_b)
+    gbp_reader = PdfReader(BytesIO(gbp_pdf))
+    assert len(gbp_reader.pages) >= 3, f"Expected at least 3 pages for full GBP PDF, got {len(gbp_reader.pages)}"
+    gbp_full_text = "\n".join(p.extract_text() or "" for p in gbp_reader.pages)
+    assert "PROFILE DETAILS" in gbp_full_text
+    assert "MANAGED REVIEWS AND REPLY STATUS" in gbp_full_text
+    assert "BUSINESS CALLS INSIGHTS" in gbp_full_text
+
+
+
+def test_pdf_delta_chip_suppression_and_unavailable(approved_full_briefing):
+    # Test comparison suppressed
+    b = approved_full_briefing.model_copy(deep=True)
+    b.comparison_suppressed = True
+    pdf_text = pdf_text_of(build_executive_pdf(b))
+    assert "baseline" in pdf_text
+
+    # Test direction unavailable
+    b2 = approved_full_briefing.model_copy(deep=True)
+    b2.analytics.core_metrics[0].direction = "unavailable"
+    pdf_text2 = pdf_text_of(build_executive_pdf(b2))
+    assert "baseline" in pdf_text2
+
+    # Test metric prior_value None
+    b3 = approved_full_briefing.model_copy(deep=True)
+    b3.analytics.core_metrics[0].prior_value = None
+    pdf_text3 = pdf_text_of(build_executive_pdf(b3))
+    assert "baseline" in pdf_text3
+
+
+def test_pdf_delivery_health_empty_notes(approved_full_briefing):
+    b = approved_full_briefing.model_copy(deep=True)
+    b.report_delivery_metrics = ReportDeliveryMetrics(status="empty")
+    b.analytics.website_inquiry_metrics = WebsiteInquiryMetrics(status="empty")
+
+    pdf_text = pdf_text_of(build_executive_pdf(b))
+    assert "No tracked delivery activity was available for this window." in pdf_text
+    assert "No website inquiry-notification activity was available for this window." in pdf_text
+
+
+def test_pdf_conversion_insights_ungated(approved_full_briefing):
+    # Without conversion_events, conversion_insights still renders
+    b = approved_full_briefing.model_copy(deep=True)
+    b.analytics.conversion_events = []
+    b.insights.conversion_insights = "Important conversion commentary without events."
+    pdf_text = pdf_text_of(build_executive_pdf(b))
+    assert "CUSTOMER INQUIRIES & KEY ACTIONS" in pdf_text
+    assert "Important conversion commentary without events." in pdf_text
+
+    # When both are empty, Section 02 is omitted
+    b.insights.conversion_insights = ""
+    pdf_text_empty = pdf_text_of(build_executive_pdf(b))
+    assert "CUSTOMER INQUIRIES & KEY ACTIONS" not in pdf_text_empty
+
+
+def test_pdf_insights_none_guards(approved_full_briefing):
+    b = approved_full_briefing.model_copy(deep=True)
+    b.insights.conversion_insights = None
+    b.insights.seo_and_content_opportunities = None
+    b.insights.local_seo_insights = None
+    pdf_bytes = build_executive_pdf(b)
+    assert len(pdf_bytes) > 2000
+
+

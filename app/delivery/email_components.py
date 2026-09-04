@@ -33,8 +33,8 @@ SECTION_LABEL_WEBSITE_INQUIRY = "Website Inquiry Delivery"
 _TABLE = 'role="presentation" cellpadding="0" cellspacing="0" border="0"'
 
 
-def is_light_color(hex_str: str) -> bool:
-    h = hex_str.lstrip('#')
+def is_light_color(hex_str: Optional[str]) -> bool:
+    h = (hex_str or '').lstrip('#')
     if len(h) == 3:
         h = ''.join([c * 2 for c in h])
     try:
@@ -97,11 +97,17 @@ def _delta_chip_colors(direction: str, has_prior: bool, on_light: bool) -> tuple
     return ('#FBE2DF', '#93221B') if on_light else ('#3F1F1D', '#F2A19A')
 
 
-def render_delta_chip(metric: MetricDelta, primary_color: str) -> str:
+def render_delta_chip(metric: MetricDelta, primary_color: str, suppress_comparison: bool = False) -> str:
     """A small filled chip carrying the period-over-period change."""
     on_light = is_light_color(primary_color)
-    arrow, label = _delta_parts(metric)
-    bg, fg = _delta_chip_colors(metric.direction, metric.prior_value is not None, on_light)
+    is_suppressed = suppress_comparison or metric.direction == 'unavailable' or metric.prior_value is None
+    if is_suppressed:
+        arrow, label = '', 'baseline'
+        has_prior = False
+    else:
+        arrow, label = _delta_parts(metric)
+        has_prior = True
+    bg, fg = _delta_chip_colors(metric.direction, has_prior, on_light)
     text = f'{arrow} {label}'.strip()
     return (
         f'<table {_TABLE} style="margin-top: 10px;"><tr>'
@@ -117,6 +123,7 @@ def render_kpi_cells(
     *,
     value_size: int = 36,
     value_class: str = 'kpi-val',
+    suppress_comparison: bool = False,
 ) -> str:
     """Render the KPI cells for the dark branded strip, one column per metric."""
     if not metrics:
@@ -131,7 +138,7 @@ def render_kpi_cells(
             f'text-transform: uppercase; color: {header_muted}; padding-bottom: 8px;">{html.escape(metric.display_name)}</div>'
             f'<div class="{value_class}" style="font-family: {FONT_FAMILY_MAIN}; font-size: {value_size}px; '
             f'line-height: {value_size}px; font-weight: 600; letter-spacing: -1px; color: {header_text};">{format_metric_value(metric)}</div>'
-            f'{render_delta_chip(metric, primary_color)}'
+            f'{render_delta_chip(metric, primary_color, suppress_comparison=suppress_comparison)}'
             '</td>'
         )
     return cells
@@ -227,7 +234,13 @@ def render_bar_rows(
         has_value = value is not None and value > 0
         text_color = COLOR_ON_SURFACE if has_value else COLOR_ZERO
         percent = int(round(value / peak * 100)) if has_value and peak > 0 else 0
-        if percent > 0:
+        if percent >= 100:
+            fill = (
+                f'<table {_TABLE} width="100%" bgcolor="{track}" style="background-color: {track};"><tr>'
+                f'<td width="100%" bgcolor="{bar_color}" style="background-color: {bar_color}; height: 10px; font-size: 0; line-height: 0;">&nbsp;</td>'
+                '</tr></table>'
+            )
+        elif percent > 0:
             fill = (
                 f'<table {_TABLE} width="100%" bgcolor="{track}" style="background-color: {track};"><tr>'
                 f'<td width="{percent}%" bgcolor="{bar_color}" style="background-color: {bar_color}; height: 10px; font-size: 0; line-height: 0;">&nbsp;</td>'
@@ -364,7 +377,7 @@ def render_action_row(action: ActionItem, is_last: bool = False) -> str:
         f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 14px; line-height: 20px; font-weight: 600; '
         f'color: {COLOR_ON_SURFACE}; padding-bottom: 3px;">{html.escape(action.title)}</div>'
         f'<div style="font-family: {FONT_FAMILY_MAIN}; font-size: 13px; line-height: 20px; color: {COLOR_MUTED};">{html.escape(action.description)}</div></td>'
-        f'<td width="132" align="right" style="vertical-align: top; padding: 16px 0; {rule} white-space: nowrap;">'
+        f'<td width="160" align="right" style="vertical-align: top; padding: 16px 0; {rule} white-space: nowrap;">'
         f'<span style="display: inline-block; border: 1px solid {tag_border}; padding: 3px 8px; '
         f'font-family: {FONT_FAMILY_MAIN}; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; '
         f'text-transform: uppercase; color: {tag_color};">{tag_label}</span></td>'

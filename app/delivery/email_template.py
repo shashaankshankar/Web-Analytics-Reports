@@ -77,6 +77,7 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
     analytics = briefing.analytics
     insights = briefing.insights
     is_baseline = briefing.report_mode == ReportMode.INITIAL_BASELINE
+    suppress_comparison = is_baseline or briefing.comparison_suppressed
     report_name = (
         "Initial Measurement Baseline"
         if is_baseline
@@ -85,8 +86,13 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
         else f"{analytics.period_days}-Day Performance Report"
     )
 
-    kpi_cells = render_kpi_cells(analytics.core_metrics, primary_color, value_size=30)
-    if is_baseline or briefing.comparison_suppressed:
+    kpi_cells = render_kpi_cells(
+        analytics.core_metrics,
+        primary_color,
+        value_size=30,
+        suppress_comparison=suppress_comparison,
+    )
+    if suppress_comparison:
         kpi_note = "Baseline period. Change comparisons begin with the next report."
     else:
         kpi_note = (
@@ -104,7 +110,11 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
         '</tr>'
         for index, item in enumerate(insights.executive_summary, 1)
     )
-    exec_list = f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">{exec_items}</table>' if exec_items else ""
+    exec_list = (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 12px;">{exec_items}</table>'
+        if exec_items
+        else ""
+    )
 
     win_card = (
         render_finding_card("Biggest Win", insights.biggest_win, secondary_color, status="win", spaced=False)
@@ -131,17 +141,17 @@ def render_growth_email_html(briefing: FullGrowthBriefing) -> str:
     # --- 02 Customer inquiries & key actions -----------------------------------
     conv_events = analytics.conversion_events[:4]
     stat_tiles = render_stat_tiles(conv_events, secondary_color)
-    conv_body = ""
-    if stat_tiles:
-        conv_commentary = (
-            _commentary(html.escape(insights.conversion_insights), bottom=14)
-            if insights.conversion_insights
-            else ""
-        )
-        conv_body = (
-            conv_commentary
-            + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>{stat_tiles}</tr></table>'
-        )
+    conv_commentary = (
+        _commentary(html.escape(insights.conversion_insights), bottom=14 if stat_tiles else 0)
+        if insights.conversion_insights
+        else ""
+    )
+    tiles_markup = (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>{stat_tiles}</tr></table>'
+        if stat_tiles
+        else ""
+    )
+    conv_body = conv_commentary + tiles_markup
 
     # --- 03 Traffic: commentary plus channel and page bars ---------------------
     channel_bars = render_bar_group(

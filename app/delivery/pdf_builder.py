@@ -32,6 +32,8 @@ from app.analytics.contracts import FullGrowthBriefing, REPORT_SPECS, ReportMode
 from app.delivery.discovery_copy import build_client_discovery_copies
 from app.delivery.email_components import (
     copyright_year,
+    has_report_delivery_data,
+    has_website_inquiry_data,
     is_light_color,
     report_delivery_metric_rows,
     select_strongest_actions,
@@ -433,8 +435,8 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             ('BACKGROUND', (0, 0), (-1, -1), SURFACE),
             ('LEFTPADDING', (0, 0), (-1, -1), 20),
             ('RIGHTPADDING', (0, 0), (-1, -1), 20),
-            ('TOPPADDING', (0, 0), (-1, -1), 18),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 18),
+            ('TOPPADDING', (0, 0), (-1, -1), 14),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 14),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ]))
         return table
@@ -556,7 +558,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
 
     def delta_chip(metric):
         """Change chip; a metric with no prior period is labelled a baseline."""
-        if metric.prior_value is None:
+        if is_baseline or briefing.comparison_suppressed or metric.prior_value is None or metric.direction == 'unavailable':
             return chip('baseline', colors.HexColor('#2A2A2C') if not primary_is_light else HAIRLINE,
                         STRIP_MUTED)
         if metric.is_percentage_rate and metric.percentage_points_change is not None:
@@ -590,7 +592,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             ),
             S_DEK,
         ),
-        Spacer(1, 22),
+        Spacer(1, 14),
     ]
     if kpi_metrics:
         column_w = CONTENT_W / len(kpi_metrics)
@@ -611,13 +613,13 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
             ('BOTTOMPADDING', (0, 1), (-1, 1), 8),
         ]))
-        strip_content.extend([kpi_table, Spacer(1, 16)])
+        strip_content.extend([kpi_table, Spacer(1, 10)])
     strip_content.append(Paragraph(
         escape(
             'Baseline period. Change comparisons begin with the next report.'
             if is_baseline or briefing.comparison_suppressed
             else f'Compared with the prior {analytics.period_days} days, '
-                 f'{analytics.comparison_start} to {analytics.comparison_end}.'
+                  f'{analytics.comparison_start} to {analytics.comparison_end}.'
         ),
         S_STRIP_NOTE,
     ))
@@ -625,8 +627,8 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
     header_strip = _BleedPanel(
         strip_content,
         background=PRIMARY,
-        pad_top=34,
-        pad_bottom=30,
+        pad_top=24,
+        pad_bottom=22,
         rule_color=ACCENT,
         rule_height=3,
     )
@@ -646,7 +648,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             colWidths=[46, CONTENT_W - 46],
         )
         note_row.setStyle(TableStyle(_flat() + [('VALIGN', (0, 0), (-1, -1), 'TOP')]))
-        story.append(_BleedPanel([note_row], background=SURFACE, pad_top=14, pad_bottom=14))
+        story.append(_BleedPanel([note_row], background=SURFACE, pad_top=10, pad_bottom=10))
 
     # Sections are numbered in render order so an absent data source never
     # leaves a gap in the sequence.
@@ -657,12 +659,14 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         if not body:
             return []
         section_number += 1
-        return [
+        first_elements = body[0]._content if isinstance(body[0], KeepTogether) else [body[0]]
+        header_flowable = KeepTogether([
             Spacer(1, space_before),
             _SectionLabel(section_number, title, ACCENT, tag),
             Spacer(1, 12),
-            *body,
-        ]
+            *first_elements,
+        ])
+        return [header_flowable, *body[1:]]
 
     # --- 01 Executive overview -------------------------------------------------
     overview: list = []
@@ -688,17 +692,16 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             ('RIGHTPADDING', (0, 0), (0, 0), 12),
         ]))
         # The pair moves as a unit; a card split across pages reads as two cards.
-        overview.append(KeepTogether([Spacer(1, 20), pair]))
+        overview.append(KeepTogether([Spacer(1, 12), pair]))
     elif win_card or watch_card:
-        overview.append(KeepTogether([Spacer(1, 20), win_card or watch_card]))
-    story.extend(section(SECTION_EXECUTIVE, overview, space_before=22))
+        overview.append(KeepTogether([Spacer(1, 12), win_card or watch_card]))
+    story.extend(section(SECTION_EXECUTIVE, overview, space_before=16))
 
     # --- 02 Customer inquiries & key actions -----------------------------------
     conversion_events = analytics.conversion_events[:4]
     inquiries: list = []
+    tile_table = None
     if conversion_events:
-        if insights.conversion_insights.strip():
-            inquiries.extend([Paragraph(escape(insights.conversion_insights), S_BODY), Spacer(1, 14)])
         tile_w = (CONTENT_W - 10 * (len(conversion_events) - 1)) / len(conversion_events)
         tiles = []
         for event in conversion_events:
@@ -737,10 +740,19 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         tile_table = Table([cells], colWidths=widths)
         # Gutter columns keep zero padding so the row stays exactly CONTENT_W wide.
         tile_table.setStyle(TableStyle(_flat() + tile_style + [('VALIGN', (0, 0), (-1, -1), 'TOP')]))
-        inquiries.append(tile_table)
-    story.extend(section(SECTION_INQUIRIES, inquiries, space_before=22))
 
-    story.append(PageBreak())
+    conv_text = (insights.conversion_insights or "").strip()
+    if conv_text and tile_table is not None:
+        inquiries.append(KeepTogether([
+            Paragraph(escape(conv_text), S_BODY),
+            Spacer(1, 14),
+            tile_table,
+        ]))
+    elif conv_text:
+        inquiries.append(Paragraph(escape(conv_text), S_BODY))
+    elif tile_table is not None:
+        inquiries.append(tile_table)
+    story.extend(section(SECTION_INQUIRIES, inquiries, space_before=20))
 
     # --- 03 Traffic ------------------------------------------------------------
     traffic: list = [Paragraph(escape(insights.traffic_and_inflow_insights), S_BODY)]
@@ -766,12 +778,12 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         traffic.extend([Spacer(1, 18), columns])
     elif channel_bars or page_bars:
         traffic.extend([Spacer(1, 18), *(channel_bars or page_bars)])
-    story.extend(section(SECTION_TRAFFIC, traffic, space_before=0))
+    story.extend(section(SECTION_TRAFFIC, traffic, space_before=20))
 
     # --- 04 Search -------------------------------------------------------------
     keywords = analytics.striking_distance_keywords[:5]
     search: list = []
-    if insights.seo_and_content_opportunities.strip():
+    if (insights.seo_and_content_opportunities or "").strip():
         search.append(Paragraph(escape(insights.seo_and_content_opportunities), S_BODY))
     if keywords:
         if search:
@@ -790,7 +802,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             [CONTENT_W - 300, 100, 100, 100],
         ))
     search_title = 'High-opportunity Google searches' if keywords else 'Search & content topics to validate'
-    story.extend(section(search_title, search))
+    story.extend(section(search_title, search, space_before=20))
 
     # --- 05 Local reputation & maps --------------------------------------------
     local = analytics.local_seo
@@ -800,15 +812,15 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
                       'reviews_status', 'business_calls_status')
     )
     local_body: list = []
-    if insights.local_seo_insights.strip():
+    if (insights.local_seo_insights or "").strip():
         local_body.append(Paragraph(escape(insights.local_seo_insights), S_BODY))
 
     def subsection(heading: str, table: Table, note: Optional[str] = None) -> list:
-        out = [Spacer(1, 20), Paragraph(escape(heading).upper(), S_SUBHEAD), Spacer(1, 8)]
+        items = [Spacer(1, 16), Paragraph(escape(heading).upper(), S_SUBHEAD), Spacer(1, 8)]
         if note:
-            out.extend([Paragraph(escape(note), S_TD_MUTED), Spacer(1, 8)])
-        out.append(table)
-        return out
+            items.extend([Paragraph(escape(note), S_TD_MUTED), Spacer(1, 8)])
+        items.append(table)
+        return [KeepTogether(items)]
 
     gbp_profile = profile_rows(local)
     if gbp_profile:
@@ -872,13 +884,13 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
 
     gbp_calls = calls_rows(local)
     if gbp_calls:
-        local_body.extend([
-            Spacer(1, 20),
+        local_body.append(KeepTogether([
+            Spacer(1, 16),
             Paragraph('BUSINESS CALLS INSIGHTS', S_SUBHEAD),
             Spacer(1, 8),
             Paragraph(escape(' | '.join(f'{label}: {value}' for label, value in gbp_calls)), S_BODY),
-        ])
-    story.extend(section(SECTION_LOCAL, local_body, tag=None if local_connected else 'Not connected'))
+        ]))
+    story.extend(section(SECTION_LOCAL, local_body, tag=None if local_connected else 'Not connected', space_before=20))
 
     # --- Where we're focusing next ---------------------------------------------
     if briefing.exploration_audit and briefing.exploration_audit.enabled:
@@ -920,7 +932,7 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
                 'No additional opportunities were identified from this period, and no recommendations were added.',
                 S_BODY,
             ))
-        story.extend(section(SECTION_DISCOVERIES, discoveries))
+        story.extend(section(SECTION_DISCOVERIES, discoveries, space_before=20))
 
     # --- Delivery health --------------------------------------------------------
     # These use only redacted aggregate rows; provider IDs, recipients,
@@ -936,7 +948,13 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
                 if not website
                 else 'Some inquiry-notification activity was unavailable for this window; displayed figures are partial.'
             )
-        if status in {'empty', 'unavailable', 'error'}:
+        if status == 'empty':
+            return (
+                'No tracked delivery activity was available for this window.'
+                if not website
+                else 'No website inquiry-notification activity was available for this window.'
+            )
+        if status in {'unavailable', 'error'}:
             return (
                 'Delivery metrics are not available for this window.'
                 if not website
@@ -949,42 +967,48 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
         )
 
     report_delivery = briefing.report_delivery_metrics
-    if report_delivery is not None and delivery_status(report_delivery) != 'not_configured':
+    if has_report_delivery_data(report_delivery):
         rows = report_delivery_metric_rows(report_delivery)
+        delivery_table = ledger_table(
+            [('METRIC', S_TH), ('VALUE', S_TH_R)],
+            [[(escape(label), S_TD), (escape(value), S_TD_R)] for label, value in rows]
+            or [[('Activity', S_TD), ('Not available', S_TD_R)]],
+            [CONTENT_W - 160, 160],
+        )
         body: list = [
-            Paragraph(
-                escape(f'Email delivery health for this analytics report. {delivery_note(delivery_status(report_delivery))}'),
-                S_BODY,
-            ),
-            Spacer(1, 14),
-            ledger_table(
-                [('METRIC', S_TH), ('VALUE', S_TH_R)],
-                [[(escape(label), S_TD), (escape(value), S_TD_R)] for label, value in rows]
-                or [[('Activity', S_TD), ('Not available', S_TD_R)]],
-                [CONTENT_W - 160, 160],
-            ),
+            KeepTogether([
+                Paragraph(
+                    escape(f'Email delivery health for this analytics report. {delivery_note(delivery_status(report_delivery))}'),
+                    S_BODY,
+                ),
+                Spacer(1, 14),
+                delivery_table,
+            ])
         ]
-        story.extend(section(SECTION_REPORT_DELIVERY, body))
+        story.extend(section(SECTION_REPORT_DELIVERY, body, space_before=20))
 
     website_delivery = analytics.website_inquiry_metrics
-    if website_delivery is not None and delivery_status(website_delivery) != 'not_configured':
+    if has_website_inquiry_data(website_delivery):
         rows = website_inquiry_metric_rows(website_delivery)
+        inquiry_table = ledger_table(
+            [('METRIC', S_TH), ('THIS PERIOD', S_TH_R), ('PRIOR PERIOD', S_TH_R)],
+            [
+                [(escape(label), S_TD), (escape(current), S_TD_R), (escape(prior), S_TD_R_MUTED)]
+                for label, current, prior in rows
+            ] or [[('Activity', S_TD), ('Not available', S_TD_R), ('Not available', S_TD_R_MUTED)]],
+            [CONTENT_W - 240, 120, 120],
+        )
         body = [
-            Paragraph(
-                escape(f'Technical notification delivery health. {delivery_note(delivery_status(website_delivery), website=True)}'),
-                S_BODY,
-            ),
-            Spacer(1, 14),
-            ledger_table(
-                [('METRIC', S_TH), ('THIS PERIOD', S_TH_R), ('PRIOR PERIOD', S_TH_R)],
-                [
-                    [(escape(label), S_TD), (escape(current), S_TD_R), (escape(prior), S_TD_R_MUTED)]
-                    for label, current, prior in rows
-                ] or [[('Activity', S_TD), ('Not available', S_TD_R), ('Not available', S_TD_R_MUTED)]],
-                [CONTENT_W - 240, 120, 120],
-            ),
+            KeepTogether([
+                Paragraph(
+                    escape(f'Technical notification delivery health. {delivery_note(delivery_status(website_delivery), website=True)}'),
+                    S_BODY,
+                ),
+                Spacer(1, 14),
+                inquiry_table,
+            ])
         ]
-        story.extend(section(SECTION_WEBSITE_INQUIRY, body))
+        story.extend(section(SECTION_WEBSITE_INQUIRY, body, space_before=20))
 
     # --- Recommended next actions ------------------------------------------------
     selected_actions = select_strongest_actions(
@@ -1018,12 +1042,12 @@ def build_executive_pdf(briefing: FullGrowthBriefing) -> bytes:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 16),
         ] + ([] if is_last else [('LINEBELOW', (0, 0), (-1, -1), 1, HAIRLINE)])))
         actions.append(KeepTogether(row))
-    story.extend(section(SECTION_ACTIONS, actions))
+    story.extend(section(SECTION_ACTIONS, actions, space_before=20))
 
     # --- Current goals ------------------------------------------------------------
     configured_goals = [goal.strip() for goal in analytics.goals if isinstance(goal, str) and goal.strip()]
     goal_body = pill_rows(configured_goals or ['No specific client goals are configured.'], CONTENT_W)
-    story.extend(section(SECTION_GOALS, goal_body, space_before=22))
+    story.extend(section(SECTION_GOALS, goal_body, space_before=20))
 
     # --- Document -------------------------------------------------------------------
     def draw_later_header(canvas, doc):

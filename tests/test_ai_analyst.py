@@ -4,11 +4,15 @@ import pytest
 from unittest.mock import MagicMock
 
 from app.ai.analyst import (
+    GROWTH_ANALYST_SYSTEM_PROMPT,
     AnalysisUnavailableError,
     GrowthAnalyst,
     build_performance_user_prompt,
     build_weekly_user_prompt,
+    clean_plain_text,
 )
+from app.ai.agent import AGENT_SYSTEM_PROMPT
+from app.ai.verifier import VERIFIER_SYSTEM_PROMPT
 from app.ai.structured_output import PERFORMANCE_REPORT_SCHEMA, WEEKLY_DIGEST_SCHEMA
 from app.analytics.contracts import (
     ChannelPerformance,
@@ -257,3 +261,113 @@ def test_growth_analyst_openrouter_payload():
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["strict"] is True
     assert response_format["json_schema"]["name"] == "performance_report"
+
+
+def test_clean_plain_text_humanizes_telemetry_and_snake_case():
+    # Known conversion and telemetry mappings
+    assert clean_plain_text("We recorded 15 contact_form_submit events.") == "We recorded 15 contact form submission events."
+    assert clean_plain_text("contact_form_submits reached an all-time high.") == "Contact form submissions reached an all-time high."
+    assert clean_plain_text("Recorded 8 phone_click events and 3 generate_lead actions.") == "Recorded 8 phone call click events and 3 inquiry lead actions."
+    assert clean_plain_text("CALL_CLICKS reached 24 while DIRECTION_ACTIONS totaled 12.") == "Phone calls reached 24 while direction requests totaled 12."
+    assert clean_plain_text("Website had 1,200 active_users and 500 WEBSITE_CLICKS.") == "Website had 1,200 unique visitors and 500 website visits."
+    
+    # CamelCase telemetry mappings
+    assert clean_plain_text("Total activeUsers increased with higher engagementRate.") == "Total unique visitors increased with higher engagement rate."
+    assert clean_plain_text("Recorded 45 screenPageViews and 12 primaryLeads.") == "Recorded 45 page views and 12 primary leads."
+
+    # Generic snake_case and SCREAMING_SNAKE_CASE
+    assert clean_plain_text("New tracking on custom_quote_button.") == "New tracking on custom quote button."
+    assert clean_plain_text("NEW_PATIENT_SPECIAL campaign was launched.") == "New patient special campaign was launched."
+    assert clean_plain_text("Refined the Schedule_Consultation_Form layout.") == "Refined the Schedule Consultation Form layout."
+
+    # Markdown italic underscore cleanup
+    assert clean_plain_text("This was _really_ important for growth.") == "This was really important for growth."
+
+
+def test_clean_plain_text_preserves_urls_and_emails_with_underscores():
+    text = (
+        "Check out https://example.com/contact_us?src=web_lead and "
+        "www.dental_clinic.com/about_us for details. "
+        "Contact dr_smith@dental_practice.com for support_team inquiries."
+    )
+    cleaned = clean_plain_text(text)
+    assert "https://example.com/contact_us?src=web_lead" in cleaned
+    assert "www.dental_clinic.com/about_us" in cleaned
+    assert "dr_smith@dental_practice.com" in cleaned
+    # But snake_case outside URL/email is humanized
+    assert "support team inquiries" in cleaned
+
+
+def test_analyst_and_agent_prompts_forbid_raw_variable_names():
+    sample_input = make_growth_input()
+
+    weekly_prompt = build_weekly_user_prompt(sample_input)
+    assert "contact_form_submit" in weekly_prompt
+    assert "Do NOT output raw technical variable names" in weekly_prompt or "Never output raw technical variable names" in weekly_prompt
+
+    performance_prompt = build_performance_user_prompt(sample_input)
+    assert "contact_form_submit" in performance_prompt
+    assert "Do NOT output raw technical variable names" in performance_prompt or "Never output raw technical variable names" in performance_prompt
+
+    assert "NEVER output raw technical variable names" in GROWTH_ANALYST_SYSTEM_PROMPT
+    assert "Never output raw technical variable names" in AGENT_SYSTEM_PROMPT
+    assert "code identifiers with underscores" in VERIFIER_SYSTEM_PROMPT
+
+
+def test_growth_analyst_sanitizes_raw_tokens_in_llm_response():
+    sample_input = make_growth_input()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({
+                        "executive_summary": [
+                            "Overall active_users reached 550 this cycle.",
+                            "Primary channel delivered strong sessions.",
+                            "We tracked 22 contact_form_submit events.",
+                        ],
+                        "biggest_win": "CALL_CLICKS reached 35 across local maps.",
+                        "watch_item": "Monitor the custom_booking_button conversion flow.",
+                        "traffic_and_inflow_insights": "Active users and screenPageViews remained steady.",
+                        "conversion_insights": "Patients generated 14 phone_click actions on https://clinic.com/contact_us.",
+                        "seo_and_content_opportunities": "Search visibility was stable.",
+                        "local_seo_insights": "DIRECTION_ACTIONS totaled 19 requests.",
+                        "agency_action_plan": [
+                            {
+                                "title": "Optimize schedule_appointment_flow",
+                                "description": "Refine the contact_form_submit fields for better completion.",
+                                "impact_area": "Conversion",
+                                "priority": "High",
+                                "evidence": "22 contact_form_submit events observed",
+                            }
+                        ],
+                        "overall_sentiment": "Growth",
+                    })
+                }
+            }
+        ]
+    }
+    mock_http = MagicMock()
+    mock_http.post.return_value = mock_response
+    analyst = GrowthAnalyst(api_key="sk-test", http_client=mock_http)
+    briefing = analyst.analyze(sample_input)
+
+    assert "active_users" not in briefing.executive_summary[0]
+    assert "unique visitors" in briefing.executive_summary[0]
+    assert "contact form submission" in briefing.executive_summary[2]
+    assert "Phone calls" in briefing.biggest_win
+    assert "CALL_CLICKS" not in briefing.biggest_win
+    assert "custom booking button" in briefing.watch_item
+    assert "custom_booking_button" not in briefing.watch_item
+    assert "page views" in briefing.traffic_and_inflow_insights
+    assert "screenPageViews" not in briefing.traffic_and_inflow_insights
+    assert "phone call click" in briefing.conversion_insights
+    assert "https://clinic.com/contact_us" in briefing.conversion_insights
+    assert "Direction requests" in briefing.local_seo_insights or "direction requests" in briefing.local_seo_insights
+    assert "DIRECTION_ACTIONS" not in briefing.local_seo_insights
+    assert briefing.agency_action_plan[0].title == "Optimize schedule appointment flow"
+    assert "contact form submission" in briefing.agency_action_plan[0].description
+    assert "contact_form_submit" not in briefing.agency_action_plan[0].evidence
+

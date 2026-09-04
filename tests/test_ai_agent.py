@@ -2,7 +2,7 @@ import copy
 import json
 from unittest.mock import MagicMock
 
-from app.ai.agent import ExploratoryGrowthAgent, format_goals_context
+from app.ai.agent import AGENT_SYSTEM_PROMPT, ExploratoryGrowthAgent, format_goals_context
 from app.ai.tools import MultiSourceAnalyticsToolkit
 from app.analytics.contracts import DiscoveryProposal, GrowthAnalysisInput, NumericClaim, ReportMode, SourceAvailability
 from tests.fakes import FakeGA4Extractor, FakeGBPExtractor, FakeGSCExtractor, fake_client
@@ -452,3 +452,10 @@ def test_verifier_outage_withholds_deterministic_local_finding():
     assert result.audit.verifier_status == "provider_error"
     assert result.audit.verifier_decisions[0].status == "rejected"
     assert result.audit.accepted_findings == []
+
+
+def test_agent_system_prompt_forbids_raw_variable_names():
+    assert "Never output raw technical variable names" in AGENT_SYSTEM_PROMPT
+    assert "active_users" in AGENT_SYSTEM_PROMPT
+    assert "contact_form_submit" in AGENT_SYSTEM_PROMPT
+    assert "plain English" in AGENT_SYSTEM_PROMPT

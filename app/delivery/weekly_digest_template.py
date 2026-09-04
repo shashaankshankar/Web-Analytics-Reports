@@ -53,6 +53,7 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
         raise ValueError("Weekly insights are unavailable; refusing to render substitute content.")
     insights: WeeklyDigestOutput = briefing.weekly_insights
     is_baseline = briefing.report_mode == ReportMode.INITIAL_BASELINE
+    suppress_comparison = is_baseline or briefing.comparison_suppressed
 
     # Three headline metrics fit one row at every width; the rest of the
     # deterministic metric set stays in the 28-day report.
@@ -62,9 +63,14 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
     ][:3]
     if not kpi_metrics:
         kpi_metrics = analytics.core_metrics[:3]
-    kpi_cells = render_kpi_cells(kpi_metrics, primary_color, value_size=36)
+    kpi_cells = render_kpi_cells(
+        kpi_metrics,
+        primary_color,
+        value_size=36,
+        suppress_comparison=suppress_comparison,
+    )
 
-    if is_baseline or briefing.comparison_suppressed:
+    if suppress_comparison:
         compare_label = "Baseline period. Change comparisons begin with the next digest."
     else:
         compare_label = (
@@ -106,6 +112,8 @@ def render_weekly_digest_html(briefing: FullGrowthBriefing) -> str:
 
     def section(label: str, body: str, *, tag: str | None = None, body_padding: str = "14px 32px 0 32px") -> str:
         nonlocal section_number
+        if not body:
+            return ""
         section_number += 1
         return f"""
           <tr>
